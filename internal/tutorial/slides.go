@@ -502,6 +502,8 @@ func (m Model) renderTipsSlide(tick int) string {
 		{"*", "Use Aliases", "Type `bp` instead of `ntm send` for speed", "#cba6f7"},
 		{"*", "F6 Palette", "Press F6 in tmux for instant command palette", "#f5c2e7"},
 		{"*", "Save Often", "`ntm save myproject -o ~/logs` preserves outputs", "#a6e3a1"},
+		{"*", "Width Tiers", "120+ cols split view; 200+/240+ unlock richer metadata", "#94e2d5"},
+		{"*", "Icons", "ASCII by default; use NTM_ICONS=unicode|nerd only with good fonts", "#f2cdcd"},
 		{"*", "Tmux Keys", "Ctrl+B, D to detach • Ctrl+B, [ to scroll", "#f9e2af"},
 		{"*", "Interrupt Fast", "`ntm interrupt myproject` stops all agents", "#f38ba8"},
 	}

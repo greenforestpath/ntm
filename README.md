@@ -908,6 +908,19 @@ export NTM_ICONS=unicode # Force Unicode
 export NTM_ICONS=ascii   # Force ASCII
 ```
 
+### Wide/High-Resolution Displays
+- Width tiers: stacked layouts below 120 cols; split list/detail at 120+; richer metadata at 200+; tertiary labels/variants/locks at 240+.
+- Give dashboard/status/palette at least 120 cols for split view; 200+ unlocks wider gutters and secondary columns; 240+ enables the full detail bars.
+- Icons are ASCII-first by default. Switch to `NTM_ICONS=unicode` or `NTM_ICONS=nerd` only if your terminal font renders them cleanly; otherwise stay on ASCII to avoid misaligned gutters.
+- Troubleshooting: if text wraps or glyphs drift, widen the pane, drop to `NTM_ICONS=ascii`, and ensure a true monospace font (Nerd Fonts installed before using `NTM_ICONS=nerd`).
+
+| Tier | Width | Behavior |
+| ---- | ----- | -------- |
+| Narrow | <120 cols | Stacked layout, minimal badges |
+| Split | 120-199 cols | List/detail split view |
+| Wide | 200-239 cols | Secondary metadata, wider gutters |
+| Ultra | ≥240 cols | Tertiary labels/variants/locks, max detail |
+
 ---
 
 ## Typical Workflow
