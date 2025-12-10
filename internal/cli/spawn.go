@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/spf13/cobra"
 )
@@ -157,5 +160,27 @@ func runSpawn(session string, ccCount, codCount, gmiCount int, userPane bool) er
 	}
 
 	fmt.Printf("✓ Launched %d agent(s)\n", totalAgents)
+
+	// Register session as Agent Mail agent (non-blocking)
+	registerSessionAgent(session, dir)
+
 	return tmux.AttachOrSwitch(session)
+}
+
+// registerSessionAgent registers the session with Agent Mail.
+// This is non-blocking and logs but does not fail if unavailable.
+func registerSessionAgent(sessionName, workingDir string) {
+	client := agentmail.NewClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	info, err := client.RegisterSessionAgent(ctx, sessionName, workingDir)
+	if err != nil {
+		// Log but don't fail
+		fmt.Printf("⚠ Agent Mail registration failed: %v\n", err)
+		return
+	}
+	if info != nil {
+		fmt.Printf("✓ Registered with Agent Mail as %s\n", info.AgentName)
+	}
 }
