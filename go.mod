@@ -10,8 +10,8 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/mattn/go-isatty v0.0.20
 	github.com/mattn/go-runewidth v0.0.15
-	github.com/muesli/termenv v0.15.2
 	github.com/muesli/reflow v0.3.0
+	github.com/muesli/termenv v0.15.2
 	github.com/spf13/cobra v1.8.0
 	golang.org/x/term v0.17.0
 	gopkg.in/yaml.v3 v3.0.1

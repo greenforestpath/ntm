@@ -23,13 +23,14 @@ func TestRotateCmdValidation(t *testing.T) {
 			wantError: "pane index required",
 		},
 		{
-			name: "dry run valid",
+			name: "dry run requires valid session/pane",
 			args: []string{"mysession"},
 			flags: map[string]string{
 				"pane":    "0",
 				"dry-run": "true",
 			},
-			wantError: "",
+			// Dry run still needs to look up pane info, which fails without tmux
+			wantError: "getting panes",
 		},
 	}
 
