@@ -305,7 +305,7 @@ func SetPaneTitle(paneID, title string) error {
 
 // SendKeys sends keys to a pane
 func SendKeys(target, keys string, enter bool) error {
-	if err := runSilent("send-keys", "-t", target, "-l", keys); err != nil {
+	if err := runSilent("send-keys", "-t", target, "-l", "--", keys); err != nil {
 		return err
 	}
 	if enter {

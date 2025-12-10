@@ -520,7 +520,7 @@ func runSendInternal(session, prompt string, targets SendTargets, targetCC, targ
 	// Update hook context with delivery results
 	hookCtx.AdditionalEnv["NTM_DELIVERED_COUNT"] = fmt.Sprintf("%d", delivered)
 	hookCtx.AdditionalEnv["NTM_FAILED_COUNT"] = fmt.Sprintf("%d", failed)
-	hookCtx.AdditionalEnv["NTM_TARGET_PANES"] = fmt.Sprintf("%v", targets)
+	hookCtx.AdditionalEnv["NTM_TARGET_PANES"] = fmt.Sprintf("%v", targetPanes)
 
 	// Run post-send hooks
 	if hookExec.HasHooksForEvent(hooks.EventPostSend) {
