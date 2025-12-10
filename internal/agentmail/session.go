@@ -19,11 +19,13 @@ type SessionAgentInfo struct {
 	LastActiveAt time.Time `json:"last_active_at"`
 }
 
+// sanitizeRegex is precompiled for performance (used by sanitizeSessionName)
+var sanitizeRegex = regexp.MustCompile(`[^a-zA-Z0-9]+`)
+
 // sanitizeSessionName converts a session name to a valid agent name component.
 // Replaces non-alphanumeric chars with underscores, lowercases.
 func sanitizeSessionName(name string) string {
-	re := regexp.MustCompile(`[^a-zA-Z0-9]+`)
-	sanitized := re.ReplaceAllString(name, "_")
+	sanitized := sanitizeRegex.ReplaceAllString(name, "_")
 	sanitized = strings.Trim(sanitized, "_")
 	return strings.ToLower(sanitized)
 }

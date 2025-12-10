@@ -437,7 +437,14 @@ func dedupeIndicators(indicators []string) []string {
 // detectActivity determines the activity level of an agent
 func detectActivity(output string, lastActivity time.Time, title string) ActivityLevel {
 	// Check last activity timestamp
-	idleTime := time.Since(lastActivity)
+	// If lastActivity is zero (not set), we can't determine idle time reliably
+	var idleTime time.Duration
+	if lastActivity.IsZero() {
+		// No activity timestamp available - will rely on prompt detection
+		idleTime = 0
+	} else {
+		idleTime = time.Since(lastActivity)
+	}
 
 	// Check for idle prompt
 	lines := strings.Split(output, "\n")
@@ -459,6 +466,15 @@ func detectActivity(output string, lastActivity time.Time, title string) Activit
 	}
 
 	// Determine activity level
+	// If we don't have reliable timing (idleTime == 0 from zero lastActivity),
+	// use prompt detection as the primary signal
+	if idleTime == 0 {
+		if hasIdlePrompt {
+			return ActivityIdle
+		}
+		return ActivityUnknown
+	}
+
 	if idleTime < 30*time.Second {
 		return ActivityActive
 	} else if idleTime < 5*time.Minute {

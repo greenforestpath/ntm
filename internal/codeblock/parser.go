@@ -214,9 +214,9 @@ func detectFilePath(content, lang string) (path string, isNew bool) {
 			}
 		}
 	case "python":
-		// Look for module docstring or import patterns
-		// This is heuristic - might suggest .py extension
-		return "", true
+		// Python code without explicit path comment - we can't reliably detect the path
+		// Don't set isNew=true without a path as it's misleading
+		return "", false
 	}
 
 	return "", false
