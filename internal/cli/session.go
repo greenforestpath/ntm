@@ -257,6 +257,9 @@ func runStatus(session string) error {
 			}
 		}
 
+		// Fetch Agent Mail status (graceful degradation if unavailable)
+		agentMailStatus := fetchAgentMailStatus(dir)
+
 		return output.PrintJSON(output.StatusResponse{
 			TimestampedResponse: output.NewTimestamped(),
 			Session:             session,
@@ -265,6 +268,7 @@ func runStatus(session string) error {
 			WorkingDirectory:    dir,
 			Panes:               paneResponses,
 			AgentCounts:         agentCounts,
+			AgentMail:           agentMailStatus,
 		})
 	}
 
@@ -399,6 +403,39 @@ func runStatus(session string) error {
 
 	fmt.Println()
 
+	// Agent Mail section
+	agentMailStatus := fetchAgentMailStatus(dir)
+	if agentMailStatus != nil && agentMailStatus.Available {
+		mailColor := colorize(t.Lavender)
+		lockIcon := "🔒"
+
+		fmt.Printf("  %sAgent Mail%s\n", bold, reset)
+		fmt.Printf("  %s%s%s\n", surface, "─────────────────────────────────────────────────────────", reset)
+
+		if agentMailStatus.Connected {
+			fmt.Printf("    %s✓ Connected%s to %s%s%s\n", success, reset, subtext, agentMailStatus.ServerURL, reset)
+		} else {
+			fmt.Printf("    %s○ Available%s at %s%s%s\n", overlay, reset, subtext, agentMailStatus.ServerURL, reset)
+		}
+
+		if agentMailStatus.ActiveLocks > 0 {
+			fmt.Printf("    %s%s Active Locks:%s %s%d reservation(s)%s\n",
+				mailColor, lockIcon, reset, text, agentMailStatus.ActiveLocks, reset)
+			for _, r := range agentMailStatus.Reservations {
+				lockType := "shared"
+				if r.Exclusive {
+					lockType = "exclusive"
+				}
+				fmt.Printf("      %s• %s%s  %s%s%s (%s, %s)\n",
+					subtext, text, r.PathPattern, overlay, r.AgentName, reset, lockType, r.ExpiresIn)
+			}
+		} else {
+			fmt.Printf("    %s%s No active file locks%s\n", overlay, lockIcon, reset)
+		}
+
+		fmt.Println()
+	}
+
 	// Quick actions hint
 	fmt.Printf("  %sQuick actions:%s\n", overlay, reset)
 	fmt.Printf("    %sntm send %s --all \"prompt\"%s  %s# Broadcast to all agents%s\n",
@@ -420,4 +457,73 @@ func updateSessionActivity(sessionName string) {
 	defer cancel()
 
 	_ = client.UpdateSessionActivity(ctx, sessionName)
+}
+
+// fetchAgentMailStatus retrieves Agent Mail status for display in ntm status.
+// Returns nil if Agent Mail is unavailable (graceful degradation).
+func fetchAgentMailStatus(projectKey string) *output.AgentMailStatus {
+	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Build status response
+	status := &output.AgentMailStatus{
+		Available: false,
+		Connected: false,
+		ServerURL: client.BaseURL(),
+	}
+
+	// Check if server is available
+	if !client.IsAvailable() {
+		return status
+	}
+	status.Available = true
+
+	// Ensure project exists
+	_, err := client.EnsureProject(ctx, projectKey)
+	if err != nil {
+		return status
+	}
+	status.Connected = true
+
+	// Fetch file reservations (locks)
+	reservations, err := client.ListReservations(ctx, projectKey, "", true)
+	if err == nil {
+		status.ActiveLocks = len(reservations)
+		for _, r := range reservations {
+			expiresIn := ""
+			if !r.ExpiresTS.IsZero() {
+				remaining := time.Until(r.ExpiresTS)
+				if remaining > 0 {
+					expiresIn = formatDuration(remaining)
+				} else {
+					expiresIn = "expired"
+				}
+			}
+			status.Reservations = append(status.Reservations, output.FileReservationInfo{
+				PathPattern: r.PathPattern,
+				AgentName:   r.AgentName,
+				Exclusive:   r.Exclusive,
+				Reason:      r.Reason,
+				ExpiresIn:   expiresIn,
+			})
+		}
+	}
+
+	// Note: Fetching inbox requires knowing agent names, which we don't have
+	// in the general status view. This would need to iterate over all project
+	// agents - deferred to ntm-161 (inbox command).
+
+	return status
+}
+
+// formatDuration formats a duration in human-readable form
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }
