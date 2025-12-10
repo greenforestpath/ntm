@@ -43,10 +43,14 @@ func runView(session string) error {
 		return err
 	}
 
+	interactive := isInteractive()
 	t := theme.Current()
 
 	// Determine target session
 	if session == "" {
+		if !interactive {
+			return fmt.Errorf("non-interactive environment: session name is required for view")
+		}
 		if tmux.InTmux() {
 			session = tmux.GetCurrentSession()
 		} else {

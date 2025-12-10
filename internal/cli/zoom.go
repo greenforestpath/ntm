@@ -2,11 +2,13 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 
 	"github.com/Dicklesworthstone/ntm/internal/palette"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -55,10 +57,14 @@ func runZoom(session string, paneIdx int) error {
 		return err
 	}
 
+	interactive := isInteractive()
 	t := theme.Current()
 
 	// Determine target session
 	if session == "" {
+		if !interactive {
+			return fmt.Errorf("non-interactive environment: session name is required for zoom")
+		}
 		if tmux.InTmux() {
 			session = tmux.GetCurrentSession()
 		} else {
@@ -87,6 +93,9 @@ func runZoom(session string, paneIdx int) error {
 
 	// If no pane specified, let user select
 	if paneIdx < 0 {
+		if !interactive {
+			return fmt.Errorf("non-interactive environment: pane index is required for zoom")
+		}
 		panes, err := tmux.GetPanes(session)
 		if err != nil {
 			return err
@@ -170,4 +179,11 @@ func runPaneSelector(session string, panes []tmux.Pane) (int, error) {
 	}
 
 	return panes[idx-1].Index, nil
+}
+
+// isInteractive returns true when both stdin and stdout are TTYs. The pane/session
+// selectors rely on user input; in tests or piped execution they should not run.
+func isInteractive() bool {
+	return (isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())) &&
+		(isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd()))
 }
