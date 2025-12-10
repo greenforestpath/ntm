@@ -303,6 +303,7 @@ func PrintPlan() error {
 	plan := PlanOutput{
 		GeneratedAt: time.Now().UTC(),
 		Actions:     []PlanAction{},
+		BeadActions: []BeadAction{},
 	}
 
 	// Check tmux availability
@@ -363,7 +364,124 @@ func PrintPlan() error {
 		})
 	}
 
+	// Add bead-based recommendations from bv priority analysis
+	beadActions, beadWarnings := getBeadRecommendations(5) // Top 5 recommendations
+	plan.BeadActions = beadActions
+	plan.Warnings = append(plan.Warnings, beadWarnings...)
+
+	// Update recommendation if there are high-impact beads to work on
+	if len(plan.BeadActions) > 0 && plan.BeadActions[0].IsReady {
+		plan.Recommendation = fmt.Sprintf("Work on high-impact bead: %s", plan.BeadActions[0].Title)
+	}
+
 	return encodeJSON(plan)
+}
+
+// getBeadRecommendations returns recommended bead actions from bv priority analysis
+func getBeadRecommendations(limit int) ([]BeadAction, []string) {
+	var actions []BeadAction
+	var warnings []string
+
+	// Check if bv is available
+	if !bv.IsInstalled() {
+		warnings = append(warnings, "bv (beads_viewer) not installed - install for bead-based recommendations")
+		return actions, warnings
+	}
+
+	// Get priority recommendations from bv
+	recommendations, err := bv.GetNextActions(limit)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("failed to get bv priority: %v", err))
+		return actions, warnings
+	}
+
+	// Get ready issues to check blockers
+	readyIssues := getReadyIssueIDs()
+
+	// Convert bv recommendations to BeadActions
+	for _, rec := range recommendations {
+		isReady := readyIssues[rec.IssueID]
+
+		action := BeadAction{
+			BeadID:    rec.IssueID,
+			Title:     rec.Title,
+			Priority:  rec.SuggestedPriority,
+			Impact:    rec.ImpactScore,
+			Reasoning: rec.Reasoning,
+			Command:   fmt.Sprintf("bd update %s --status in_progress", rec.IssueID),
+			IsReady:   isReady,
+		}
+
+		// If not ready, try to determine blockers
+		if !isReady {
+			blockers := getBlockersForIssue(rec.IssueID)
+			action.BlockedBy = blockers
+		}
+
+		actions = append(actions, action)
+	}
+
+	return actions, warnings
+}
+
+// getReadyIssueIDs returns a set of issue IDs that are ready (unblocked)
+func getReadyIssueIDs() map[string]bool {
+	ready := make(map[string]bool)
+
+	// Try to run bd ready --json to get ready issues
+	cmd := exec.Command("bd", "ready", "--json")
+	output, err := cmd.Output()
+	if err != nil {
+		return ready
+	}
+
+	// Parse JSON array of issues
+	var issues []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &issues); err != nil {
+		return ready
+	}
+
+	for _, issue := range issues {
+		ready[issue.ID] = true
+	}
+
+	return ready
+}
+
+// getBlockersForIssue returns the IDs of issues blocking the given issue
+func getBlockersForIssue(issueID string) []string {
+	var blockers []string
+
+	// Try to run bd show <id> --json to get dependencies
+	cmd := exec.Command("bd", "show", issueID, "--json")
+	output, err := cmd.Output()
+	if err != nil {
+		return blockers
+	}
+
+	// Parse JSON - bd show returns an array with one element
+	var issues []struct {
+		Dependencies []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"dependencies"`
+	}
+	if err := json.Unmarshal(output, &issues); err != nil {
+		return blockers
+	}
+
+	if len(issues) > 0 {
+		for _, dep := range issues[0].Dependencies {
+			// Only include non-closed dependencies as blockers
+			if dep.Status != "closed" {
+				blockers = append(blockers, dep.ID)
+			}
+		}
+	}
+
+	return blockers
 }
 
 func detectAgentType(title string) string {
