@@ -8,6 +8,17 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// maxContentWidth is the maximum width for tutorial content to maintain readability
+const maxContentWidth = 90
+
+// effectiveWidth returns the content width, constrained to maxContentWidth on wide screens
+func (m Model) effectiveWidth() int {
+	if m.width > maxContentWidth {
+		return maxContentWidth
+	}
+	return m.width
+}
+
 // renderSlide renders the current slide
 func (m Model) renderSlide() string {
 	state := m.slideStates[m.currentSlide]
@@ -36,10 +47,19 @@ func (m Model) renderSlide() string {
 		content = m.renderCompleteSlide(tick)
 	}
 
-	// Apply transition effect if transitioning
-	if m.transitioning {
-		progress := float64(m.transitionTick) / float64(transitionDuration(m.transitionType))
-		content = TransitionEffect(content, m.transitionType, progress, m.width, m.height)
+	// On wide screens, center the content within a constrained width
+	if m.width > maxContentWidth {
+		padding := (m.width - maxContentWidth) / 2
+		lines := strings.Split(content, "\n")
+		var centered strings.Builder
+		for i, line := range lines {
+			if i > 0 {
+				centered.WriteString("\n")
+			}
+			centered.WriteString(strings.Repeat(" ", padding))
+			centered.WriteString(line)
+		}
+		content = centered.String()
 	}
 
 	// Add navigation bar at bottom
@@ -60,15 +80,15 @@ func (m Model) renderWelcomeSlide(tick int) string {
 	b.WriteString(strings.Repeat("\n", topPad))
 
 	// Animated logo
-	logo := RenderAnimatedLogo(tick, m.width)
+	logo := RenderAnimatedLogo(tick, m.effectiveWidth())
 	b.WriteString(logo)
 
 	// Sparkle effects around logo after reveal
 	if tick > 40 {
 		b.WriteString("\n\n")
-		sparkleText := "✨ Press SPACE or → to begin your journey ✨"
+		sparkleText := "Press SPACE or → to begin your journey"
 		sparkled := WaveText(sparkleText, tick, 1.0, []string{"#89b4fa", "#cba6f7", "#f5c2e7"})
-		b.WriteString(centerTextWidth(sparkled, m.width))
+		b.WriteString(centerTextWidth(sparkled, m.effectiveWidth()))
 	}
 
 	return b.String()
@@ -79,21 +99,21 @@ func (m Model) renderProblemSlide(tick int) string {
 	var b strings.Builder
 
 	// Title with dramatic reveal
-	title := "😵 The Problem"
+	title := "The Problem"
 	if tick > 0 {
 		titleStyled := styles.GradientText(title, "#f38ba8", "#fab387")
 		b.WriteString("\n")
-		b.WriteString(centerTextWidth(titleStyled, m.width))
+		b.WriteString(centerTextWidth(titleStyled, m.effectiveWidth()))
 		b.WriteString("\n\n")
 	}
 
 	// Problem descriptions with staggered reveal
 	problems := []string{
-		"🪟  Window chaos — each agent needs its own terminal",
-		"🔀  Context switching — jumping between windows breaks flow",
-		"📋  No orchestration — manual copy-paste to multiple agents",
-		"💨  Session fragility — disconnect and lose everything",
-		"🐌  Setup friction — manual creation for every project",
+		"- Window chaos — each agent needs its own terminal",
+		"- Context switching — jumping between windows breaks flow",
+		"- No orchestration — manual copy-paste to multiple agents",
+		"- Session fragility — disconnect and lose everything",
+		"- Setup friction — manual creation for every project",
 	}
 
 	if tick > 10 {
@@ -115,7 +135,7 @@ func (m Model) renderProblemSlide(tick int) string {
 	// Chaos diagram
 	if tick > 60 {
 		b.WriteString("\n")
-		chaos := RenderAnimatedChaosDiagram(tick-60, m.width)
+		chaos := RenderAnimatedChaosDiagram(tick-60, m.effectiveWidth())
 		b.WriteString(chaos)
 	}
 
@@ -123,7 +143,7 @@ func (m Model) renderProblemSlide(tick int) string {
 	if tick > 80 {
 		b.WriteString("\n\n")
 		warning := PulseText("This is not sustainable...", tick, "#f38ba8")
-		b.WriteString(centerTextWidth(warning, m.width))
+		b.WriteString(centerTextWidth(warning, m.effectiveWidth()))
 	}
 
 	return b.String()
@@ -134,22 +154,22 @@ func (m Model) renderSolutionSlide(tick int) string {
 	var b strings.Builder
 
 	// Title with triumphant reveal
-	title := "✨ The Solution"
+	title := "The Solution"
 	if tick > 0 {
 		titleStyled := styles.Shimmer(title, tick, "#a6e3a1", "#94e2d5", "#89dceb")
 		b.WriteString("\n")
-		b.WriteString(centerTextWidth(titleStyled, m.width))
+		b.WriteString(centerTextWidth(titleStyled, m.effectiveWidth()))
 		b.WriteString("\n\n")
 	}
 
 	// Solution points with staggered reveal
 	solutions := []string{
-		"📦  One session, many agents — all agents in organized tmux panes",
-		"🏷️   Named panes — easy identification (myproject__cc_1)",
-		"📡  Broadcast prompts — send to all agents with one command",
-		"💾  Persistent sessions — detach/reattach without losing state",
-		"🚀  Quick setup — create project + agents in seconds",
-		"🎨  Beautiful TUI — Catppuccin-themed command palette",
+		"- One session, many agents — all agents in organized tmux panes",
+		"- Named panes — easy identification (myproject__cc_1)",
+		"- Broadcast prompts — send to all agents with one command",
+		"- Persistent sessions — detach/reattach without losing state",
+		"- Quick setup — create project + agents in seconds",
+		"- Beautiful TUI — Catppuccin-themed command palette",
 	}
 
 	if tick > 10 {
@@ -172,7 +192,7 @@ func (m Model) renderSolutionSlide(tick int) string {
 	// Order diagram
 	if tick > 70 {
 		b.WriteString("\n")
-		order := RenderAnimatedOrderDiagram(tick-70, m.width)
+		order := RenderAnimatedOrderDiagram(tick-70, m.effectiveWidth())
 		b.WriteString(order)
 	}
 
@@ -180,7 +200,7 @@ func (m Model) renderSolutionSlide(tick int) string {
 	if tick > 100 {
 		b.WriteString("\n\n")
 		success := styles.Shimmer("Welcome to your multi-agent command center!", tick, "#a6e3a1", "#89b4fa", "#cba6f7")
-		b.WriteString(centerTextWidth(success, m.width))
+		b.WriteString(centerTextWidth(success, m.effectiveWidth()))
 	}
 
 	return b.String()
@@ -191,23 +211,23 @@ func (m Model) renderConceptsSlide(tick int) string {
 	var b strings.Builder
 
 	// Title
-	title := "📚 Core Concepts"
+	title := "Core Concepts"
 	titleStyled := styles.Shimmer(title, tick, "#89b4fa", "#b4befe", "#cba6f7")
 	b.WriteString("\n")
-	b.WriteString(centerTextWidth(titleStyled, m.width))
+	b.WriteString(centerTextWidth(titleStyled, m.effectiveWidth()))
 	b.WriteString("\n\n")
 
 	// Three concepts to explain
 	concepts := []struct {
-		icon    string
-		name    string
-		desc    string
-		color   string
-		delay   int
+		icon  string
+		name  string
+		desc  string
+		color string
+		delay int
 	}{
-		{"📦", "SESSION", "A tmux container for all your work", "#89b4fa", 0},
-		{"🤖", "AGENTS", "AI assistants (Claude, Codex, Gemini)", "#cba6f7", 25},
-		{"🔲", "PANES", "Individual terminals within a session", "#a6e3a1", 50},
+		{"[]", "SESSION", "A tmux container for all your work", "#89b4fa", 0},
+		{"AI", "AGENTS", "AI assistants (Claude, Codex, Gemini)", "#cba6f7", 25},
+		{"|>", "PANES", "Individual terminals within a session", "#a6e3a1", 50},
 	}
 
 	// Render concept cards
@@ -238,13 +258,13 @@ func (m Model) renderConceptsSlide(tick int) string {
 	// Session diagram
 	if tick > 90 {
 		diagramStep := (tick - 90) / 30
-		diagram := RenderSessionDiagram(tick-90, diagramStep, m.width)
+		diagram := RenderSessionDiagram(tick-90, diagramStep, m.effectiveWidth())
 		b.WriteString(diagram)
 	}
 
 	// Agents explanation
 	if tick > 150 {
-		agents := RenderAgentsDiagram(tick-150, m.width)
+		agents := RenderAgentsDiagram(tick-150, m.effectiveWidth())
 		b.WriteString("\n")
 		b.WriteString(agents)
 	}
@@ -257,10 +277,10 @@ func (m Model) renderQuickStartSlide(tick int) string {
 	var b strings.Builder
 
 	// Title
-	title := "🚀 Quick Start"
+	title := "Quick Start"
 	titleStyled := styles.Shimmer(title, tick, "#a6e3a1", "#94e2d5", "#89dceb")
 	b.WriteString("\n")
-	b.WriteString(centerTextWidth(titleStyled, m.width))
+	b.WriteString(centerTextWidth(titleStyled, m.effectiveWidth()))
 	b.WriteString("\n\n")
 
 	// Step 1: Create project
@@ -298,15 +318,15 @@ func (m Model) renderQuickStartSlide(tick int) string {
 
 	// Command flow diagram
 	if tick > 130 {
-		flow := RenderCommandFlowDiagram(tick-130, 0, m.width)
+		flow := RenderCommandFlowDiagram(tick-130, 0, m.effectiveWidth())
 		b.WriteString(flow)
 	}
 
 	// Success message
 	if tick > 170 {
-		success := styles.Shimmer("🎉 That's it! You're orchestrating AI agents!", tick, "#a6e3a1", "#f9e2af", "#f5c2e7")
+		success := styles.Shimmer("That's it! You're orchestrating AI agents!", tick, "#a6e3a1", "#f9e2af", "#f5c2e7")
 		b.WriteString("\n")
-		b.WriteString(centerTextWidth(success, m.width))
+		b.WriteString(centerTextWidth(success, m.effectiveWidth()))
 	}
 
 	return b.String()
@@ -317,10 +337,10 @@ func (m Model) renderCommandsSlide(tick int) string {
 	var b strings.Builder
 
 	// Title
-	title := "📖 Command Reference"
+	title := "Command Reference"
 	titleStyled := styles.Shimmer(title, tick, "#89b4fa", "#b4befe", "#cba6f7")
 	b.WriteString("\n")
-	b.WriteString(centerTextWidth(titleStyled, m.width))
+	b.WriteString(centerTextWidth(titleStyled, m.effectiveWidth()))
 	b.WriteString("\n\n")
 
 	// Command categories
@@ -402,7 +422,7 @@ func (m Model) renderCommandsSlide(tick int) string {
 
 	// Tip
 	if tick > 120 {
-		tip := styles.GradientText("  💡 Use `ntm --help` for full command details", "#6c7086", "#45475a")
+		tip := styles.GradientText("  Tip: Use `ntm --help` for full command details", "#6c7086", "#45475a")
 		b.WriteString("\n" + tip)
 	}
 
@@ -414,10 +434,10 @@ func (m Model) renderWorkflowsSlide(tick int) string {
 	var b strings.Builder
 
 	// Title
-	title := "🔄 Multi-Agent Workflows"
+	title := "Multi-Agent Workflows"
 	titleStyled := styles.Shimmer(title, tick, "#89b4fa", "#cba6f7", "#f5c2e7")
 	b.WriteString("\n")
-	b.WriteString(centerTextWidth(titleStyled, m.width))
+	b.WriteString(centerTextWidth(titleStyled, m.effectiveWidth()))
 	b.WriteString("\n\n")
 
 	// Workflow strategies
@@ -427,10 +447,10 @@ func (m Model) renderWorkflowsSlide(tick int) string {
 		desc  string
 		color string
 	}{
-		{"Divide & Conquer", "⚔️", "Claude designs, Codex implements, Gemini tests", "#89b4fa"},
-		{"Competitive", "🏁", "Same task to all agents, compare results", "#a6e3a1"},
-		{"Specialist Teams", "👥", "Assign roles: architect, coder, reviewer", "#cba6f7"},
-		{"Review Pipeline", "🔍", "Agent 1 codes, Agent 2 reviews, Agent 3 tests", "#f9e2af"},
+		{"Divide & Conquer", "*", "Claude designs, Codex implements, Gemini tests", "#89b4fa"},
+		{"Competitive", "*", "Same task to all agents, compare results", "#a6e3a1"},
+		{"Specialist Teams", "*", "Assign roles: architect, coder, reviewer", "#cba6f7"},
+		{"Review Pipeline", "*", "Agent 1 codes, Agent 2 reviews, Agent 3 tests", "#f9e2af"},
 	}
 
 	for i, wf := range workflows {
@@ -453,7 +473,7 @@ func (m Model) renderWorkflowsSlide(tick int) string {
 	// Animated workflow diagram
 	if tick > 100 {
 		activeStep := (tick - 100) / 40 % 4
-		diagram := RenderWorkflowDiagram(tick-100, activeStep, m.width)
+		diagram := RenderWorkflowDiagram(tick-100, activeStep, m.effectiveWidth())
 		b.WriteString(diagram)
 	}
 
@@ -465,25 +485,25 @@ func (m Model) renderTipsSlide(tick int) string {
 	var b strings.Builder
 
 	// Title
-	title := "💡 Pro Tips"
+	title := "Pro Tips"
 	titleStyled := styles.Shimmer(title, tick, "#f9e2af", "#fab387", "#f5c2e7")
 	b.WriteString("\n")
-	b.WriteString(centerTextWidth(titleStyled, m.width))
+	b.WriteString(centerTextWidth(titleStyled, m.effectiveWidth()))
 	b.WriteString("\n\n")
 
 	// Tips with staggered reveal
 	tips := []struct {
-		icon string
-		tip  string
+		icon   string
+		tip    string
 		detail string
-		color string
+		color  string
 	}{
-		{"🎯", "Start Small", "Begin with 1-2 agents, scale with `ntm add`", "#89b4fa"},
-		{"⌨️", "Use Aliases", "Type `bp` instead of `ntm send` for speed", "#cba6f7"},
-		{"🎨", "F6 Palette", "Press F6 in tmux for instant command palette", "#f5c2e7"},
-		{"💾", "Save Often", "`ntm save myproject -o ~/logs` preserves outputs", "#a6e3a1"},
-		{"🔄", "Tmux Keys", "Ctrl+B, D to detach • Ctrl+B, [ to scroll", "#f9e2af"},
-		{"⚡", "Interrupt Fast", "`ntm interrupt myproject` stops all agents", "#f38ba8"},
+		{"*", "Start Small", "Begin with 1-2 agents, scale with `ntm add`", "#89b4fa"},
+		{"*", "Use Aliases", "Type `bp` instead of `ntm send` for speed", "#cba6f7"},
+		{"*", "F6 Palette", "Press F6 in tmux for instant command palette", "#f5c2e7"},
+		{"*", "Save Often", "`ntm save myproject -o ~/logs` preserves outputs", "#a6e3a1"},
+		{"*", "Tmux Keys", "Ctrl+B, D to detach • Ctrl+B, [ to scroll", "#f9e2af"},
+		{"*", "Interrupt Fast", "`ntm interrupt myproject` stops all agents", "#f38ba8"},
 	}
 
 	for i, t := range tips {
@@ -523,7 +543,7 @@ func (m Model) renderCompleteSlide(tick int) string {
 
 	// Celebration banner
 	if tick > 0 {
-		celebration := RenderCelebration(tick, m.width)
+		celebration := RenderCelebration(tick, m.effectiveWidth())
 		b.WriteString(celebration)
 	}
 
@@ -532,14 +552,14 @@ func (m Model) renderCompleteSlide(tick int) string {
 		msg := "You've completed the NTM tutorial!"
 		msgStyled := styles.Shimmer(msg, tick, "#a6e3a1", "#89dceb", "#89b4fa")
 		b.WriteString("\n")
-		b.WriteString(centerTextWidth(msgStyled, m.width))
+		b.WriteString(centerTextWidth(msgStyled, m.effectiveWidth()))
 	}
 
 	// Next steps
 	if tick > 40 {
 		b.WriteString("\n\n")
-		nextTitle := styles.GradientText("  🚀 Next Steps", "#89b4fa", "#74c7ec")
-		b.WriteString(centerTextWidth(nextTitle, m.width) + "\n\n")
+		nextTitle := styles.GradientText("  Next Steps", "#89b4fa", "#74c7ec")
+		b.WriteString(centerTextWidth(nextTitle, m.effectiveWidth()) + "\n\n")
 
 		steps := []string{
 			"1. Run `ntm deps -v` to verify your setup",
@@ -560,15 +580,15 @@ func (m Model) renderCompleteSlide(tick int) string {
 	// Resources
 	if tick > 100 {
 		b.WriteString("\n")
-		resources := styles.GradientText("  📚 Need help? Run `ntm --help` or visit the docs", "#6c7086", "#45475a")
-		b.WriteString(centerTextWidth(resources, m.width))
+		resources := styles.GradientText("  Need help? Run `ntm --help` or visit the docs", "#6c7086", "#45475a")
+		b.WriteString(centerTextWidth(resources, m.effectiveWidth()))
 	}
 
 	// Exit hint
 	if tick > 120 {
 		b.WriteString("\n\n")
 		exit := PulseText("Press SPACE or q to exit and start building!", tick, "#a6e3a1")
-		b.WriteString(centerTextWidth(exit, m.width))
+		b.WriteString(centerTextWidth(exit, m.effectiveWidth()))
 	}
 
 	return b.String()

@@ -312,16 +312,19 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) goToSlide(slide SlideID, transition TransitionType) {
-	if m.skipAnimations {
-		m.currentSlide = slide
-		return
+func (m *Model) goToSlide(slide SlideID, _ TransitionType) {
+	// Always do instant transitions - slide effects look janky
+	m.currentSlide = slide
+	// Reset slide state for fresh animations
+	if state, ok := m.slideStates[slide]; ok {
+		state.localTick = 0
+		state.typingIndex = 0
+		state.typingDone = false
+		state.revealIndex = 0
+		state.revealDone = false
+		state.diagramStep = 0
+		state.diagramDone = false
 	}
-
-	m.transitioning = true
-	m.transitionType = transition
-	m.transitionTick = 0
-	m.nextSlide = slide
 }
 
 func (m *Model) updateTyping() {

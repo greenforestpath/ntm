@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
+	"github.com/mattn/go-runewidth"
 )
 
 // ParticleType defines different particle effects
@@ -589,8 +590,9 @@ func abs(x int) int {
 }
 
 func visibleLength(s string) int {
+	// Strip ANSI escape codes first
+	var stripped strings.Builder
 	inEscape := false
-	count := 0
 	for _, r := range s {
 		if r == '\x1b' {
 			inEscape = true
@@ -602,8 +604,9 @@ func visibleLength(s string) int {
 			}
 			continue
 		}
-		count++
+		stripped.WriteRune(r)
 	}
-	return count
+	// Use runewidth for proper emoji/wide character width calculation
+	return runewidth.StringWidth(stripped.String())
 }
 
