@@ -138,9 +138,9 @@ Examples:
 	}
 
 	// Use custom flag values that accumulate specs with type info
-	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeClaude, &agentSpecs), "cc", "Claude agents (N or N:model)")
-	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeCodex, &agentSpecs), "cod", "Codex agents (N or N:model)")
-	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeGemini, &agentSpecs), "gmi", "Gemini agents (N or N:model)")
+	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeClaude, &agentSpecs), "cc", "Claude agents (N or N:model, model charset: a-zA-Z0-9._/@:+-)")
+	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeCodex, &agentSpecs), "cod", "Codex agents (N or N:model, model charset: a-zA-Z0-9._/@:+-)")
+	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeGemini, &agentSpecs), "gmi", "Gemini agents (N or N:model, model charset: a-zA-Z0-9._/@:+-)")
 	cmd.Flags().Var(&personaSpecs, "persona", "Persona-defined agents (name or name:count)")
 	cmd.Flags().BoolVar(&noUserPane, "no-user", false, "don't reserve a pane for the user")
 	cmd.Flags().StringVarP(&recipeName, "recipe", "r", "", "use a recipe for agent configuration")
@@ -376,7 +376,16 @@ func runSpawnAgentsWithRestart(session string, agents []FlatAgent, ccCount, codC
 			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))
 		}
 
-		cmd := fmt.Sprintf("cd %q && %s", dir, agentCmd)
+		safeAgentCmd, err := tmux.SanitizePaneCommand(agentCmd)
+		if err != nil {
+			return outputError(fmt.Errorf("invalid %s agent command: %w", agent.Type, err))
+		}
+
+		cmd, err := tmux.BuildPaneCommand(dir, safeAgentCmd)
+		if err != nil {
+			return outputError(fmt.Errorf("building %s agent command: %w", agent.Type, err))
+		}
+
 		if err := tmux.SendKeys(pane.ID, cmd, true); err != nil {
 			return outputError(fmt.Errorf("launching %s agent: %w", agent.Type, err))
 		}
@@ -387,7 +396,7 @@ func runSpawnAgentsWithRestart(session string, agents []FlatAgent, ccCount, codC
 			paneIndex: pane.Index,
 			agentType: string(agent.Type),
 			model:     agent.Model,
-			command:   agentCmd,
+			command:   safeAgentCmd,
 		})
 
 		agentNum++

@@ -321,6 +321,31 @@ func SendInterrupt(target string) error {
 	return runSilent("send-keys", "-t", target, "C-c")
 }
 
+// SanitizePaneCommand rejects control characters that could inject unintended
+// key sequences (e.g., newlines, carriage returns, escapes) when sending
+// commands into tmux panes.
+func SanitizePaneCommand(cmd string) (string, error) {
+	for _, r := range cmd {
+		switch {
+		case r == '\n', r == '\r', r == 0:
+			return "", fmt.Errorf("command contains disallowed control characters")
+		case r < 0x20 && r != ' ' && r != '\t':
+			return "", fmt.Errorf("command contains disallowed control character 0x%02x", r)
+		}
+	}
+	return cmd, nil
+}
+
+// BuildPaneCommand constructs a safe cd+command string for execution inside a
+// tmux pane, rejecting commands with unsafe control characters.
+func BuildPaneCommand(projectDir, agentCommand string) (string, error) {
+	safeCommand, err := SanitizePaneCommand(agentCommand)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("cd %q && %s", projectDir, safeCommand), nil
+}
+
 // AttachOrSwitch attaches to a session or switches if already in tmux
 func AttachOrSwitch(session string) error {
 	if InTmux() {

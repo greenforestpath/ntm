@@ -43,7 +43,7 @@ func TestValidateSessionName(t *testing.T) {
 		{"my-project", false},
 		{"my_project", false},
 		{"MyProject123", false},
-		{"", true},          // empty
+		{"", true},           // empty
 		{"my.project", true}, // contains .
 		{"my:project", true}, // contains :
 	}
@@ -110,6 +110,30 @@ func TestIsInstalled(t *testing.T) {
 	// This checks if tmux is installed on the system
 	// Just verify the function doesn't panic
 	_ = IsInstalled()
+}
+
+func TestSanitizePaneCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"simple command", "claude --model opus", false},
+		{"tabs allowed", "codex\t--dangerously-bypass-approvals-and-sandbox", false},
+		{"newline rejected", "echo hi\necho bye", true},
+		{"carriage return rejected", "echo hi\recho bye", true},
+		{"escape rejected", "echo \x1b[31mred\x1b[0m", true},
+		{"null byte rejected", "echo hi\x00", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := SanitizePaneCommand(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("SanitizePaneCommand(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+		})
+	}
 }
 
 // ============== Session Management Tests ==============

@@ -280,8 +280,13 @@ func (m *Monitor) restartAgent(agent *AgentState) {
 	m.mu.Unlock()
 
 	// Re-run the agent command in the pane
-	cmd := fmt.Sprintf("cd %q && %s", m.projectDir, agentCommand)
-	if err := tmux.SendKeys(agent.PaneID, cmd, true); err != nil {
+	paneCmd, err := tmux.BuildPaneCommand(m.projectDir, agentCommand)
+	if err != nil {
+		log.Printf("[resilience] Refusing to restart agent %s: %v", agent.PaneID, err)
+		return
+	}
+
+	if err := tmux.SendKeys(agent.PaneID, paneCmd, true); err != nil {
 		log.Printf("[resilience] Failed to restart agent %s: %v", agent.PaneID, err)
 		return
 	}
