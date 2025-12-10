@@ -85,7 +85,8 @@ func LoadSessionAgent(sessionName, projectKey string) (*SessionAgentInfo, error)
 					return nil, nil
 				}
 			}
-			path = legacyPath
+			// Note: path variable is not used after this point - data was found either
+			// via legacyPath read or subdirectory search
 		} else {
 			return nil, fmt.Errorf("reading session agent: %w", err)
 		}

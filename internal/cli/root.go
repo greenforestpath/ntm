@@ -10,6 +10,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/spf13/cobra"
+	"runtime"
 )
 
 var (
@@ -282,14 +283,24 @@ func Execute() error {
 	return rootCmd.Execute()
 }
 
+// goVersion returns the current Go runtime version.
+func goVersion() string {
+	return runtime.Version()
+}
+
+// goPlatform returns the OS/ARCH string.
+func goPlatform() string {
+	return fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)
+}
+
 // Robot output flags for AI agent integration
 var (
-	robotHelp     bool
-	robotStatus   bool
-	robotVersion  bool
-	robotPlan     bool
-	robotSnapshot bool   // unified state query
-	robotSince    string // ISO8601 timestamp for delta snapshot
+	robotHelp      bool
+	robotStatus    bool
+	robotVersion   bool
+	robotPlan      bool
+	robotSnapshot  bool   // unified state query
+	robotSince     string // ISO8601 timestamp for delta snapshot
 	robotTail      string // session name for tail
 	robotLines     int    // number of lines to capture
 	robotPanes     string // comma-separated pane filter
@@ -484,15 +495,31 @@ func newVersionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if IsJSONOutput() {
+				response := output.VersionResponse{
+					TimestampedResponse: output.NewTimestamped(),
+					Version:             Version,
+					Commit:              Commit,
+					BuiltAt:             Date,
+					BuiltBy:             BuiltBy,
+					GoVersion:           goVersion(),
+					Platform:            goPlatform(),
+				}
+				return output.PrintJSON(response)
+			}
+
 			if short {
 				fmt.Println(Version)
-				return
+				return nil
 			}
 			fmt.Printf("ntm version %s\n", Version)
-			fmt.Printf("  commit:  %s\n", Commit)
-			fmt.Printf("  built:   %s\n", Date)
-			fmt.Printf("  builder: %s\n", BuiltBy)
+			fmt.Printf("  commit:    %s\n", Commit)
+			fmt.Printf("  built:     %s\n", Date)
+			fmt.Printf("  builder:   %s\n", BuiltBy)
+			fmt.Printf("  go:        %s\n", goVersion())
+			fmt.Printf("  platform:  %s\n", goPlatform())
+			return nil
 		},
 	}
 	cmd.Flags().BoolVarP(&short, "short", "s", false, "Print only version number")
@@ -557,4 +584,3 @@ func GetOutputFormat() output.Format {
 func GetFormatter() *output.Formatter {
 	return output.New(output.WithJSON(jsonOutput))
 }
-

@@ -98,12 +98,20 @@ func DefaultAlertsConfig() AlertsConfig {
 
 // ResilienceConfig holds configuration for agent auto-restart and recovery
 type ResilienceConfig struct {
-	AutoRestart         bool `toml:"auto_restart"`           // Enable automatic agent restart on crash
-	MaxRestarts         int  `toml:"max_restarts"`           // Max restarts per agent before giving up
-	RestartDelaySeconds int  `toml:"restart_delay_seconds"`  // Seconds to wait before restarting
-	HealthCheckSeconds  int  `toml:"health_check_seconds"`   // Seconds between health checks
-	NotifyOnCrash       bool `toml:"notify_on_crash"`        // Send notification when agent crashes
-	NotifyOnMaxRestarts bool `toml:"notify_on_max_restarts"` // Notify when max restarts exceeded
+	AutoRestart         bool            `toml:"auto_restart"`           // Enable automatic agent restart on crash
+	MaxRestarts         int             `toml:"max_restarts"`           // Max restarts per agent before giving up
+	RestartDelaySeconds int             `toml:"restart_delay_seconds"`  // Seconds to wait before restarting
+	HealthCheckSeconds  int             `toml:"health_check_seconds"`   // Seconds between health checks
+	NotifyOnCrash       bool            `toml:"notify_on_crash"`        // Send notification when agent crashes
+	NotifyOnMaxRestarts bool            `toml:"notify_on_max_restarts"` // Notify when max restarts exceeded
+	RateLimit           RateLimitConfig `toml:"rate_limit"`             // Rate limit detection configuration
+}
+
+// RateLimitConfig holds configuration for rate limit detection
+type RateLimitConfig struct {
+	Detect   bool     `toml:"detect"`   // Enable rate limit detection
+	Notify   bool     `toml:"notify"`   // Send notification on rate limit
+	Patterns []string `toml:"patterns"` // Custom patterns to detect (in addition to defaults)
 }
 
 // DefaultResilienceConfig returns sensible resilience defaults
@@ -115,6 +123,11 @@ func DefaultResilienceConfig() ResilienceConfig {
 		HealthCheckSeconds:  10,    // Check health every 10 seconds
 		NotifyOnCrash:       true,  // Notify on crash by default
 		NotifyOnMaxRestarts: true,  // Notify when max restarts exceeded
+		RateLimit: RateLimitConfig{
+			Detect:   true,  // Detect rate limits by default
+			Notify:   true,  // Notify on rate limit by default
+			Patterns: nil,   // Use default patterns (rate limit, 429, too many requests, quota exceeded)
+		},
 	}
 }
 
@@ -854,6 +867,22 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "health_check_seconds = %d   # Seconds between health checks\n", cfg.Resilience.HealthCheckSeconds)
 	fmt.Fprintf(w, "notify_on_crash = %t       # Send notification when agent crashes\n", cfg.Resilience.NotifyOnCrash)
 	fmt.Fprintf(w, "notify_on_max_restarts = %t # Notify when max restarts exceeded\n", cfg.Resilience.NotifyOnMaxRestarts)
+	fmt.Fprintln(w)
+
+	// Write rate limit sub-configuration
+	fmt.Fprintln(w, "[resilience.rate_limit]")
+	fmt.Fprintln(w, "# Rate limit detection configuration")
+	fmt.Fprintf(w, "detect = %t   # Enable rate limit detection\n", cfg.Resilience.RateLimit.Detect)
+	fmt.Fprintf(w, "notify = %t   # Send notification on rate limit\n", cfg.Resilience.RateLimit.Notify)
+	if len(cfg.Resilience.RateLimit.Patterns) > 0 {
+		patternItems := make([]string, 0, len(cfg.Resilience.RateLimit.Patterns))
+		for _, p := range cfg.Resilience.RateLimit.Patterns {
+			patternItems = append(patternItems, fmt.Sprintf("%q", p))
+		}
+		fmt.Fprintf(w, "patterns = [%s]  # Custom patterns (in addition to defaults)\n", strings.Join(patternItems, ", "))
+	} else {
+		fmt.Fprintln(w, "# patterns = [\"custom pattern\"]  # Custom patterns (in addition to defaults)")
+	}
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "# Command Palette entries")

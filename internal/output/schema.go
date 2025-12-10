@@ -160,3 +160,14 @@ type DependencyCheck struct {
 	Version   string `json:"version,omitempty"`
 	Path      string `json:"path,omitempty"`
 }
+
+// VersionResponse is the output format for version command
+type VersionResponse struct {
+	TimestampedResponse
+	Version   string `json:"version"`
+	Commit    string `json:"commit,omitempty"`
+	BuiltAt   string `json:"built_at,omitempty"`
+	BuiltBy   string `json:"built_by,omitempty"`
+	GoVersion string `json:"go_version"`
+	Platform  string `json:"platform"`
+}

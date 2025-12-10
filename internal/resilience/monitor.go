@@ -16,14 +16,17 @@ import (
 
 // AgentState tracks the state of an individual agent for restart purposes
 type AgentState struct {
-	PaneID       string
-	PaneIndex    int
-	AgentType    string // cc, cod, gmi
-	Model        string // Model variant (opus, sonnet, etc.)
-	Command      string // Original launch command
-	RestartCount int
-	LastCrash    time.Time
-	Healthy      bool
+	PaneID            string
+	PaneIndex         int
+	AgentType         string // cc, cod, gmi
+	Model             string // Model variant (opus, sonnet, etc.)
+	Command           string // Original launch command
+	RestartCount      int
+	LastCrash         time.Time
+	Healthy           bool
+	RateLimited       bool      // Currently rate limited
+	LastRateLimitTime time.Time // When rate limit was last detected
+	WaitSeconds       int       // Suggested wait time from rate limit message
 }
 
 // Monitor watches agent health and handles auto-restart
@@ -78,11 +81,14 @@ func (m *Monitor) Start(ctx context.Context) {
 	go m.monitorLoop(ctx)
 }
 
-// Stop stops the monitor gracefully
+// Stop stops the monitor gracefully.
+// Safe to call even if Start() was never called.
 func (m *Monitor) Stop() {
-	if m.cancel != nil {
-		m.cancel()
+	if m.cancel == nil {
+		// Start() was never called, nothing to stop
+		return
 	}
+	m.cancel()
 	<-m.done
 }
 
@@ -162,6 +168,19 @@ func (m *Monitor) checkHealth() {
 			continue
 		}
 
+		// Check for rate limit (separate from crash handling)
+		if m.cfg.Resilience.RateLimit.Detect && agentHealth.RateLimited {
+			// Only notify if this is a new rate limit event (not already rate limited)
+			if !agentState.RateLimited {
+				m.handleRateLimit(agentState, agentHealth.WaitSeconds)
+			}
+		} else if agentState.RateLimited {
+			// Rate limit cleared
+			agentState.RateLimited = false
+			agentState.WaitSeconds = 0
+			log.Printf("[resilience] Agent %s rate limit cleared", agentState.PaneID)
+		}
+
 		// Check for error status or process exit
 		if agentHealth.Status == health.StatusError ||
 			agentHealth.ProcessStatus == health.ProcessExited {
@@ -176,6 +195,24 @@ func (m *Monitor) checkHealth() {
 		} else {
 			// Agent is healthy again
 			agentState.Healthy = true
+		}
+	}
+}
+
+// handleRateLimit processes a detected rate limit event
+func (m *Monitor) handleRateLimit(agent *AgentState, waitSeconds int) {
+	agent.RateLimited = true
+	agent.LastRateLimitTime = time.Now()
+	agent.WaitSeconds = waitSeconds
+
+	log.Printf("[resilience] Agent %s (pane %d, type %s) hit rate limit (wait %ds)",
+		agent.PaneID, agent.PaneIndex, agent.AgentType, waitSeconds)
+
+	// Send rate limit notification if enabled
+	if m.cfg.Resilience.RateLimit.Notify && m.notifier != nil {
+		event := notify.NewRateLimitEvent(m.session, agent.PaneID, agent.AgentType, waitSeconds)
+		if err := m.notifier.Notify(event); err != nil {
+			log.Printf("[resilience] notification error: %v", err)
 		}
 	}
 }
