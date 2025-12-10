@@ -273,6 +273,13 @@ Shell Integration:
 			}
 			return
 		}
+		if robotTerse {
+			if err := robot.PrintTerse(cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 
 		// Show stunning help with gradients when run without subcommand
 		PrintStunningHelp()
@@ -349,6 +356,9 @@ var (
 	robotInterruptForce   bool   // send Ctrl+C even if agent appears idle
 	robotInterruptNoWait  bool   // don't wait for ready state
 	robotInterruptTimeout int    // timeout for ready state in milliseconds
+
+	// Robot-terse flag for ultra-compact output
+	robotTerse bool // single-line encoded state
 )
 
 func init() {
@@ -416,6 +426,9 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotInterruptNoWait, "interrupt-no-wait", false, "Don't wait for ready state (used with --robot-interrupt)")
 	rootCmd.Flags().IntVar(&robotInterruptTimeout, "interrupt-timeout", 10000, "Timeout in ms for ready state (used with --robot-interrupt)")
 
+	// Robot-terse flag for ultra-compact output
+	rootCmd.Flags().BoolVar(&robotTerse, "robot-terse", false, "Output ultra-compact single-line state (e.g., S:proj|A:2/3|R:10|B:5|I:2|M:3|!:1)")
+
 	// Sync version info with robot package
 	robot.Version = Version
 	robot.Commit = Commit
@@ -464,6 +477,7 @@ func init() {
 		newHooksCmd(),
 		newHealthCmd(),
 		newHistoryCmd(),
+		newAnalyticsCmd(),
 
 		// Shell integration
 		newInitCmd(),

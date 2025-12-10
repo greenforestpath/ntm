@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -986,7 +987,7 @@ func TestSnapshotOutputStructure(t *testing.T) {
 				},
 			},
 		},
-		BeadsSummary: &BeadsSummary{Open: 5, InProgress: 2, Blocked: 1, Ready: 2},
+		BeadsSummary: &bv.BeadsSummary{Open: 5, InProgress: 2, Blocked: 1, Ready: 2},
 		MailUnread:   3,
 		Alerts:       []string{"agent stuck"},
 	}
@@ -1173,7 +1174,7 @@ func TestStatusSummaryMarshal(t *testing.T) {
 }
 
 func TestBeadsSummaryMarshal(t *testing.T) {
-	summary := BeadsSummary{
+	summary := bv.BeadsSummary{
 		Open:       10,
 		InProgress: 3,
 		Blocked:    2,
@@ -1185,7 +1186,7 @@ func TestBeadsSummaryMarshal(t *testing.T) {
 		t.Fatalf("Marshal failed: %v", err)
 	}
 
-	var result BeadsSummary
+	var result bv.BeadsSummary
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
@@ -1430,7 +1431,7 @@ func TestStatusOutputWithGraphMetrics(t *testing.T) {
 			TotalSessions: 1,
 			TotalAgents:   3,
 		},
-		Beads: &BeadsSummary{
+		Beads: &bv.BeadsSummary{
 			Open:       10,
 			InProgress: 2,
 			Blocked:    5,
