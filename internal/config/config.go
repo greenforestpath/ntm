@@ -47,6 +47,7 @@ type Config struct {
 	Checkpoints   CheckpointsConfig `toml:"checkpoints"`
 	Notifications notify.Config     `toml:"notifications"`
 	Resilience    ResilienceConfig  `toml:"resilience"`
+	Scanner       ScannerConfig     `toml:"scanner"` // UBS scanner configuration
 }
 
 // CheckpointsConfig holds configuration for automatic checkpoints
@@ -391,6 +392,7 @@ func Default() *Config {
 		Checkpoints:   DefaultCheckpointsConfig(),
 		Notifications: notify.DefaultConfig(),
 		Resilience:    DefaultResilienceConfig(),
+		Scanner:       DefaultScannerConfig(),
 	}
 
 	// Try to load palette from markdown file
@@ -626,6 +628,14 @@ func Load(path string) (*Config, error) {
 	if cfg.Resilience.MaxRestarts == 0 {
 		cfg.Resilience = DefaultResilienceConfig()
 	}
+
+	// Apply Scanner defaults
+	// If Timeout is empty, apply defaults (section likely missing)
+	if cfg.Scanner.Defaults.Timeout == "" {
+		cfg.Scanner = DefaultScannerConfig()
+	}
+	// Apply environment variable overrides for scanner
+	applyEnvOverrides(&cfg.Scanner)
 
 	// Try to load palette from markdown file
 	// This takes precedence over TOML [[palette]] entries
