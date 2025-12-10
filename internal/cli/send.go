@@ -417,7 +417,7 @@ func runSendInternal(session, prompt string, targets SendTargets, targetCC, targ
 	}
 
 	// Track results for JSON output
-	var targets []int
+	var targetPanes []int
 	delivered := 0
 	failed := 0
 
@@ -425,7 +425,7 @@ func runSendInternal(session, prompt string, targets SendTargets, targetCC, targ
 	if paneIndex >= 0 {
 		for _, p := range panes {
 			if p.Index == paneIndex {
-				targets = append(targets, paneIndex)
+				targetPanes = append(targetPanes, paneIndex)
 				if err := tmux.SendKeys(p.ID, prompt, true); err != nil {
 					failed++
 					if jsonOutput {
@@ -433,7 +433,7 @@ func runSendInternal(session, prompt string, targets SendTargets, targetCC, targ
 							Success:       false,
 							Session:       session,
 							PromptPreview: truncatePrompt(prompt, 50),
-							Targets:       targets,
+							Targets:       targetPanes,
 							Delivered:     delivered,
 							Failed:        failed,
 							Error:         err.Error(),
@@ -449,7 +449,7 @@ func runSendInternal(session, prompt string, targets SendTargets, targetCC, targ
 						Success:       true,
 						Session:       session,
 						PromptPreview: truncatePrompt(prompt, 50),
-						Targets:       targets,
+						Targets:       targetPanes,
 						Delivered:     delivered,
 						Failed:        failed,
 					}
@@ -464,6 +464,7 @@ func runSendInternal(session, prompt string, targets SendTargets, targetCC, targ
 
 	// Determine which panes to target
 	noFilter := !targetCC && !targetCod && !targetGmi && !targetAll
+	hasVariantFilter := len(targets) > 0
 	if noFilter {
 		// Default: send to all agent panes (skip user panes)
 		skipFirst = true
@@ -475,20 +476,28 @@ func runSendInternal(session, prompt string, targets SendTargets, targetCC, targ
 			continue
 		}
 
-		// Apply type filters
+		// Apply type and variant filters
 		if !targetAll && !noFilter {
-			match := false
-			if targetCC && p.Type == tmux.AgentClaude {
-				match = true
-			}
-			if targetCod && p.Type == tmux.AgentCodex {
-				match = true
-			}
-			if targetGmi && p.Type == tmux.AgentGemini {
-				match = true
-			}
-			if !match {
-				continue
+			// Use variant-aware matching if we have targets with potential variants
+			if hasVariantFilter {
+				if !targets.MatchesPane(p) {
+					continue
+				}
+			} else {
+				// Fallback to simple type matching (shouldn't happen with new flags)
+				match := false
+				if targetCC && p.Type == tmux.AgentClaude {
+					match = true
+				}
+				if targetCod && p.Type == tmux.AgentCodex {
+					match = true
+				}
+				if targetGmi && p.Type == tmux.AgentGemini {
+					match = true
+				}
+				if !match {
+					continue
+				}
 			}
 		} else if noFilter {
 			// Default mode: skip non-agent panes
@@ -497,7 +506,7 @@ func runSendInternal(session, prompt string, targets SendTargets, targetCC, targ
 			}
 		}
 
-		targets = append(targets, p.Index)
+		targetPanes = append(targetPanes, p.Index)
 		if err := tmux.SendKeys(p.ID, prompt, true); err != nil {
 			failed++
 			if !jsonOutput {
@@ -543,7 +552,7 @@ func runSendInternal(session, prompt string, targets SendTargets, targetCC, targ
 			Success:       failed == 0,
 			Session:       session,
 			PromptPreview: truncatePrompt(prompt, 50),
-			Targets:       targets,
+			Targets:       targetPanes,
 			Delivered:     delivered,
 			Failed:        failed,
 		}
