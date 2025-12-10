@@ -293,3 +293,86 @@ func TestReset(t *testing.T) {
 		t.Error("expected 0 spans after reset")
 	}
 }
+
+func TestWriteJSONIncludesRecommendations(t *testing.T) {
+	Reset()
+	Enable()
+	defer Disable()
+
+	// Create some spans to generate recommendations
+	span := Start("json-rec-test")
+	span.End()
+
+	var buf bytes.Buffer
+	if err := WriteJSON(&buf); err != nil {
+		t.Fatalf("WriteJSON failed: %v", err)
+	}
+
+	// Verify JSON contains recommendations field
+	var profile Profile
+	if err := json.Unmarshal(buf.Bytes(), &profile); err != nil {
+		t.Fatalf("invalid JSON output: %v", err)
+	}
+
+	// Should have at least the "performance looks good" recommendation
+	if len(profile.Recommendations) == 0 {
+		t.Error("expected recommendations in JSON output")
+	}
+
+	// Verify recommendation structure
+	rec := profile.Recommendations[0]
+	if rec.Category == "" {
+		t.Error("expected recommendation to have category")
+	}
+	if rec.Message == "" {
+		t.Error("expected recommendation to have message")
+	}
+	if rec.Suggestion == "" {
+		t.Error("expected recommendation to have suggestion")
+	}
+}
+
+func TestWriteTextIncludesRecommendations(t *testing.T) {
+	Reset()
+	Enable()
+	defer Disable()
+
+	s := StartWithPhase("text-rec-test", "startup")
+	s.End()
+
+	var buf bytes.Buffer
+	if err := WriteText(&buf); err != nil {
+		t.Fatalf("WriteText failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Recommendations:") {
+		t.Error("expected output to contain 'Recommendations:'")
+	}
+	// Should contain a suggestion (marked with →)
+	if !strings.Contains(output, "→") {
+		t.Error("expected output to contain recommendation suggestions")
+	}
+}
+
+func TestWriteTextRecommendationSeverityIcons(t *testing.T) {
+	Reset()
+	Enable()
+	defer Disable()
+
+	// Create slow spans to trigger warnings
+	span := StartWithPhase("very-slow-op", "startup")
+	time.Sleep(150 * time.Millisecond) // Slow enough to trigger warning (>100ms)
+	span.End()
+
+	var buf bytes.Buffer
+	if err := WriteText(&buf); err != nil {
+		t.Fatalf("WriteText failed: %v", err)
+	}
+
+	output := buf.String()
+	// Should contain warning icon for slow span
+	if !strings.Contains(output, "⚠") && !strings.Contains(output, "❌") {
+		t.Error("expected output to contain warning or critical icons for slow operation")
+	}
+}

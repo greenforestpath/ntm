@@ -170,11 +170,12 @@ func TotalDuration() time.Duration {
 
 // Profile is a timing summary for JSON output
 type Profile struct {
-	TotalDuration   time.Duration `json:"total_duration_ns"`
-	TotalDurationMs float64       `json:"total_duration_ms"`
-	SpanCount       int           `json:"span_count"`
-	Spans           []*SpanReport `json:"spans"`
-	Phases          []PhaseReport `json:"phases,omitempty"`
+	TotalDuration   time.Duration    `json:"total_duration_ns"`
+	TotalDurationMs float64          `json:"total_duration_ms"`
+	SpanCount       int              `json:"span_count"`
+	Spans           []*SpanReport    `json:"spans"`
+	Phases          []PhaseReport    `json:"phases,omitempty"`
+	Recommendations []Recommendation `json:"recommendations,omitempty"`
 }
 
 // SpanReport is a span formatted for output
@@ -250,6 +251,7 @@ func GetProfile() Profile {
 // WriteJSON writes the profile as JSON
 func WriteJSON(w io.Writer) error {
 	profile := GetProfile()
+	profile.Recommendations = GetRecommendations()
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(profile)
@@ -290,6 +292,24 @@ func WriteText(w io.Writer) error {
 			fmt.Fprintf(w, " [%s]", s.Phase)
 		}
 		fmt.Fprintln(w)
+	}
+
+	// Add recommendations section
+	recs := GetRecommendations()
+	if len(recs) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "Recommendations:\n")
+		for _, r := range recs {
+			severityIcon := "ℹ"
+			switch r.Severity {
+			case SeverityCritical:
+				severityIcon = "❌"
+			case SeverityWarning:
+				severityIcon = "⚠"
+			}
+			fmt.Fprintf(w, "  %s [%s] %s\n", severityIcon, r.Category, r.Message)
+			fmt.Fprintf(w, "     → %s\n", r.Suggestion)
+		}
 	}
 
 	return nil
