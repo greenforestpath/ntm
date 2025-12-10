@@ -15,11 +15,11 @@ import (
 
 func newHistoryCmd() *cobra.Command {
 	var (
-		limit     int
-		session   string
-		since     string
-		search    string
-		source    string
+		limit   int
+		session string
+		since   string
+		search  string
+		source  string
 	)
 
 	cmd := &cobra.Command{
@@ -76,7 +76,8 @@ func (r *HistoryListResult) Text(w io.Writer) error {
 	}
 
 	// Print header
-	fmt.Fprintf(w, " %s#%s  %sTIME%s        %sSESSION%s      %sTARGETS%s     %sPROMPT%s\n",
+	fmt.Fprintf(w, " %s#%s  %sTIME%s        %sSESSION%s      %sTARGETS%s     %sDUR%s   %sPROMPT%s\n",
+		colorize(t.Surface1), colorize(t.Text),
 		colorize(t.Surface1), colorize(t.Text),
 		colorize(t.Surface1), colorize(t.Text),
 		colorize(t.Surface1), colorize(t.Text),
@@ -95,10 +96,16 @@ func (r *HistoryListResult) Text(w io.Writer) error {
 		targetsStr := formatTargets(e.Targets)
 
 		// Truncate prompt
-		prompt := truncate(strings.TrimSpace(e.Prompt), 45)
+		prompt := truncate(strings.TrimSpace(e.Prompt), 38)
 
 		// Session name (truncate if needed)
 		sessionName := truncate(e.Session, 12)
+
+		// Duration
+		durStr := "--"
+		if e.DurationMs > 0 {
+			durStr = fmt.Sprintf("%4dms", e.DurationMs)
+		}
 
 		// Status indicator
 		statusIcon := ""
@@ -106,11 +113,12 @@ func (r *HistoryListResult) Text(w io.Writer) error {
 			statusIcon = " " + colorize(t.Red) + "✗" + colorize(t.Text)
 		}
 
-		fmt.Fprintf(w, " %s%2d%s  %s  %-12s %-11s %s%s\n",
+		fmt.Fprintf(w, " %s%2d%s  %s  %-12s %-11s %-6s %s%s\n",
 			colorize(t.Blue), num, colorize(t.Text),
 			timeStr,
 			sessionName,
 			targetsStr,
+			durStr,
 			prompt,
 			statusIcon)
 	}
