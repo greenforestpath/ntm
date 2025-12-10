@@ -9,6 +9,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tokens"
 	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
@@ -83,52 +84,60 @@ type PaneStatus struct {
 	LastCompaction *time.Time // When compaction was last detected
 	RecoverySent   bool       // Whether recovery prompt was sent
 	State          string     // "working", "idle", "error", "compacted"
+
+	// Context usage tracking
+	ContextTokens  int     // Estimated tokens used
+	ContextLimit   int     // Context limit for the model
+	ContextPercent float64 // Usage percentage (0-100+)
+	ContextModel   string  // Model name for context limit lookup
 }
 
 // KeyMap defines dashboard keybindings
 type KeyMap struct {
-	Up      key.Binding
-	Down    key.Binding
-	Left    key.Binding
-	Right   key.Binding
-	Zoom    key.Binding
-	Send    key.Binding
-	Refresh key.Binding
-	Pause   key.Binding
-	Quit    key.Binding
-	Num1    key.Binding
-	Num2    key.Binding
-	Num3    key.Binding
-	Num4    key.Binding
-	Num5    key.Binding
-	Num6    key.Binding
-	Num7    key.Binding
-	Num8    key.Binding
-	Num9    key.Binding
+	Up             key.Binding
+	Down           key.Binding
+	Left           key.Binding
+	Right          key.Binding
+	Zoom           key.Binding
+	Send           key.Binding
+	Refresh        key.Binding
+	Pause          key.Binding
+	Quit           key.Binding
+	ContextRefresh key.Binding // 'c' to refresh context data
+	Num1           key.Binding
+	Num2           key.Binding
+	Num3           key.Binding
+	Num4           key.Binding
+	Num5           key.Binding
+	Num6           key.Binding
+	Num7           key.Binding
+	Num8           key.Binding
+	Num9           key.Binding
 }
 
 // DefaultRefreshInterval is the default auto-refresh interval
 const DefaultRefreshInterval = 2 * time.Second
 
 var dashKeys = KeyMap{
-	Up:      key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
-	Down:    key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
-	Left:    key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←/h", "left")),
-	Right:   key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→/l", "right")),
-	Zoom:    key.NewBinding(key.WithKeys("z", "enter"), key.WithHelp("z/enter", "zoom")),
-	Send:    key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "send prompt")),
-	Refresh: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
-	Pause:   key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pause/resume auto-refresh")),
-	Quit:    key.NewBinding(key.WithKeys("q", "esc"), key.WithHelp("q/esc", "quit")),
-	Num1:    key.NewBinding(key.WithKeys("1")),
-	Num2:    key.NewBinding(key.WithKeys("2")),
-	Num3:    key.NewBinding(key.WithKeys("3")),
-	Num4:    key.NewBinding(key.WithKeys("4")),
-	Num5:    key.NewBinding(key.WithKeys("5")),
-	Num6:    key.NewBinding(key.WithKeys("6")),
-	Num7:    key.NewBinding(key.WithKeys("7")),
-	Num8:    key.NewBinding(key.WithKeys("8")),
-	Num9:    key.NewBinding(key.WithKeys("9")),
+	Up:             key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
+	Down:           key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+	Left:           key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←/h", "left")),
+	Right:          key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→/l", "right")),
+	Zoom:           key.NewBinding(key.WithKeys("z", "enter"), key.WithHelp("z/enter", "zoom")),
+	Send:           key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "send prompt")),
+	Refresh:        key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
+	Pause:          key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pause/resume auto-refresh")),
+	Quit:           key.NewBinding(key.WithKeys("q", "esc"), key.WithHelp("q/esc", "quit")),
+	ContextRefresh: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "refresh context")),
+	Num1:           key.NewBinding(key.WithKeys("1")),
+	Num2:           key.NewBinding(key.WithKeys("2")),
+	Num3:           key.NewBinding(key.WithKeys("3")),
+	Num4:           key.NewBinding(key.WithKeys("4")),
+	Num5:           key.NewBinding(key.WithKeys("5")),
+	Num6:           key.NewBinding(key.WithKeys("6")),
+	Num7:           key.NewBinding(key.WithKeys("7")),
+	Num8:           key.NewBinding(key.WithKeys("8")),
+	Num9:           key.NewBinding(key.WithKeys("9")),
 }
 
 // New creates a new dashboard model
@@ -274,29 +283,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.panes = msg.Panes
 			m.updateStats()
 			
-			// Process compaction checks on the main thread using fetched outputs
+			// Process compaction checks and context tracking on the main thread using fetched outputs
 			for _, data := range msg.Outputs {
-				// Map type string
+				// Map type string to model name for context limits
 				agentType := "unknown"
+				modelName := ""
 				switch data.AgentType {
 				case string(tmux.AgentClaude):
 					agentType = "claude"
+					modelName = "opus" // Default to opus for Claude agents
 				case string(tmux.AgentCodex):
 					agentType = "codex"
+					modelName = "gpt4" // Default to GPT-4 for Codex agents
 				case string(tmux.AgentGemini):
 					agentType = "gemini"
+					modelName = "gemini" // Default Gemini
 				}
-				
+
+				// Get or create pane status
+				ps := m.paneStatus[data.PaneIndex]
+
+				// Calculate context usage
+				if data.Output != "" && modelName != "" {
+					contextInfo := tokens.GetUsageInfo(data.Output, modelName)
+					ps.ContextTokens = contextInfo.EstimatedTokens
+					ps.ContextLimit = contextInfo.ContextLimit
+					ps.ContextPercent = contextInfo.UsagePercent
+					ps.ContextModel = modelName
+				}
+
+				// Compaction check
 				event, recoverySent, _ := m.compaction.CheckAndRecover(data.Output, agentType, m.session, data.PaneIndex)
-				
+
 				if event != nil {
-					ps := m.paneStatus[data.PaneIndex]
 					now := time.Now()
 					ps.LastCompaction = &now
 					ps.RecoverySent = recoverySent
 					ps.State = "compacted"
-					m.paneStatus[data.PaneIndex] = ps
 				}
+
+				m.paneStatus[data.PaneIndex] = ps
 			}
 		}
 		// Schedule next refresh
@@ -325,6 +351,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, dashKeys.Refresh):
 			// Manual refresh
+			return m, m.fetchSessionDataWithOutputs()
+
+		case key.Matches(msg, dashKeys.ContextRefresh):
+			// Force context refresh (same as regular refresh but with user intent to see context)
 			return m, m.fetchSessionDataWithOutputs()
 
 		case key.Matches(msg, dashKeys.Zoom):
@@ -555,6 +585,55 @@ func (m Model) renderHealthBadge() string {
 		Render(fmt.Sprintf("%s %s", icon, label))
 }
 
+// renderContextBar renders a progress bar showing context usage percentage
+func (m Model) renderContextBar(percent float64, width int) string {
+	t := m.theme
+
+	// Determine color based on usage
+	var barColor lipgloss.Color
+	var warningIcon string
+	if percent >= 80 {
+		barColor = t.Red
+		warningIcon = " ⚠"
+	} else if percent >= 60 {
+		barColor = t.Yellow
+		warningIcon = ""
+	} else {
+		barColor = t.Green
+		warningIcon = ""
+	}
+
+	// Calculate bar width (leave room for percentage text and warning icon)
+	barWidth := width - 8 // "[████░░] XX%⚠"
+	if barWidth < 5 {
+		barWidth = 5
+	}
+
+	// Cap percent at 100 for display, but show actual value
+	displayPercent := percent
+	if displayPercent > 100 {
+		displayPercent = 100
+	}
+
+	filled := int(displayPercent * float64(barWidth) / 100)
+	empty := barWidth - filled
+
+	// Build the bar
+	filledStyle := lipgloss.NewStyle().Foreground(barColor)
+	emptyStyle := lipgloss.NewStyle().Foreground(t.Surface1)
+	percentStyle := lipgloss.NewStyle().Foreground(t.Overlay)
+	warningStyle := lipgloss.NewStyle().Foreground(t.Red).Bold(true)
+
+	bar := "[" +
+		filledStyle.Render(strings.Repeat("█", filled)) +
+		emptyStyle.Render(strings.Repeat("░", empty)) +
+		"]" +
+		percentStyle.Render(fmt.Sprintf("%3.0f%%", percent)) +
+		warningStyle.Render(warningIcon)
+
+	return bar
+}
+
 func (m Model) renderPaneGrid() string {
 	t := m.theme
 	ic := m.icons
@@ -634,6 +713,13 @@ func (m Model) renderPaneGrid() string {
 			cardContent.WriteString(cmdStyle.Render(cmd))
 		}
 
+		// Context usage bar
+		if ps, ok := m.paneStatus[p.Index]; ok && ps.ContextLimit > 0 {
+			cardContent.WriteString("\n")
+			contextBar := m.renderContextBar(ps.ContextPercent, cardWidth-4)
+			cardContent.WriteString(contextBar)
+		}
+
 		// Compaction indicator
 		if ps, ok := m.paneStatus[p.Index]; ok && ps.LastCompaction != nil {
 			cardContent.WriteString("\n")
@@ -693,6 +779,7 @@ func (m Model) renderHelpBar() string {
 		{"↑↓", "navigate"},
 		{"1-9", "select"},
 		{"z", "zoom"},
+		{"c", "context"},
 		{"r", "refresh"},
 		{"q", "quit"},
 	}
