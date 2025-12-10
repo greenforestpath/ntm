@@ -553,6 +553,7 @@ func init() {
 		newDepsCmd(),
 		newKillCmd(),
 		newScanCmd(),
+		newCassCmd(),
 		newHooksCmd(),
 		newHealthCmd(),
 		newHistoryCmd(),
