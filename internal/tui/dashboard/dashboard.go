@@ -2,10 +2,13 @@
 package dashboard
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -36,6 +39,14 @@ type StatusUpdateMsg struct {
 type HealthCheckMsg struct {
 	Status  string // "ok", "warning", "critical", "no_baseline", "unavailable"
 	Message string
+}
+
+// AgentMailUpdateMsg is sent when Agent Mail data is fetched
+type AgentMailUpdateMsg struct {
+	Available bool
+	Connected bool
+	Locks     int
+	LockInfo  []AgentMailLockInfo
 }
 
 // Model is the session dashboard model
@@ -149,6 +160,7 @@ var dashKeys = KeyMap{
 	Pause:          key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pause/resume auto-refresh")),
 	Quit:           key.NewBinding(key.WithKeys("q", "esc"), key.WithHelp("q/esc", "quit")),
 	ContextRefresh: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "refresh context")),
+	MailRefresh:    key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "refresh mail")),
 	Num1:           key.NewBinding(key.WithKeys("1")),
 	Num2:           key.NewBinding(key.WithKeys("2")),
 	Num3:           key.NewBinding(key.WithKeys("3")),
@@ -195,6 +207,7 @@ func (m Model) Init() tea.Cmd {
 		m.tick(),
 		m.fetchSessionDataWithOutputs(),
 		m.fetchHealthStatus(),
+		m.fetchAgentMailStatus(),
 	)
 }
 
@@ -232,6 +245,68 @@ func (m Model) fetchHealthStatus() tea.Cmd {
 		return HealthCheckMsg{
 			Status:  status,
 			Message: result.Message,
+		}
+	}
+}
+
+// fetchAgentMailStatus fetches Agent Mail data (locks, connection status)
+func (m Model) fetchAgentMailStatus() tea.Cmd {
+	return func() tea.Msg {
+		// Get project key from current working directory
+		projectKey, err := os.Getwd()
+		if err != nil {
+			return AgentMailUpdateMsg{Available: false}
+		}
+
+		client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		// Check availability
+		if !client.IsAvailable() {
+			return AgentMailUpdateMsg{Available: false}
+		}
+
+		// Ensure project exists
+		_, err = client.EnsureProject(ctx, projectKey)
+		if err != nil {
+			return AgentMailUpdateMsg{Available: true, Connected: false}
+		}
+
+		// Fetch file reservations
+		var lockInfo []AgentMailLockInfo
+		reservations, err := client.ListReservations(ctx, projectKey, "", true)
+		if err == nil {
+			for _, r := range reservations {
+				expiresIn := ""
+				if !r.ExpiresTS.IsZero() {
+					remaining := time.Until(r.ExpiresTS)
+					if remaining > 0 {
+						if remaining < time.Minute {
+							expiresIn = fmt.Sprintf("%ds", int(remaining.Seconds()))
+						} else if remaining < time.Hour {
+							expiresIn = fmt.Sprintf("%dm", int(remaining.Minutes()))
+						} else {
+							expiresIn = fmt.Sprintf("%dh%dm", int(remaining.Hours()), int(remaining.Minutes())%60)
+						}
+					} else {
+						expiresIn = "expired"
+					}
+				}
+				lockInfo = append(lockInfo, AgentMailLockInfo{
+					PathPattern: r.PathPattern,
+					AgentName:   r.AgentName,
+					Exclusive:   r.Exclusive,
+					ExpiresIn:   expiresIn,
+				})
+			}
+		}
+
+		return AgentMailUpdateMsg{
+			Available: true,
+			Connected: true,
+			Locks:     len(lockInfo),
+			LockInfo:  lockInfo,
 		}
 	}
 }
@@ -355,6 +430,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.healthMessage = msg.Message
 		return m, nil
 
+	case AgentMailUpdateMsg:
+		m.agentMailAvailable = msg.Available
+		m.agentMailConnected = msg.Connected
+		m.agentMailLocks = msg.Locks
+		m.agentMailLockInfo = msg.LockInfo
+		return m, nil
+
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, dashKeys.Quit):
@@ -378,6 +460,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, dashKeys.ContextRefresh):
 			// Force context refresh (same as regular refresh but with user intent to see context)
 			return m, m.fetchSessionDataWithOutputs()
+
+		case key.Matches(msg, dashKeys.MailRefresh):
+			// Refresh Agent Mail data
+			return m, m.fetchAgentMailStatus()
 
 		case key.Matches(msg, dashKeys.Zoom):
 			if len(m.panes) > 0 && m.cursor < len(m.panes) {
@@ -565,6 +651,12 @@ func (m Model) renderStatsBar() string {
 		parts = append(parts, userBadge)
 	}
 
+	// Agent Mail status badge
+	mailBadge := m.renderAgentMailBadge()
+	if mailBadge != "" {
+		parts = append(parts, mailBadge)
+	}
+
 	return strings.Join(parts, "  ")
 }
 
@@ -604,6 +696,44 @@ func (m Model) renderHealthBadge() string {
 		return "" // Don't show badge if bv not installed
 	default:
 		return ""
+	}
+
+	return lipgloss.NewStyle().
+		Background(bgColor).
+		Foreground(fgColor).
+		Bold(true).
+		Padding(0, 1).
+		Render(fmt.Sprintf("%s %s", icon, label))
+}
+
+// renderAgentMailBadge renders the Agent Mail status badge
+func (m Model) renderAgentMailBadge() string {
+	t := m.theme
+
+	if !m.agentMailAvailable {
+		return "" // Don't show badge if Agent Mail not available
+	}
+
+	var bgColor, fgColor lipgloss.Color
+	var icon, label string
+
+	if m.agentMailConnected {
+		if m.agentMailLocks > 0 {
+			bgColor = t.Lavender
+			fgColor = t.Base
+			icon = "🔒"
+			label = fmt.Sprintf("%d locks", m.agentMailLocks)
+		} else {
+			bgColor = t.Surface1
+			fgColor = t.Text
+			icon = "📬"
+			label = "mail"
+		}
+	} else {
+		bgColor = t.Yellow
+		fgColor = t.Base
+		icon = "📭"
+		label = "offline"
 	}
 
 	return lipgloss.NewStyle().
@@ -819,6 +949,7 @@ func (m Model) renderHelpBar() string {
 		{"1-9", "select"},
 		{"z", "zoom"},
 		{"c", "context"},
+		{"m", "mail"},
 		{"r", "refresh"},
 		{"q", "quit"},
 	}

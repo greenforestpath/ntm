@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // Theme defines a complete color palette for the TUI
@@ -140,6 +141,47 @@ var CatppuccinMacchiato = Theme{
 	User:   lipgloss.Color("#a6da95"),
 }
 
+// Catppuccin Latte - light theme for light terminals
+var CatppuccinLatte = Theme{
+	Base:     lipgloss.Color("#eff1f5"),
+	Mantle:   lipgloss.Color("#e6e9ef"),
+	Crust:    lipgloss.Color("#dce0e8"),
+	Surface0: lipgloss.Color("#ccd0da"),
+	Surface1: lipgloss.Color("#bcc0cc"),
+	Surface2: lipgloss.Color("#acb0be"),
+
+	Text:    lipgloss.Color("#4c4f69"),
+	Subtext: lipgloss.Color("#6c6f85"),
+	Overlay: lipgloss.Color("#7c7f93"),
+
+	Rosewater: lipgloss.Color("#dc8a78"),
+	Flamingo:  lipgloss.Color("#dd7878"),
+	Pink:      lipgloss.Color("#ea76cb"),
+	Mauve:     lipgloss.Color("#8839ef"),
+	Red:       lipgloss.Color("#d20f39"),
+	Maroon:    lipgloss.Color("#e64553"),
+	Peach:     lipgloss.Color("#fe640b"),
+	Yellow:    lipgloss.Color("#df8e1d"),
+	Green:     lipgloss.Color("#40a02b"),
+	Teal:      lipgloss.Color("#179299"),
+	Sky:       lipgloss.Color("#04a5e5"),
+	Sapphire:  lipgloss.Color("#209fb5"),
+	Blue:      lipgloss.Color("#1e66f5"),
+	Lavender:  lipgloss.Color("#7287fd"),
+
+	Primary:   lipgloss.Color("#1e66f5"),
+	Secondary: lipgloss.Color("#8839ef"),
+	Success:   lipgloss.Color("#40a02b"),
+	Warning:   lipgloss.Color("#df8e1d"),
+	Error:     lipgloss.Color("#d20f39"),
+	Info:      lipgloss.Color("#04a5e5"),
+
+	Claude: lipgloss.Color("#8839ef"),
+	Codex:  lipgloss.Color("#1e66f5"),
+	Gemini: lipgloss.Color("#df8e1d"),
+	User:   lipgloss.Color("#40a02b"),
+}
+
 // Nord - popular arctic theme
 var Nord = Theme{
 	Base:     lipgloss.Color("#2e3440"),
@@ -186,16 +228,43 @@ var Default = CatppuccinMocha
 
 // Current returns the current theme based on env var or default
 func Current() Theme {
-	switch strings.ToLower(os.Getenv("NTM_THEME")) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("NTM_THEME"))) {
 	case "macchiato":
 		return CatppuccinMacchiato
 	case "nord":
 		return Nord
-	case "mocha", "":
+	case "latte", "light":
+		return CatppuccinLatte
+	case "mocha":
 		return CatppuccinMocha
+	case "auto", "":
+		return autoTheme()
 	default:
+		return autoTheme()
+	}
+}
+
+// detectDarkBackground inspects the terminal to determine if a dark background is in use.
+// It is defined as a variable for testability.
+var detectDarkBackground = func() bool {
+	output := termenv.NewOutput(os.Stdout)
+	return output.HasDarkBackground()
+}
+
+func autoTheme() Theme {
+	isDark := true
+
+	defer func() {
+		if recover() != nil {
+			isDark = true
+		}
+	}()
+
+	isDark = detectDarkBackground()
+	if isDark {
 		return CatppuccinMocha
 	}
+	return CatppuccinLatte
 }
 
 // Styles contains pre-built lipgloss styles for the theme

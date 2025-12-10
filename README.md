@@ -650,7 +650,7 @@ Provide a brief status update:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NTM_PROJECTS_BASE` | `~/Developer` (macOS) or `/data/projects` (Linux) | Base directory for all projects |
-| `NTM_THEME` | `mocha` | Color theme: `mocha`, `macchiato`, `nord` |
+| `NTM_THEME` | `auto` | Color theme: `auto` (detect light/dark), or `mocha`, `macchiato`, `nord`, `latte` |
 | `NTM_ICONS` | auto-detect | Icon set: `nerd`, `unicode`, `ascii` |
 | `NTM_USE_ICONS` | auto-detect | Force icons: `1` (on) or `0` (off) |
 | `NERD_FONTS` | auto-detect | Nerd Fonts available: `1` or `0` |
@@ -867,14 +867,16 @@ NTM uses the Catppuccin color palette by default, with support for multiple them
 
 | Theme | Description |
 |-------|-------------|
+| `auto` | Detects terminal background; dark → mocha, light → latte |
 | `mocha` | Default dark theme, warm and cozy |
 | `macchiato` | Darker variant with more contrast |
+| `latte` | Light variant for light terminals |
 | `nord` | Arctic-inspired, cooler tones |
 
 Set via environment variable:
 
 ```bash
-export NTM_THEME=macchiato
+export NTM_THEME=auto
 ```
 
 ### Agent Colors
