@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
@@ -39,6 +42,8 @@ func runAttach(session string) error {
 	}
 
 	if tmux.SessionExists(session) {
+		// Update Agent Mail activity (non-blocking)
+		updateSessionActivity(session)
 		return tmux.AttachOrSwitch(session)
 	}
 
@@ -301,4 +306,14 @@ func runStatus(session string) error {
 	fmt.Println()
 
 	return nil
+}
+
+// updateSessionActivity updates the Agent Mail activity for a session.
+// This is non-blocking and silently ignores errors.
+func updateSessionActivity(sessionName string) {
+	client := agentmail.NewClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_ = client.UpdateSessionActivity(ctx, sessionName)
 }
