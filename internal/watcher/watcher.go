@@ -115,10 +115,11 @@ func New(handler Handler, opts ...Option) (*Watcher, error) {
 type Option func(*Watcher)
 
 // WithDebounceDuration sets the debounce duration for coalescing events.
-func WithDebounceDuration(d int) Option {
+// Use a real time.Duration to avoid hidden unit conversions.
+func WithDebounceDuration(d time.Duration) Option {
 	return func(w *Watcher) {
 		if d > 0 {
-			w.debouncer = NewDebouncer(DefaultDebounceDuration * time.Duration(d) / 250)
+			w.debouncer = NewDebouncer(d)
 		}
 	}
 }
@@ -306,8 +307,14 @@ func (w *Watcher) handleEvent(fsEvent fsnotify.Event) {
 	if w.recursive && isDir && eventType&Create != 0 {
 		w.mu.Lock()
 		if !w.closed && !w.watchedPaths[fsEvent.Name] {
-			_ = w.fsWatcher.Add(fsEvent.Name)
-			w.watchedPaths[fsEvent.Name] = true
+			if err := w.fsWatcher.Add(fsEvent.Name); err != nil {
+				// Report error via error handler if available
+				if w.errorHandler != nil {
+					w.errorHandler(err)
+				}
+			} else {
+				w.watchedPaths[fsEvent.Name] = true
+			}
 		}
 		w.mu.Unlock()
 	}
