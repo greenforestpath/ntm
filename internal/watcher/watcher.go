@@ -3,6 +3,7 @@ package watcher
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -195,14 +196,25 @@ func (w *Watcher) Add(path string) error {
 func (w *Watcher) addRecursive(root string) error {
 	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return err
+			// Skip directories we can't access, but continue walking
+			if w.errorHandler != nil {
+				w.errorHandler(fmt.Errorf("walking %s: %w", path, err))
+			}
+			return filepath.SkipDir
 		}
 		if d.IsDir() {
 			if w.watchedPaths[path] {
 				return nil
 			}
 			if err := w.fsWatcher.Add(path); err != nil {
-				return err
+				// Report error but continue
+				if w.errorHandler != nil {
+					w.errorHandler(fmt.Errorf("watching %s: %w", path, err))
+				}
+				// If we can't watch this directory, we probably can't watch its children?
+				// fsnotify might fail for other reasons (limit reached).
+				// We'll try to continue.
+				return nil
 			}
 			w.watchedPaths[path] = true
 		}

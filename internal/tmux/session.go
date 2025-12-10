@@ -28,25 +28,25 @@ const (
 
 // Pane represents a tmux pane
 type Pane struct {
-	ID       string
-	Index    int
-	Title    string
-	Type     AgentType
-	Variant  string // Model alias or persona name (from pane title)
-	Command  string
-	Width    int
-	Height   int
-	Active   bool
+	ID      string
+	Index   int
+	Title   string
+	Type    AgentType
+	Variant string // Model alias or persona name (from pane title)
+	Command string
+	Width   int
+	Height  int
+	Active  bool
 }
 
 // Session represents a tmux session
 type Session struct {
-	Name       string
-	Directory  string
-	Windows    int
-	Panes      []Pane
-	Attached   bool
-	Created    string
+	Name      string
+	Directory string
+	Windows   int
+	Panes     []Pane
+	Attached  bool
+	Created   string
 }
 
 // parseAgentFromTitle extracts agent type and variant from a pane title.
@@ -415,6 +415,11 @@ func GetPaneActivity(paneID string) (time.Time, error) {
 	output, err := run("display-message", "-p", "-t", paneID, "#{pane_last_activity}")
 	if err != nil {
 		return time.Time{}, err
+	}
+
+	// Some tmux versions may return an empty string for fresh panes; treat as current time
+	if strings.TrimSpace(output) == "" {
+		return time.Now(), nil
 	}
 
 	timestamp, err := strconv.ParseInt(output, 10, 64)
