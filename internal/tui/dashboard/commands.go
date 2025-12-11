@@ -1,11 +1,13 @@
 package dashboard
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tokens"
@@ -93,5 +95,31 @@ func (m Model) fetchFileChangesCmd() tea.Cmd {
 		since := time.Now().Add(-5 * time.Minute)
 		changes := tracker.RecordedChangesSince(since)
 		return FileChangeMsg{Changes: changes}
+	}
+}
+
+// fetchCASSContextCmd searches CASS for recent context related to the session.
+// We keep this generic: use the session name as the query and return top hits.
+func (m Model) fetchCASSContextCmd() tea.Cmd {
+	session := m.session
+
+	return func() tea.Msg {
+		client := cass.NewClient()
+		ctx := context.Background()
+
+		// If CASS not installed/available, degrade gracefully.
+		if !client.IsInstalled() {
+			return CASSContextMsg{Err: fmt.Errorf("cass not installed")}
+		}
+
+		resp, err := client.Search(ctx, cass.SearchOptions{
+			Query: session,
+			Limit: 5,
+		})
+		if err != nil {
+			return CASSContextMsg{Err: err}
+		}
+
+		return CASSContextMsg{Hits: resp.Hits}
 	}
 }

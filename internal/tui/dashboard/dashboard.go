@@ -114,16 +114,29 @@ type CASSContextMsg struct {
 	Err  error
 }
 
+// PanelID identifies a dashboard panel
+type PanelID int
+
+const (
+	PanelPaneList PanelID = iota
+	PanelDetail
+	PanelBeads
+	PanelAlerts
+	PanelSidebar
+	PanelCount // Total number of focusable panels
+)
+
 // Model is the session dashboard model
 type Model struct {
-	session  string
-	panes    []tmux.Pane
-	width    int
-	height   int
-	animTick int
-	cursor   int
-	quitting bool
-	err      error
+	session      string
+	panes        []tmux.Pane
+	width        int
+	height       int
+	animTick     int
+	cursor       int
+	focusedPanel PanelID
+	quitting     bool
+	err          error
 
 	// Stats
 	claudeCount int
@@ -149,10 +162,11 @@ type Model struct {
 	refreshCount  int
 
 	// Subsystem refresh timers
-	lastPaneFetch    time.Time
-	lastContextFetch time.Time
-	lastAlertsFetch  time.Time
-	lastBeadsFetch   time.Time
+	lastPaneFetch        time.Time
+	lastContextFetch     time.Time
+	lastAlertsFetch      time.Time
+	lastBeadsFetch       time.Time
+	lastCassContextFetch time.Time
 
 	// Auto-refresh configuration
 	refreshInterval time.Duration
@@ -230,6 +244,8 @@ type KeyMap struct {
 	Left           key.Binding
 	Right          key.Binding
 	Zoom           key.Binding
+	NextPanel      key.Binding // Tab to cycle panels
+	PrevPanel      key.Binding // Shift+Tab to cycle back
 	Send           key.Binding
 	Refresh        key.Binding
 	Pause          key.Binding
@@ -253,10 +269,11 @@ const DefaultRefreshInterval = 2 * time.Second
 
 // Per-subsystem refresh cadence (driven by DashboardTickMsg)
 const (
-	PaneRefreshInterval    = 1 * time.Second
-	ContextRefreshInterval = 2 * time.Second
-	AlertsRefreshInterval  = 3 * time.Second
-	BeadsRefreshInterval   = 5 * time.Second
+	PaneRefreshInterval        = 1 * time.Second
+	ContextRefreshInterval     = 2 * time.Second
+	AlertsRefreshInterval      = 3 * time.Second
+	BeadsRefreshInterval       = 5 * time.Second
+	CassContextRefreshInterval = 15 * time.Minute
 )
 
 func (m *Model) initRenderer(width int) {
@@ -273,6 +290,8 @@ var dashKeys = KeyMap{
 	Left:           key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←/h", "left")),
 	Right:          key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→/l", "right")),
 	Zoom:           key.NewBinding(key.WithKeys("z", "enter"), key.WithHelp("z/enter", "zoom")),
+	NextPanel:      key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next panel")),
+	PrevPanel:      key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev panel")),
 	Send:           key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "send prompt")),
 	Refresh:        key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 	Pause:          key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pause/resume auto-refresh")),
@@ -325,6 +344,7 @@ func New(session string) Model {
 	m.lastContextFetch = now
 	m.lastAlertsFetch = now
 	m.lastBeadsFetch = now
+	m.lastCassContextFetch = now
 
 	// Setup config watcher
 	m.configSub = make(chan *config.Config, 1)
@@ -374,6 +394,7 @@ func (m Model) Init() tea.Cmd {
 		m.fetchMetricsCmd(),
 		m.fetchHistoryCmd(),
 		m.fetchFileChangesCmd(),
+		m.fetchCASSContextCmd(),
 		m.subscribeToConfig(),
 	)
 }
@@ -655,9 +676,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.tier = layout.TierForWidth(msg.Width)
+			m.tier = layout.TierForWidth(msg.Width)
 
-		_, detailWidth := layout.SplitProportions(msg.Width)
+			_, detailWidth := layout.SplitProportions(msg.Width)
 		contentWidth := detailWidth - 4
 		if contentWidth < 20 {
 			contentWidth = 20
@@ -696,6 +717,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if now.Sub(m.lastBeadsFetch) >= BeadsRefreshInterval {
 				cmds = append(cmds, m.fetchBeadsCmd())
 				m.lastBeadsFetch = now
+			}
+			if now.Sub(m.lastCassContextFetch) >= CassContextRefreshInterval {
+				cmds = append(cmds, m.fetchCASSContextCmd())
+				m.lastCassContextFetch = now
 			}
 		}
 
@@ -847,6 +872,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.cassSearch.Init())
 			return m, tea.Batch(cmds...)
 
+		case key.Matches(msg, dashKeys.NextPanel):
+			m.cycleFocus(1)
+			return m, nil
+
+		case key.Matches(msg, dashKeys.PrevPanel):
+			m.cycleFocus(-1)
+			return m, nil
+
 		case key.Matches(msg, dashKeys.Quit):
 			m.quitting = true
 			return m, tea.Quit
@@ -919,6 +952,38 @@ func (m *Model) selectByNumber(n int) {
 	if idx >= 0 && idx < len(m.panes) {
 		m.cursor = idx
 	}
+}
+
+func (m *Model) cycleFocus(dir int) {
+	var visiblePanes []PanelID
+	switch {
+	case m.tier >= layout.TierMega:
+		visiblePanes = []PanelID{PanelPaneList, PanelDetail, PanelBeads, PanelAlerts, PanelSidebar}
+	case m.tier >= layout.TierUltra:
+		visiblePanes = []PanelID{PanelPaneList, PanelDetail, PanelSidebar}
+	case m.tier >= layout.TierSplit:
+		visiblePanes = []PanelID{PanelPaneList, PanelDetail}
+	default:
+		visiblePanes = []PanelID{PanelPaneList}
+	}
+
+	// Find current index in visiblePanes
+	currIdx := -1
+	for i, p := range visiblePanes {
+		if p == m.focusedPanel {
+			currIdx = i
+			break
+		}
+	}
+
+	// If not found (e.g. resized from Mega to Split while focus was on Beads), default to 0
+	if currIdx == -1 {
+		currIdx = 0
+	}
+
+	// Cycle
+	nextIdx := (currIdx + dir + len(visiblePanes)) % len(visiblePanes)
+	m.focusedPanel = visiblePanes[nextIdx]
 }
 
 func (m *Model) updateStats() {
@@ -1270,7 +1335,7 @@ func (m Model) renderRateLimitAlert() string {
 func (m Model) renderContextBar(percent float64, width int) string {
 	t := m.theme
 
-	// Determine warning icon and gradient stops
+	// Determine warning icon
 	var warningIcon string
 	switch {
 	case percent >= 95:
@@ -1289,28 +1354,13 @@ func (m Model) renderContextBar(percent float64, width int) string {
 		barWidth = 5
 	}
 
-	// Cap percent at 100 for display, but show actual value
-	displayPercent := percent
-	if displayPercent > 100 {
-		displayPercent = 100
-	}
-
-	filled := int(displayPercent * float64(barWidth) / 100)
-	empty := barWidth - filled
-
-	// Gradient-filled portion
-	var filledStr string
-	if filled > 0 {
-		grad := []string{string(t.Green), string(t.Yellow), string(t.Red)}
-		filledStr = styles.GradientText(strings.Repeat("█", filled), grad...)
-	}
-
-	emptyStr := lipgloss.NewStyle().Foreground(t.Surface1).Render(strings.Repeat("░", empty))
+	colors := []string{string(t.Green), string(t.Yellow), string(t.Red)}
+	barContent := styles.ShimmerProgressBar(percent/100.0, barWidth, "█", "░", m.animTick, colors...)
 
 	percentStyle := lipgloss.NewStyle().Foreground(t.Overlay)
 	warningStyle := lipgloss.NewStyle().Foreground(t.Red).Bold(true)
 
-	bar := "[" + filledStr + emptyStr + "]" +
+	bar := "[" + barContent + "]" +
 		percentStyle.Render(fmt.Sprintf("%3.0f%%", percent)) +
 		warningStyle.Render(warningIcon)
 
@@ -1509,11 +1559,21 @@ func (m Model) renderSplitView() string {
 		contentHeight = 5
 	}
 
+	listBorder := t.Surface1
+	if m.focusedPanel == PanelPaneList {
+		listBorder = t.Primary
+	}
+
+	detailBorder := t.Pink
+	if m.focusedPanel == PanelDetail {
+		detailBorder = t.Primary
+	}
+
 	// Build left panel (pane list)
 	listContent := m.renderPaneList(leftWidth - 4) // -4 for borders/padding
 	listPanel := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Surface1).
+		BorderForeground(listBorder).
 		Width(leftWidth).
 		Height(contentHeight).
 		MaxHeight(contentHeight).
@@ -1524,7 +1584,7 @@ func (m Model) renderSplitView() string {
 	detailContent := m.renderPaneDetail(rightWidth - 4)
 	detailPanel := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Pink). // Accent color for detail
+		BorderForeground(detailBorder). // Accent color for detail
 		Width(rightWidth).
 		Height(contentHeight).
 		MaxHeight(contentHeight).
@@ -1545,10 +1605,25 @@ func (m Model) renderUltraLayout() string {
 		contentHeight = 5
 	}
 
+	listBorder := t.Surface1
+	if m.focusedPanel == PanelPaneList {
+		listBorder = t.Primary
+	}
+
+	detailBorder := t.Pink
+	if m.focusedPanel == PanelDetail {
+		detailBorder = t.Primary
+	}
+
+	sidebarBorder := t.Lavender
+	if m.focusedPanel == PanelSidebar {
+		sidebarBorder = t.Primary
+	}
+
 	listContent := m.renderPaneList(leftWidth - 4)
 	listPanel := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Surface1).
+		BorderForeground(listBorder).
 		Width(leftWidth).
 		Height(contentHeight).
 		MaxHeight(contentHeight).
@@ -1558,7 +1633,7 @@ func (m Model) renderUltraLayout() string {
 	detailContent := m.renderPaneDetail(centerWidth - 4)
 	detailPanel := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Pink).
+		BorderForeground(detailBorder).
 		Width(centerWidth).
 		Height(contentHeight).
 		MaxHeight(contentHeight).
@@ -1568,7 +1643,7 @@ func (m Model) renderUltraLayout() string {
 	sidebarContent := m.renderSidebar(rightWidth - 4)
 	sidebarPanel := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Lavender).
+		BorderForeground(sidebarBorder).
 		Width(rightWidth).
 		Height(contentHeight).
 		MaxHeight(contentHeight).
@@ -1625,37 +1700,62 @@ func (m Model) renderMegaLayout() string {
 		contentHeight = 5
 	}
 
+	listBorder := t.Surface1
+	if m.focusedPanel == PanelPaneList {
+		listBorder = t.Primary
+	}
+
+	detailBorder := t.Pink
+	if m.focusedPanel == PanelDetail {
+		detailBorder = t.Primary
+	}
+
+	beadsBorder := t.Green
+	if m.focusedPanel == PanelBeads {
+		beadsBorder = t.Primary
+	}
+
+	alertsBorder := t.Red
+	if m.focusedPanel == PanelAlerts {
+		alertsBorder = t.Primary
+	}
+
+	sidebarBorder := t.Lavender
+	if m.focusedPanel == PanelSidebar {
+		sidebarBorder = t.Primary
+	}
+
 	panel1 := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Surface1).
+		BorderForeground(listBorder).
 		Width(p1).Height(contentHeight).MaxHeight(contentHeight).
 		Padding(0, 1).
 		Render(m.renderPaneList(p1 - 2))
 
 	panel2 := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Pink).
+		BorderForeground(detailBorder).
 		Width(p2).Height(contentHeight).MaxHeight(contentHeight).
 		Padding(0, 1).
 		Render(m.renderPaneDetail(p2 - 2))
 
 	panel3 := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Green).
+		BorderForeground(beadsBorder).
 		Width(p3).Height(contentHeight).MaxHeight(contentHeight).
 		Padding(0, 1).
-		Render(m.renderBeadsPanel(p3 - 2))
+		Render(m.renderBeadsPanel(p3-4, contentHeight-2))
 
 	panel4 := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Red).
+		BorderForeground(alertsBorder).
 		Width(p4).Height(contentHeight).MaxHeight(contentHeight).
 		Padding(0, 1).
-		Render(m.renderAlertsPanel(p4 - 2))
+		Render(m.renderAlertsPanel(p4-4, contentHeight-2))
 
 	panel5 := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(t.Lavender).
+		BorderForeground(sidebarBorder).
 		Width(p5).Height(contentHeight).MaxHeight(contentHeight).
 		Padding(0, 1).
 		Render(m.renderSidebar(p5 - 2))
@@ -1663,13 +1763,13 @@ func (m Model) renderMegaLayout() string {
 	return "  " + lipgloss.JoinHorizontal(lipgloss.Top, panel1, panel2, panel3, panel4, panel5)
 }
 
-func (m Model) renderBeadsPanel(width int) string {
-	m.beadsPanel.SetSize(width, 0) // Height handled by container
+func (m Model) renderBeadsPanel(width, height int) string {
+	m.beadsPanel.SetSize(width, height)
 	return m.beadsPanel.View()
 }
 
-func (m Model) renderAlertsPanel(width int) string {
-	m.alertsPanel.SetSize(width, 0) // Height handled by container
+func (m Model) renderAlertsPanel(width, height int) string {
+	m.alertsPanel.SetSize(width, height)
 	return m.alertsPanel.View()
 }
 
@@ -1678,41 +1778,45 @@ func (m Model) renderPaneList(width int) string {
 	t := m.theme
 	var lines []string
 
-	ranks := m.computeContextRanks()
-
-	showRank := m.tier >= layout.TierWide
+	// Calculate layout dimensions
+	dims := CalculateLayout(width, 1)
+	changeCounts := fileChangesByPane(m.panes, m.fileChanges)
 
 	// Header row
-	headerStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(t.Subtext).
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderBottom(true).
-		BorderForeground(t.Surface1).
-		Width(width)
-
-	// Column headers vary by tier
-	if m.tier >= layout.TierUltra {
-		if showRank {
-			lines = append(lines, headerStyle.Render("  #  T  S  R  TITLE                   CTX   MODEL      CMD"))
-		} else {
-			lines = append(lines, headerStyle.Render("  #  T  S  TITLE                      CTX   MODEL      CMD"))
-		}
-	} else if m.tier >= layout.TierWide {
-		if showRank {
-			lines = append(lines, headerStyle.Render("  #  T  S  R  TITLE                   CTX   MODEL"))
-		} else {
-			lines = append(lines, headerStyle.Render("  #  T  S  TITLE                      CTX   MODEL"))
-		}
-	} else {
-		lines = append(lines, headerStyle.Render("  #  T  S  TITLE"))
-	}
+	lines = append(lines, RenderTableHeader(dims, t))
 
 	// Pane rows
 	for i, p := range m.panes {
+		ps := m.paneStatus[p.Index]
 		isSelected := i == m.cursor
-		row := m.renderPaneRow(p, ranks[p.Index], isSelected, width)
-		lines = append(lines, row)
+		st, hasStatus := m.agentStatuses[p.ID]
+
+		row := PaneTableRow{
+			Index:         p.Index,
+			Type:          string(p.Type),
+			Variant:       p.Variant,
+			ModelVariant:  p.Variant,
+			Title:         p.Title,
+			Status:        ps.State,
+			ContextPct:    ps.ContextPercent,
+			Model:         ps.ContextModel,
+			Command:       p.Command,
+			IsSelected:    isSelected,
+			IsCompacted:   ps.LastCompaction != nil,
+			FileChanges:   changeCounts[p.Title],
+			CurrentBead:   currentBeadForPane(p, &m.beadsSummary),
+			TokenVelocity: 0,
+		}
+
+		if hasStatus {
+			row.Status = st.State.String()
+			row.TokenVelocity = tokenVelocityFromStatus(st)
+			if row.ModelVariant == "" {
+				row.ModelVariant = st.AgentType
+			}
+		}
+
+		lines = append(lines, RenderPaneRow(row, dims, t))
 	}
 
 	return strings.Join(lines, "\n")
@@ -1748,152 +1852,6 @@ func (m Model) computeContextRanks() map[int]int {
 		ranks[pr.idx] = currentRank
 	}
 	return ranks
-}
-
-// renderPaneRow renders a single pane as a table row
-func (m Model) renderPaneRow(p tmux.Pane, rank int, selected bool, width int) string {
-	t := m.theme
-	ic := m.icons
-	var parts []string
-	showRank := m.tier >= layout.TierWide
-
-	// Selection indicator
-	if selected {
-		parts = append(parts, lipgloss.NewStyle().Foreground(t.Pink).Bold(true).Render("▸"))
-	} else {
-		parts = append(parts, " ")
-	}
-
-	// Index
-	idxStyle := lipgloss.NewStyle().Foreground(t.Overlay).Width(2)
-	parts = append(parts, idxStyle.Render(fmt.Sprintf("%2d", p.Index)))
-
-	// Type icon with color
-	var typeColor lipgloss.Color
-	var typeIcon string
-	switch p.Type {
-	case tmux.AgentClaude:
-		typeColor = t.Claude
-		typeIcon = ic.Claude
-	case tmux.AgentCodex:
-		typeColor = t.Codex
-		typeIcon = ic.Codex
-	case tmux.AgentGemini:
-		typeColor = t.Gemini
-		typeIcon = ic.Gemini
-	default:
-		typeColor = t.Green
-		typeIcon = ic.User
-	}
-	parts = append(parts, lipgloss.NewStyle().Foreground(typeColor).Bold(true).Render(typeIcon))
-
-	// Status indicator
-	ps := m.paneStatus[p.Index]
-	statusStyle := lipgloss.NewStyle()
-	var statusIcon string
-	switch ps.State {
-	case "working":
-		statusIcon = spinnerDot(m.animTick)
-		statusStyle = statusStyle.Foreground(t.Green)
-	case "idle":
-		statusIcon = "○"
-		statusStyle = statusStyle.Foreground(t.Yellow)
-	case "error":
-		statusIcon = "✗"
-		statusStyle = statusStyle.Foreground(t.Red)
-	case "rate_limited":
-		statusIcon = "⏳"
-		statusStyle = statusStyle.Foreground(t.Maroon).Bold(true)
-	case "compacted":
-		statusIcon = "⚠"
-		statusStyle = statusStyle.Foreground(t.Peach).Bold(true)
-	default:
-		statusIcon = "•"
-		statusStyle = statusStyle.Foreground(t.Overlay)
-	}
-	parts = append(parts, statusStyle.Render(statusIcon))
-
-	// Rank badge (context usage rank)
-	if showRank {
-		if rank > 0 {
-			badge := styles.RankBadge(rank, styles.BadgeOptions{
-				Style:    styles.BadgeStyleCompact,
-				Bold:     true,
-				ShowIcon: rank <= 3,
-			})
-			parts = append(parts, badge)
-		} else {
-			parts = append(parts, "     ")
-		}
-	}
-
-	// Title (flexible width based on available columns)
-	baseSpaces := 10 // separators + selection/index/icon/status
-	if showRank {
-		baseSpaces += 6 // rank badge + spacer
-	}
-	fixedAfterTitle := 0
-	if m.tier >= layout.TierWide {
-		fixedAfterTitle += 6 /*ctx*/ + 1
-		fixedAfterTitle += 8 /*model*/ + 1
-	}
-	if m.tier >= layout.TierUltra {
-		fixedAfterTitle += 12 /*cmd*/ + 1
-	}
-	titleWidth := width - baseSpaces - fixedAfterTitle
-	if titleWidth < 12 {
-		titleWidth = 12
-	}
-	if titleWidth > 40 {
-		titleWidth = 40
-	}
-	title := layout.TruncateRunes(p.Title, titleWidth, "…")
-	titleStyle := lipgloss.NewStyle().Foreground(t.Text)
-	if selected {
-		titleStyle = titleStyle.Bold(true)
-	}
-	parts = append(parts, titleStyle.Render(title))
-
-	// Context bar (TierWide+)
-	if m.tier >= layout.TierWide && ps.ContextLimit > 0 {
-		ctxPct := ps.ContextPercent / 100
-		if ctxPct > 1 {
-			ctxPct = 1
-		}
-		bar := RenderMiniBar(ctxPct, 6, t)
-		parts = append(parts, bar)
-	} else if m.tier >= layout.TierWide {
-		parts = append(parts, "      ") // placeholder
-	}
-
-	// Model/variant (TierWide+)
-	if m.tier >= layout.TierWide && p.Variant != "" {
-		varStyle := lipgloss.NewStyle().Foreground(t.Subtext).Italic(true).Width(8)
-		parts = append(parts, varStyle.Render(layout.TruncateRunes(p.Variant, 8, "…")))
-	} else if m.tier >= layout.TierWide {
-		parts = append(parts, "        ") // placeholder
-	}
-
-	// Command snippet (TierUltra)
-	if m.tier >= layout.TierUltra {
-		cmd := layout.TruncateRunes(strings.TrimSpace(p.Command), 12, "…")
-		cmdStyle := lipgloss.NewStyle().Foreground(t.Overlay).Width(12)
-		parts = append(parts, cmdStyle.Render(cmd))
-	}
-
-	// Join and pad to requested width to avoid wrap jitter
-	rowContent := strings.Join(parts, " ")
-	if width > 0 {
-		padding := width - lipgloss.Width(rowContent)
-		if padding > 0 {
-			rowContent += strings.Repeat(" ", padding)
-		}
-	}
-
-	if selected {
-		return lipgloss.NewStyle().Background(t.Surface0).Render(rowContent)
-	}
-	return rowContent
 }
 
 // spinnerDot returns a one-cell dot spinner frame based on the animation tick.

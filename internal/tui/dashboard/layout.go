@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Dicklesworthstone/ntm/internal/bv"
+	status "github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tokens"
+	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/charmbracelet/lipgloss"
@@ -223,17 +227,171 @@ func RenderContextMiniBar(percent float64, width int, t theme.Theme) string {
 
 // PaneTableRow represents a single row in the pane table
 type PaneTableRow struct {
-	Index       int
-	Type        string
-	Variant     string
-	Title       string
-	Status      string
-	ContextPct  float64
-	Model       string
-	Command     string
-	IsSelected  bool
-	IsCompacted bool
-	BorderColor lipgloss.Color
+	Index         int
+	Type          string
+	Variant       string
+	ModelVariant  string
+	Title         string
+	Status        string
+	ContextPct    float64
+	Model         string
+	Command       string
+	CurrentBead   string
+	CurrentBeadTitle string
+	FileChanges   int
+	TokenVelocity float64
+	IsSelected    bool
+	IsCompacted   bool
+	BorderColor   lipgloss.Color
+}
+
+// BuildPaneTableRows hydrates pane table rows using live status, bead progress,
+// file change activity, and lightweight token velocity estimates.
+func BuildPaneTableRows(
+	panes []tmux.Pane,
+	statuses map[string]status.AgentStatus,
+	paneStatus map[int]PaneStatus,
+	beads *bv.BeadsSummary,
+	fileChanges []tracker.RecordedFileChange,
+) []PaneTableRow {
+	changeCounts := fileChangesByPane(panes, fileChanges)
+
+	rows := make([]PaneTableRow, 0, len(panes))
+	for _, pane := range panes {
+		st, hasStatus := statuses[pane.ID]
+		ps := paneStatus[pane.Index]
+		row := PaneTableRow{
+			Index:         pane.Index,
+			Type:          string(pane.Type),
+			Variant:       pane.Variant,
+			ModelVariant:  pane.Variant,
+			Title:         pane.Title,
+			Status:        "unknown",
+			            Command:       pane.Command,
+			            FileChanges:   changeCounts[pane.Title],
+			            TokenVelocity: 0,
+			            ContextPct:    ps.ContextPercent,
+			            Model:         ps.ContextModel,
+			            IsCompacted:   ps.LastCompaction != nil,
+			        }
+			
+			        row.CurrentBead, row.CurrentBeadTitle = currentBeadForPane(pane, beads)
+		if hasStatus {
+			row.Status = st.State.String()
+			row.TokenVelocity = tokenVelocityFromStatus(st)
+			if row.ModelVariant == "" {
+				row.ModelVariant = st.AgentType
+			}
+		} else if ps.State != "" {
+			row.Status = ps.State
+		}
+
+		rows = append(rows, row)
+	}
+
+	return rows
+}
+
+func fileChangesByPane(panes []tmux.Pane, changes []tracker.RecordedFileChange) map[string]int {
+	counts := make(map[string]int)
+	if len(changes) == 0 {
+		return counts
+	}
+
+	paneTitles := make(map[string]struct{}, len(panes))
+	for _, p := range panes {
+		paneTitles[p.Title] = struct{}{}
+		paneTitles[p.ID] = struct{}{}
+	}
+
+	for _, ch := range changes {
+		for _, agent := range ch.Agents {
+			if _, ok := paneTitles[agent]; ok {
+				counts[agent]++
+			}
+		}
+	}
+
+	return counts
+}
+
+func currentBeadForPane(pane tmux.Pane, beads *bv.BeadsSummary) (string, string) {
+	if beads == nil || !beads.Available {
+		return "", ""
+	}
+
+	for _, item := range beads.InProgressList {
+		if item.Assignee == "" {
+			continue
+		}
+		if strings.EqualFold(item.Assignee, pane.Title) || strings.EqualFold(item.Assignee, pane.ID) {
+			return item.ID, item.Title
+		}
+	}
+	return "", ""
+}
+
+func tokenVelocityFromStatus(st status.AgentStatus) float64 {
+	if st.LastOutput == "" {
+		return 0
+	}
+	// Avoid zero/negative durations; fall back to a 60s window.
+	minutes := time.Since(st.LastActive).Minutes()
+	if minutes <= 0 {
+		minutes = 1.0
+	}
+
+	tokensOut := tokens.EstimateTokens(st.LastOutput)
+	if tokensOut == 0 {
+		return 0
+	}
+	return float64(tokensOut) / minutes
+}
+
+// BuildPaneTableRow aggregates pane metadata into a single row structure.
+// Beads/FileChanges/TokenVelocity are best-effort enrichments and may be empty
+// when upstream data is unavailable.
+func BuildPaneTableRow(pane tmux.Pane, ps PaneStatus, beads []bv.BeadPreview, fileChanges []tracker.RecordedFileChange) PaneTableRow {
+	row := PaneTableRow{
+		Index:        pane.Index,
+		Type:         string(pane.Type),
+		Variant:      pane.Variant,
+		ModelVariant: pane.Variant,
+		Title:        pane.Title,
+		Status:       ps.State,
+		ContextPct:   ps.ContextPercent,
+		Model:        ps.ContextModel,
+		Command:      pane.Command,
+		IsCompacted:  ps.State == "compacted",
+	}
+
+	// Prefer context model as variant when pane title lacks one.
+	if row.ModelVariant == "" {
+		row.ModelVariant = ps.ContextModel
+	}
+
+	// Attach a current bead hint (first ready preview as a lightweight default).
+	if len(beads) > 0 {
+		row.CurrentBead = beads[0].ID
+		row.CurrentBeadTitle = beads[0].Title
+	}
+
+	// Count file changes mentioning this pane's agent.
+	for _, fc := range fileChanges {
+		for _, agent := range fc.Agents {
+			if agent == pane.Title || agent == pane.ID || strings.Contains(agent, string(pane.Type)) {
+				row.FileChanges++
+				break
+			}
+		}
+	}
+
+	// Approximate token velocity using recent command text as a proxy.
+	if pane.Command != "" {
+		row.TokenVelocity = float64(tokens.EstimateTokens(pane.Command))
+	}
+
+	return row
 }
 
 // RenderPaneRow renders a single pane as a table row with progressive columns
@@ -261,13 +419,13 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 		typeIcon = "󰗣"
 	case "cod":
 		typeColor = t.Codex
-		typeIcon = ""
+		typeIcon = "󰘦"
 	case "gmi":
 		typeColor = t.Gemini
-		typeIcon = ""
+		typeIcon = "󰇮"
 	default:
 		typeColor = t.Green
-		typeIcon = ""
+		typeIcon = "󰄛"
 	}
 	typeStyle := lipgloss.NewStyle().Foreground(typeColor).Bold(true)
 	parts = append(parts, typeStyle.Render(typeIcon))
@@ -289,6 +447,9 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 		case "compacted":
 			statusIcon = "⚠"
 			statusStyle = statusStyle.Foreground(t.Peach).Bold(true)
+		case "rate_limited":
+			statusIcon = "⏳"
+			statusStyle = statusStyle.Foreground(t.Maroon).Bold(true)
 		default:
 			statusIcon = "•"
 			statusStyle = statusStyle.Foreground(t.Overlay)
@@ -325,12 +486,22 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 	}
 
 	// Model variant (desktop and up)
-	if dims.ShowModelCol && row.Variant != "" {
-		variantStyle := lipgloss.NewStyle().
-			Foreground(t.Subtext).
-			Italic(true).
-			Width(8)
-		parts = append(parts, variantStyle.Render(truncate(row.Variant, 8)))
+	modelVariant := row.Variant
+	if modelVariant == "" {
+		modelVariant = row.ModelVariant
+	}
+
+	if dims.ShowModelCol && modelVariant != "" {
+		badge := styles.ModelBadge(modelVariant, styles.BadgeOptions{
+			Style:    styles.BadgeStyleCompact,
+			Bold:     false,
+			ShowIcon: false,
+		})
+		// Ensure fixed width alignment
+		if lipgloss.Width(badge) < 8 {
+			badge = badge + strings.Repeat(" ", 8-lipgloss.Width(badge))
+		}
+		parts = append(parts, badge)
 	} else if dims.ShowModelCol {
 		parts = append(parts, strings.Repeat(" ", 8))
 	}
@@ -344,7 +515,48 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 		parts = append(parts, cmdStyle.Render(truncate(row.Command, 20)))
 	}
 
-	return strings.Join(parts, " ")
+	firstLine := strings.Join(parts, " ")
+
+	// Render second line for rich content (Wide+)
+	// Show bead info, file changes, etc.
+	if dims.Mode >= LayoutWide && (row.CurrentBead != "" || row.FileChanges > 0 || row.TokenVelocity > 0) {
+		var subParts []string
+
+		// Indent to align with title (approx 8 chars: sel(1)+space+idx(2)+icon(1)+status(1)+spaces)
+		indent := "        "
+
+		if row.CurrentBead != "" {
+			beadText := row.CurrentBead
+			if row.CurrentBeadTitle != "" {
+				beadText += ": " + row.CurrentBeadTitle
+			}
+			subParts = append(subParts, lipgloss.NewStyle().Foreground(t.Primary).Render("● "+truncate(beadText, 40)))
+		}
+
+		if row.FileChanges > 0 {
+			subParts = append(subParts, lipgloss.NewStyle().Foreground(t.Yellow).Render(fmt.Sprintf("%d files", row.FileChanges)))
+		}
+
+		if row.TokenVelocity > 0 {
+			subParts = append(subParts, styles.TokenVelocityBadge(row.TokenVelocity, styles.BadgeOptions{
+				Style:    styles.BadgeStyleCompact,
+				Bold:     false,
+				ShowIcon: true,
+			}))
+		}
+
+		secondLine := indent + strings.Join(subParts, " │ ")
+
+		if row.IsSelected {
+			return lipgloss.NewStyle().Background(t.Surface0).Render(firstLine + "\n" + secondLine)
+		}
+		return firstLine + "\n" + secondLine
+	}
+
+	if row.IsSelected {
+		return lipgloss.NewStyle().Background(t.Surface0).Render(firstLine)
+	}
+	return firstLine
 }
 
 // RenderPaneDetail renders the detail panel for a selected pane

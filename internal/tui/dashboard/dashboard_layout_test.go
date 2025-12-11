@@ -126,9 +126,17 @@ func TestPaneRowSelectionStyling_NoWrapAcrossWidths(t *testing.T) {
 
 			m := newTestModel(w)
 			m.cursor = 0 // selected row
-
-			row := m.renderPaneRow(m.panes[0], 0, true, 60)
-			clean := status.StripANSI(row)
+			dims := CalculateLayout(60, 1)
+			row := PaneTableRow{
+				Index:        m.panes[0].Index,
+				Type:         string(m.panes[0].Type),
+				Title:        m.panes[0].Title,
+				Status:       m.paneStatus[m.panes[0].Index].State,
+				IsSelected:   true,
+				ContextPct:   m.paneStatus[m.panes[0].Index].ContextPercent,
+				ModelVariant: m.panes[0].Variant,
+			}
+			clean := status.StripANSI(RenderPaneRow(row, dims, m.theme))
 
 			if lipgloss.Width(clean) != 60 {
 				t.Fatalf("width %d: row width = %d, want 60", w, lipgloss.Width(clean))
