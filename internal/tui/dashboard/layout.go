@@ -723,11 +723,14 @@ func renderDetailContextBar(percent float64, width int, t theme.Theme, tick int)
 	emptyStr := strings.Repeat("░", empty)
 
 	// Apply shimmer effect for high context usage
+	// When shimmer is applied, don't double-wrap with filledStyle (would override shimmer colors)
+	var bar string
 	if percent >= 80 {
-		filledStr = styles.Shimmer(filledStr, tick, string(t.Red), string(t.Maroon), string(t.Red))
+		shimmerStr := styles.Shimmer(filledStr, tick, string(t.Red), string(t.Maroon), string(t.Red))
+		bar = "  [" + shimmerStr + emptyStyle.Render(emptyStr) + "]"
+	} else {
+		bar = "  [" + filledStyle.Render(filledStr) + emptyStyle.Render(emptyStr) + "]"
 	}
-
-	bar := "  [" + filledStyle.Render(filledStr) + emptyStyle.Render(emptyStr) + "]"
 
 	return bar
 }

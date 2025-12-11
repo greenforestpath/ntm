@@ -216,6 +216,7 @@ type Model struct {
 	activeAlerts  []alerts.Alert
 	metricsTokens int
 	metricsCost   float64
+	metricsData   panels.MetricsData // Cached full metrics data for panel
 	cmdHistory    []history.HistoryEntry
 	fileChanges   []tracker.RecordedFileChange
 	cassContext   []cass.SearchHit
@@ -675,8 +676,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err == nil {
 			m.metricsTokens = msg.Data.TotalTokens
 			m.metricsCost = msg.Data.TotalCost
+			m.metricsData = msg.Data
 		}
-		m.metricsPanel.SetData(msg.Data, m.metricsError)
+		m.metricsPanel.SetData(m.metricsData, m.metricsError)
 		return m, nil
 
 	case HistoryUpdateMsg:
