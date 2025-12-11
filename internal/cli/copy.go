@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"regexp"
-	"runtime"
 	"strings"
 
+	"github.com/Dicklesworthstone/ntm/internal/clipboard"
 	"github.com/Dicklesworthstone/ntm/internal/codeblock"
 	"github.com/Dicklesworthstone/ntm/internal/palette"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -18,12 +17,12 @@ import (
 
 func newCopyCmd() *cobra.Command {
 	var (
-		lines   int
-		pattern string
-		allFlag bool
-		ccFlag  bool
-		codFlag bool
-		gmiFlag bool
+		lines    int
+		pattern  string
+		allFlag  bool
+		ccFlag   bool
+		codFlag  bool
+		gmiFlag  bool
 		codeFlag bool
 	)
 
@@ -258,9 +257,15 @@ func runCopy(w io.Writer, session string, filter AgentFilter, opts CopyOptions) 
 
 	combined := strings.Join(outputs, "\n")
 
-	// Copy to clipboard
-	if err := copyToClipboard(combined); err != nil {
-		return fmt.Errorf("failed to copy to clipboard: %w", err)
+	clip, err := clipboard.New()
+	if err != nil {
+		return fmt.Errorf("failed to init clipboard: %w", err)
+	}
+	if !clip.Available() {
+		return fmt.Errorf("clipboard backend unavailable")
+	}
+	if err := clip.Copy(combined); err != nil {
+		return fmt.Errorf("failed to copy to clipboard via %s: %w", clip.Backend(), err)
 	}
 
 	lineCount := strings.Count(combined, "\n")
@@ -268,41 +273,4 @@ func runCopy(w io.Writer, session string, filter AgentFilter, opts CopyOptions) 
 		colorize(t.Success), colorize(t.Text), lineCount, len(targetPanes))
 
 	return nil
-}
-
-// copyToClipboard copies text to the system clipboard
-func copyToClipboard(text string) error {
-	var cmd *exec.Cmd
-
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("pbcopy")
-	case "linux":
-		// Try xclip first, then xsel
-		if _, err := exec.LookPath("xclip"); err == nil {
-			cmd = exec.Command("xclip", "-selection", "clipboard")
-		} else if _, err := exec.LookPath("xsel"); err == nil {
-			cmd = exec.Command("xsel", "--clipboard", "--input")
-		} else if _, err := exec.LookPath("wl-copy"); err == nil {
-			// Wayland support
-			cmd = exec.Command("wl-copy")
-		} else {
-			// Check for WSL
-			if _, err := exec.LookPath("clip.exe"); err == nil {
-				cmd = exec.Command("clip.exe")
-			} else {
-				return fmt.Errorf("no clipboard utility found (install xclip, xsel, or wl-copy)")
-			}
-		}
-	default:
-		// Fallback for Windows if built natively, though NTM is primarily POSIX
-		if runtime.GOOS == "windows" {
-			cmd = exec.Command("clip")
-		} else {
-			return fmt.Errorf("clipboard not supported on %s", runtime.GOOS)
-		}
-	}
-
-	cmd.Stdin = strings.NewReader(text)
-	return cmd.Run()
 }
