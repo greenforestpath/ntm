@@ -124,44 +124,44 @@ console.log("hello")
 
 func TestParseFilePathComment(t *testing.T) {
 	tests := []struct {
-		name       string
-		text       string
-		wantPath   string
-		wantIsNew  bool
+		name      string
+		text      string
+		wantPath  string
+		wantIsNew bool
 	}{
 		{
-			name: "python file comment",
-			text: "```python\n# src/auth.py\ndef auth():\n    pass\n```",
-			wantPath: "src/auth.py",
+			name:      "python file comment",
+			text:      "```python\n# src/auth.py\ndef auth():\n    pass\n```",
+			wantPath:  "src/auth.py",
 			wantIsNew: false,
 		},
 		{
-			name: "js file comment",
-			text: "```javascript\n// src/utils.js\nfunction util() {}\n```",
-			wantPath: "src/utils.js",
+			name:      "js file comment",
+			text:      "```javascript\n// src/utils.js\nfunction util() {}\n```",
+			wantPath:  "src/utils.js",
 			wantIsNew: false,
 		},
 		{
-			name: "html file comment",
-			text: "```html\n<!-- templates/index.html -->\n<html></html>\n```",
-			wantPath: "templates/index.html",
+			name:      "html file comment",
+			text:      "```html\n<!-- templates/index.html -->\n<html></html>\n```",
+			wantPath:  "templates/index.html",
 			wantIsNew: false,
 		},
 		{
-			name: "go package detection",
-			text: "```go\npackage mypackage\n\nfunc Do() {}\n```",
-			wantPath: "mypackage/mypackage.go",
+			name:      "go package detection",
+			text:      "```go\npackage mypackage\n\nfunc Do() {}\n```",
+			wantPath:  "mypackage/mypackage.go",
 			wantIsNew: true,
 		},
 		{
-			name: "go main package",
-			text: "```go\npackage main\n\nfunc main() {}\n```",
-			wantPath: "main.go",
+			name:      "go main package",
+			text:      "```go\npackage main\n\nfunc main() {}\n```",
+			wantPath:  "main.go",
 			wantIsNew: true,
 		},
 		{
-			name: "no path detectable",
-			text: "```python\nprint('hello')\n```",
+			name:      "no path detectable",
+			text:      "```python\nprint('hello')\n```",
 			wantPath:  "",
 			wantIsNew: false, // No path detectable, isNew defaults to false
 		},

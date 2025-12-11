@@ -8,14 +8,14 @@ import (
 
 func TestParseClaudeUsage(t *testing.T) {
 	tests := []struct {
-		name           string
-		input          string
-		wantSession    float64
-		wantWeekly     float64
-		wantPeriod     float64
-		wantSonnet     float64
-		wantResetStr   string
-		wantLimited    bool
+		name         string
+		input        string
+		wantSession  float64
+		wantWeekly   float64
+		wantPeriod   float64
+		wantSonnet   float64
+		wantResetStr string
+		wantLimited  bool
 	}{
 		{
 			name: "standard usage output",
@@ -123,11 +123,11 @@ Resets in 3 hours`,
 
 func TestParseClaudeStatus(t *testing.T) {
 	tests := []struct {
-		name         string
-		input        string
-		wantAccount  string
-		wantOrg      string
-		wantLogin    string
+		name        string
+		input       string
+		wantAccount string
+		wantOrg     string
+		wantLogin   string
 	}{
 		{
 			name: "full status output",

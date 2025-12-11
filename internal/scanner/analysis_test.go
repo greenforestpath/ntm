@@ -81,8 +81,8 @@ func TestAnalyzeImpactWithoutBv(t *testing.T) {
 
 func TestFormatImpactReport(t *testing.T) {
 	result := &AnalysisResult{
-		TotalFindings:    2,
-		GraphAvailable:   false,
+		TotalFindings:  2,
+		GraphAvailable: false,
 		HighImpactFindings: []ImpactAnalysis{
 			{
 				Finding: Finding{

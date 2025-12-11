@@ -179,7 +179,7 @@ func TestRotateOldEntries(t *testing.T) {
 
 	// Create file with old and new entries
 	now := time.Now().UTC()
-	old := now.AddDate(0, 0, -35) // 35 days ago
+	old := now.AddDate(0, 0, -35)   // 35 days ago
 	recent := now.AddDate(0, 0, -5) // 5 days ago
 
 	entries := []Event{

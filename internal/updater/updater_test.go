@@ -20,11 +20,11 @@ func TestCompareVersions(t *testing.T) {
 		{"v1.0.0", "1.0.0", 0},
 		{"1.0.0", "v1.0.0", 0},
 		{"2.0.0", "1.9.9", 1},
-		{"1.0.0", "1.0.0-alpha", 1}, // Release > Pre-release
+		{"1.0.0", "1.0.0-alpha", 1},      // Release > Pre-release
 		{"1.0.0-beta", "1.0.0-alpha", 1}, // beta > alpha
 		{"1.0.0-alpha", "1.0.0", -1},
 		// Lexical fallback cases
-		{"invalid", "1.0.0", 1}, 
+		{"invalid", "1.0.0", 1},
 		{"1.0.0", "invalid", -1},
 	}
 

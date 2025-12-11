@@ -6,9 +6,9 @@ import (
 
 func TestGetBuiltin(t *testing.T) {
 	tests := []struct {
-		name      string
-		want      bool
-		wantName  string
+		name     string
+		want     bool
+		wantName string
 	}{
 		{name: "code_review", want: true, wantName: "code_review"},
 		{name: "explain", want: true, wantName: "explain"},

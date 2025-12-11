@@ -28,8 +28,8 @@ func TestSpawnSessionLogic(t *testing.T) {
 	// Save/Restore to prevent side effects
 	oldCfg := cfg
 	oldJsonOutput := jsonOutput
-	defer func() { 
-		cfg = oldCfg 
+	defer func() {
+		cfg = oldCfg
 		jsonOutput = oldJsonOutput
 	}()
 

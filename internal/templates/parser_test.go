@@ -67,34 +67,34 @@ func TestParse_NoFrontmatter(t *testing.T) {
 
 func TestSubstituteVariables(t *testing.T) {
 	tests := []struct {
-		name   string
-		body   string
-		vars   map[string]string
-		want   string
+		name string
+		body string
+		vars map[string]string
+		want string
 	}{
 		{
-			name:   "simple substitution",
-			body:   "Hello {{name}}!",
-			vars:   map[string]string{"name": "World"},
-			want:   "Hello World!",
+			name: "simple substitution",
+			body: "Hello {{name}}!",
+			vars: map[string]string{"name": "World"},
+			want: "Hello World!",
 		},
 		{
-			name:   "multiple variables",
-			body:   "{{greeting}}, {{name}}!",
-			vars:   map[string]string{"greeting": "Hi", "name": "Alice"},
-			want:   "Hi, Alice!",
+			name: "multiple variables",
+			body: "{{greeting}}, {{name}}!",
+			vars: map[string]string{"greeting": "Hi", "name": "Alice"},
+			want: "Hi, Alice!",
 		},
 		{
-			name:   "unmatched variable",
-			body:   "Hello {{name}}!",
-			vars:   map[string]string{},
-			want:   "Hello {{name}}!",
+			name: "unmatched variable",
+			body: "Hello {{name}}!",
+			vars: map[string]string{},
+			want: "Hello {{name}}!",
 		},
 		{
-			name:   "variable in middle",
-			body:   "The {{color}} fox jumps.",
-			vars:   map[string]string{"color": "brown"},
-			want:   "The brown fox jumps.",
+			name: "variable in middle",
+			body: "The {{color}} fox jumps.",
+			vars: map[string]string{"color": "brown"},
+			want: "The brown fox jumps.",
 		},
 	}
 

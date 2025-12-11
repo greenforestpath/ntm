@@ -110,22 +110,22 @@ func TestHelperFunctions(t *testing.T) {
 	if evt.Details["wait_seconds"] != "30" {
 		t.Errorf("NewRateLimitEvent details = %v", evt.Details)
 	}
-	
+
 	evt = NewAgentCrashedEvent("sess", "p1", "cc")
 	if evt.Type != EventAgentCrashed {
 		t.Errorf("NewAgentCrashedEvent type = %v", evt.Type)
 	}
-	
+
 	evt = NewAgentErrorEvent("sess", "p1", "cc", "error")
 	if evt.Type != EventAgentError {
 		t.Errorf("NewAgentErrorEvent type = %v", evt.Type)
 	}
-	
+
 	evt = NewHealthDegradedEvent("sess", 5, 1, 0)
 	if evt.Type != EventHealthDegraded {
 		t.Errorf("NewHealthDegradedEvent type = %v", evt.Type)
 	}
-	
+
 	evt = NewRotationNeededEvent("sess", 1, "cc", "cmd")
 	if evt.Type != EventRotationNeeded {
 		t.Errorf("NewRotationNeededEvent type = %v", evt.Type)

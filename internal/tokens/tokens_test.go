@@ -8,8 +8,8 @@ func TestEstimateTokens(t *testing.T) {
 		want  int
 	}{
 		{"", 0},
-		{"hello world", 3}, // 11 chars * 10 / 35 = 3
-		{"short", 1},       // 5 * 10 / 35 = 1
+		{"hello world", 3},          // 11 chars * 10 / 35 = 3
+		{"short", 1},                // 5 * 10 / 35 = 1
 		{"longer sentence here", 6}, // 20 * 10 / 35 = 5.7 -> 5? No, int(5.7) = 5.
 		// Wait, 20 * 10 = 200 / 35 = 5.71
 	}
@@ -24,17 +24,17 @@ func TestEstimateTokens(t *testing.T) {
 
 func TestEstimateTokensWithLanguageHint(t *testing.T) {
 	text := "function test() { return true; }" // 32 chars
-	
+
 	// Code: 32 / 2.8 = 11.4 -> 11
 	if got := EstimateTokensWithLanguageHint(text, ContentCode); got != 11 {
 		t.Errorf("ContentCode: got %d, want 11", got)
 	}
-	
+
 	// Prose: 32 / 4.0 = 8
 	if got := EstimateTokensWithLanguageHint(text, ContentProse); got != 8 {
 		t.Errorf("ContentProse: got %d, want 8", got)
 	}
-	
+
 	// Unknown: 32 / 3.5 = 9.1 -> 9
 	if got := EstimateTokensWithLanguageHint(text, ContentUnknown); got != 9 {
 		t.Errorf("ContentUnknown: got %d, want 9", got)
@@ -43,7 +43,7 @@ func TestEstimateTokensWithLanguageHint(t *testing.T) {
 
 func TestEstimateWithOverhead(t *testing.T) {
 	text := "hello world" // 3 tokens
-	
+
 	// 3 * 2.0 = 6
 	if got := EstimateWithOverhead(text, 2.0); got != 6 {
 		t.Errorf("EstimateWithOverhead(2.0) = %d, want 6", got)
@@ -76,7 +76,7 @@ func TestUsagePercentage(t *testing.T) {
 	if got != 50.0 {
 		t.Errorf("UsagePercentage(64k, gpt-4) = %f, want 50.0", got)
 	}
-	
+
 	// Unknown model (128k default)
 	got = UsagePercentage(64000, "foo")
 	if got != 50.0 {
@@ -121,8 +121,8 @@ func TestSmartEstimate(t *testing.T) {
 	code := "func main() {}" // 14 chars
 	// Code (2.8): 14/2.8 = 5
 	// Basic (3.5): 14/3.5 = 4
-	
-got := SmartEstimate(code)
+
+	got := SmartEstimate(code)
 	if got != 5 {
 		t.Errorf("SmartEstimate code = %d, want 5", got)
 	}

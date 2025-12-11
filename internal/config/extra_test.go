@@ -9,7 +9,7 @@ import (
 
 func TestConfigGenerateAgentCommand(t *testing.T) {
 	cfg := &Config{}
-	
+
 	// Test no template
 	cmd, err := cfg.GenerateAgentCommand("simple command", AgentTemplateVars{})
 	if err != nil {
@@ -140,7 +140,7 @@ func TestThresholdConfigShouldFail(t *testing.T) {
 
 func TestLoadProjectScannerConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	
+
 	// Test no config
 	cfg, err := LoadProjectScannerConfig(tmpDir)
 	if err != nil {
@@ -158,7 +158,7 @@ scanner:
     timeout: 30s
 `
 	os.WriteFile(filepath.Join(tmpDir, ".ntm.yaml"), []byte(yamlContent), 0644)
-	
+
 	cfg, err = LoadProjectScannerConfig(tmpDir)
 	if err != nil {
 		t.Fatalf("LoadProjectScannerConfig failed: %v", err)

@@ -36,7 +36,7 @@ func captureOutput(f func()) (string, string) {
 func TestFormatterErrors(t *testing.T) {
 	var buf bytes.Buffer
 	f := New(WithWriter(&buf), WithJSON(true))
-	
+
 	// Error
 	err := errors.New("test error")
 	f.Error(err)
@@ -47,7 +47,7 @@ func TestFormatterErrors(t *testing.T) {
 	if resp.Error != "test error" {
 		t.Errorf("Error() = %q, want 'test error'", resp.Error)
 	}
-	
+
 	// ErrorMsg
 	buf.Reset()
 	f.ErrorMsg("msg error")
@@ -82,7 +82,7 @@ func TestPrintError(t *testing.T) {
 	stdout, _ := captureOutput(func() {
 		PrintError(errors.New("json error"), true)
 	})
-	
+
 	var resp ErrorResponse
 	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
 		t.Errorf("PrintError JSON invalid: %v", err)
@@ -105,13 +105,13 @@ func TestTimestamped(t *testing.T) {
 
 func TestPrintJSON(t *testing.T) {
 	data := map[string]string{"foo": "bar"}
-	
+
 	stdout, _ := captureOutput(func() {
 		if err := PrintJSON(data); err != nil {
 			t.Fatal(err)
 		}
 	})
-	
+
 	var resp map[string]string
 	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
 		t.Fatalf("PrintJSON output invalid: %v", err)
@@ -147,12 +147,12 @@ func TestOutputOrText(t *testing.T) {
 
 func TestFormatterMethods(t *testing.T) {
 	f := New(WithPretty(true))
-	
+
 	// Writer
 	if f.Writer() != os.Stdout {
 		// Default is stdout
 	}
-	
+
 	// Format
 	if f.Format() != FormatText {
 		t.Error("Expected FormatText default")
@@ -163,25 +163,25 @@ func TestTextHelpersExtended(t *testing.T) {
 	// Text
 	var buf bytes.Buffer
 	f := New(WithWriter(&buf))
-	
+
 	f.Text("hello")
 	if buf.String() != "hello" {
 		t.Errorf("Text() = %q, want hello", buf.String())
 	}
-	
-buf.Reset()
+
+	buf.Reset()
 	f.Line()
 	if buf.String() != "\n" {
 		t.Errorf("Line() = %q, want newline", buf.String())
 	}
-	
-buf.Reset()
+
+	buf.Reset()
 	f.Println("world")
 	if buf.String() != "world\n" {
 		t.Errorf("Println() = %q, want world\\n", buf.String())
 	}
-	
-buf.Reset()
+
+	buf.Reset()
 	f.Printf("hello %s", "world")
 	if buf.String() != "hello world" {
 		t.Errorf("Printf() = %q, want hello world", buf.String())
@@ -194,7 +194,7 @@ func TestTimestampFormat(t *testing.T) {
 	if s != "2025-01-01T12:00:00Z" {
 		t.Errorf("FormatTime() = %q", s)
 	}
-	
+
 	parsed, err := ParseTime(s)
 	if err != nil {
 		t.Errorf("ParseTime() error: %v", err)
@@ -209,8 +209,8 @@ func TestDefaultFormatter(t *testing.T) {
 	if !f.IsJSON() {
 		t.Error("DefaultFormatter(true) should be JSON")
 	}
-	
-f = DefaultFormatter(false)
+
+	f = DefaultFormatter(false)
 	if f.IsJSON() {
 		t.Error("DefaultFormatter(false) should be Text")
 	}
@@ -222,7 +222,7 @@ func TestDetectFormatEnv(t *testing.T) {
 	if f := DetectFormat(false); f != FormatJSON {
 		t.Error("DetectFormat(false) with env=json should be JSON")
 	}
-	
+
 	// Env var TEXT
 	os.Setenv("NTM_OUTPUT_FORMAT", "text")
 	if f := DetectFormat(false); f != FormatText {
@@ -236,7 +236,7 @@ func TestTableAlignment(t *testing.T) {
 	tbl := NewTable(&buf, "Col1", "Col2")
 	tbl.AddRow("Short", "Long Value Here")
 	tbl.Render()
-	
+
 	output := buf.String()
 	if !strings.Contains(output, "Col1") {
 		t.Error("Table missing header Col1")

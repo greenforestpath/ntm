@@ -120,8 +120,8 @@ func TestDetectCompaction_NoFalsePositives(t *testing.T) {
 		"Error: undefined is not a function", // Error but not compaction
 		"fatal: not a git repository",
 		"Connection refused",
-		"Rate limit exceeded", // Error but not compaction
-		"def compact_data(x):\n    return x.strip()", // Code containing 'compact'
+		"Rate limit exceeded",                                   // Error but not compaction
+		"def compact_data(x):\n    return x.strip()",            // Code containing 'compact'
 		"class ConversationManager:\n    def reset(self): pass", // Code with similar words
 	}
 

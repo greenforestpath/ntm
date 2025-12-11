@@ -129,7 +129,7 @@ func TestTutorialSkipAnimation(t *testing.T) {
 
 func TestSlideContent_View(t *testing.T) {
 	m := New(WithSkipAnimations())
-	
+
 	// Render view
 	view := m.View()
 
@@ -143,7 +143,7 @@ func TestSlideContent_View(t *testing.T) {
 		for i := 0; i < 50; i++ {
 			m = updateModel(m, TickMsg(time.Now()))
 		}
-		
+
 		view := stripANSI(m.View())
 		if !strings.Contains(view, "journey") {
 			t.Logf("View output (stripped): %s", view)

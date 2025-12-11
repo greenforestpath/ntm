@@ -34,7 +34,7 @@ func TestHistoryJSONIncludesDurationAndTargets(t *testing.T) {
 
 	// Marshal JSON
 	data, err := json.Marshal(res.JSON())
-    if err != nil {
+	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 

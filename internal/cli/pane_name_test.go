@@ -6,10 +6,10 @@ import (
 
 func TestParsePaneName(t *testing.T) {
 	tests := []struct {
-		name      string
-		title     string
-		want      *PaneInfo
-		wantErr   bool
+		name    string
+		title   string
+		want    *PaneInfo
+		wantErr bool
 	}{
 		{
 			name:  "basic cc pane without variant",
@@ -189,10 +189,10 @@ func TestPaneInfo_HasVariant(t *testing.T) {
 
 func TestPaneInfo_MatchesVariant(t *testing.T) {
 	tests := []struct {
-		name     string
-		variant  string
-		filter   string
-		want     bool
+		name    string
+		variant string
+		filter  string
+		want    bool
 	}{
 		{"empty filter matches all", "opus", "", true},
 		{"empty filter matches empty variant", "", "", true},

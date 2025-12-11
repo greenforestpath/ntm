@@ -32,13 +32,13 @@ func TestPrintTerse(t *testing.T) {
 func TestPrintTerseNoTmux(t *testing.T) {
 	// Without mocking, we can only test the parsing logic helper if we extract it,
 	// or rely on PrintTerse behavior in current env.
-	
+
 	cfg := config.Default()
 	output, err := captureStdout(t, func() error { return PrintTerse(cfg) })
 	if err != nil {
 		t.Fatalf("PrintTerse failed: %v", err)
 	}
-	
+
 	parts := parseTerseOutput(output)
 	// If output is empty (e.g. no sessions and no alert config), parts might be nil or empty string
 	if len(output) > 0 && len(parts) == 0 {
@@ -47,7 +47,7 @@ func TestPrintTerseNoTmux(t *testing.T) {
 			t.Error("No terse parts found but output not empty")
 		}
 	}
-	
+
 	for _, part := range parts {
 		state, err := ParseTerse(part)
 		if err != nil {
