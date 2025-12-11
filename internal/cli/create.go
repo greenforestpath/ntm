@@ -2,10 +2,12 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/spf13/cobra"
@@ -55,6 +57,41 @@ func runCreate(session string, panes int) error {
 	}
 
 	dir := cfg.GetProjectDir(session)
+
+	// Initialize hook executor
+	hookExec, err := hooks.NewExecutorFromConfig()
+	if err != nil {
+		if !IsJSONOutput() {
+			fmt.Printf("⚠ Warning: could not load hooks config: %v\n", err)
+		}
+		hookExec = hooks.NewExecutor(nil)
+	}
+
+	ctx := context.Background()
+	hookCtx := hooks.ExecutionContext{
+		SessionName: session,
+		ProjectDir:  dir,
+	}
+
+	// Run pre-create hooks
+	if hookExec.HasHooksForEvent(hooks.EventPreCreate) {
+		if !IsJSONOutput() {
+			fmt.Println("Running pre-create hooks...")
+		}
+		results, err := hookExec.RunHooksForEvent(ctx, hooks.EventPreCreate, hookCtx)
+		if err != nil {
+			if IsJSONOutput() {
+				return output.PrintJSON(output.NewError(fmt.Sprintf("pre-create hooks failed: %v", err)))
+			}
+			return fmt.Errorf("pre-create hooks failed: %w", err)
+		}
+		if hooks.AnyFailed(results) {
+			if IsJSONOutput() {
+				return output.PrintJSON(output.NewError(hooks.AllErrors(results).Error()))
+			}
+			return hooks.AllErrors(results)
+		}
+	}
 
 	// Check if directory exists
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
@@ -130,6 +167,14 @@ func runCreate(session string, panes int) error {
 				return fmt.Errorf("creating pane %d: %w", i+1, err)
 			}
 		}
+	}
+
+	// Run post-create hooks
+	if hookExec.HasHooksForEvent(hooks.EventPostCreate) {
+		if !IsJSONOutput() {
+			fmt.Println("Running post-create hooks...")
+		}
+		_, _ = hookExec.RunHooksForEvent(ctx, hooks.EventPostCreate, hookCtx)
 	}
 
 	// JSON output mode: return structured response

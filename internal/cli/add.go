@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -122,6 +124,36 @@ func runAdd(session string, specs AgentSpecs, pluginMap map[string]plugins.Agent
 	}
 
 	dir := cfg.GetProjectDir(session)
+
+	// Initialize hook executor
+	hookExec, err := hooks.NewExecutorFromConfig()
+	if err != nil {
+		if !IsJSONOutput() {
+			fmt.Printf("⚠ Warning: could not load hooks config: %v\n", err)
+		}
+		hookExec = hooks.NewExecutor(nil)
+	}
+
+	ctx := context.Background()
+	hookCtx := hooks.ExecutionContext{
+		SessionName: session,
+		ProjectDir:  dir,
+	}
+
+	// Run pre-add hooks
+	if hookExec.HasHooksForEvent(hooks.EventPreAdd) {
+		if !IsJSONOutput() {
+			fmt.Println("Running pre-add hooks...")
+		}
+		results, err := hookExec.RunHooksForEvent(ctx, hooks.EventPreAdd, hookCtx)
+		if err != nil {
+			return outputError(fmt.Errorf("pre-add hooks failed: %w", err))
+		}
+		if hooks.AnyFailed(results) {
+			return outputError(hooks.AllErrors(results))
+		}
+	}
+
 	if !IsJSONOutput() {
 		fmt.Printf("Adding %d agent(s) to session '%s'...\n", totalAgents, session)
 	}
@@ -288,6 +320,15 @@ func runAdd(session string, specs AgentSpecs, pluginMap map[string]plugins.Agent
 			Variant: agent.Model,
 			Command: cmd,
 		})
+	}
+
+	// Run post-add hooks
+	if hookExec.HasHooksForEvent(hooks.EventPostAdd) {
+		if !IsJSONOutput() {
+			fmt.Println("Running post-add hooks...")
+		}
+		// Update context with new pane info? Optional.
+		_, _ = hookExec.RunHooksForEvent(ctx, hooks.EventPostAdd, hookCtx)
 	}
 
 	// JSON output mode
