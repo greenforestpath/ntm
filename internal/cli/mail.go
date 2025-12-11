@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -116,6 +117,178 @@ Examples:
 	cmd.Flags().StringVarP(&fromFile, "file", "f", "", "read message body from file")
 
 	return cmd
+}
+
+// mailInboxClient is the minimal interface we need for inbox operations (mockable in tests).
+type mailInboxClient interface {
+	IsAvailable() bool
+	ListProjectAgents(ctx context.Context, projectKey string) ([]agentmail.Agent, error)
+	FetchInbox(ctx context.Context, opts agentmail.FetchInboxOptions) ([]agentmail.InboxMessage, error)
+}
+
+// newMailInboxCmd shows aggregate inbox for project agents.
+func newMailInboxCmd() *cobra.Command {
+	var (
+		agent         string
+		urgent        bool
+		sessionAgents bool
+		jsonFormat    bool
+		limit         int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "inbox [session]",
+		Short: "Show aggregate project inbox",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var session string
+			if len(args) > 0 {
+				session = args[0]
+			}
+			return runMailInbox(cmd, nil, session, sessionAgents, agent, urgent, limit, jsonFormat)
+		},
+	}
+
+	cmd.Flags().StringVar(&agent, "agent", "", "Filter by specific agent name")
+	cmd.Flags().BoolVar(&urgent, "urgent", false, "Show only urgent messages")
+	cmd.Flags().BoolVar(&sessionAgents, "session-agents", false, "Filter to agents currently in session")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Max messages to show")
+	cmd.Flags().BoolVar(&jsonFormat, "json", false, "Output in JSON format")
+
+	return cmd
+}
+
+// runMailInbox aggregates messages across agents and writes to cmd output.
+func runMailInbox(cmd *cobra.Command, client mailInboxClient, session string, sessionAgents bool, agentFilter string, urgent bool, limit int, jsonFmt bool) error {
+	projectKey, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	if client == nil {
+		client = agentmail.NewClient(agentmail.WithProjectKey(projectKey))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if !client.IsAvailable() {
+		return fmt.Errorf("agent mail server not available")
+	}
+
+	agents, err := client.ListProjectAgents(ctx, projectKey)
+	if err != nil {
+		return fmt.Errorf("listing agents: %w", err)
+	}
+
+	targetAgents := make([]string, 0)
+	if agentFilter != "" {
+		targetAgents = append(targetAgents, agentFilter)
+	} else {
+		for _, a := range agents {
+			if a.Name != "HumanOverseer" {
+				targetAgents = append(targetAgents, a.Name)
+			}
+		}
+	}
+
+	// Filter to session agents if requested
+	if sessionAgents {
+		if session == "" {
+			if tmux.InTmux() {
+				session = tmux.GetCurrentSession()
+			} else {
+				return fmt.Errorf("session name required for --session-agents")
+			}
+		}
+		panes, err := tmux.GetPanes(session)
+		if err != nil {
+			return fmt.Errorf("getting session panes: %w", err)
+		}
+		sessionSet := make(map[string]bool)
+		for _, p := range panes {
+			name := resolveAgentName(p)
+			if name != "" {
+				sessionSet[name] = true
+			}
+		}
+		filtered := targetAgents[:0]
+		for _, name := range targetAgents {
+			if sessionSet[name] {
+				filtered = append(filtered, name)
+			}
+		}
+		targetAgents = filtered
+		if len(targetAgents) == 0 {
+			return fmt.Errorf("no agents found in session '%s'", session)
+		}
+	}
+
+	type aggregatedMessage struct {
+		ID         int
+		Subject    string
+		From       string
+		Recipients []string
+		Importance string
+	}
+
+	agg := make(map[int]*aggregatedMessage)
+
+	for _, name := range targetAgents {
+		msgs, err := client.FetchInbox(ctx, agentmail.FetchInboxOptions{
+			ProjectKey: projectKey,
+			AgentName:  name,
+			UrgentOnly: urgent,
+			Limit:      limit,
+		})
+		if err != nil {
+			return err
+		}
+		for _, msg := range msgs {
+			entry, ok := agg[msg.ID]
+			if !ok {
+				entry = &aggregatedMessage{
+					ID:         msg.ID,
+					Subject:    msg.Subject,
+					From:       msg.From,
+					Importance: msg.Importance,
+				}
+				agg[msg.ID] = entry
+			}
+			entry.Recipients = append(entry.Recipients, name)
+		}
+	}
+
+	if len(agg) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "Inbox empty")
+		return nil
+	}
+
+	var msgs []aggregatedMessage
+	for _, m := range agg {
+		msgs = append(msgs, *m)
+	}
+
+	// Simple deterministic order: newest ID last not available; just sort by ID.
+	sort.Slice(msgs, func(i, j int) bool { return msgs[i].ID < msgs[j].ID })
+
+	if jsonFmt {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(msgs)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Project Inbox: %s\n", filepath.Base(projectKey))
+	for _, m := range msgs {
+		prefix := ""
+		if strings.EqualFold(m.Importance, "urgent") || strings.EqualFold(m.Importance, "high") {
+			prefix = "[URGENT] "
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s%s\n", prefix, m.Subject)
+		if m.From != "" || len(m.Recipients) > 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s → %s\n", m.From, strings.Join(m.Recipients, ", "))
+		}
+	}
+	return nil
 }
 
 // mailAction represents the kind of mailbox mutation to apply.

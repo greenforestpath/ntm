@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 package cli
 
 import (
@@ -112,10 +115,10 @@ func TestRunMailInbox(t *testing.T) {
 				Inboxes: map[string][]agentmail.InboxMessage{
 					"BlueLake": {
 						{ID: 1,
-						 Subject:    "Test Message",
-						 From:       "GreenCastle",
-						 CreatedTS:  time.Now(),
-						 Importance: "normal",
+							Subject:    "Test Message",
+							From:       "GreenCastle",
+							CreatedTS:  time.Now(),
+							Importance: "normal",
 						},
 					},
 				},

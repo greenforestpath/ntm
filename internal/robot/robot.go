@@ -561,12 +561,6 @@ func PrintStatus() error {
 	return encodeJSON(output)
 }
 
-// PrintDashboard currently mirrors PrintStatus. Placeholder until dashboard-specific
-// snapshot is implemented.
-func PrintDashboard() error {
-	return PrintStatus()
-}
-
 func appendFileChanges(output *StatusOutput) {
 	cutoff := time.Now().Add(-fileChangeLookback)
 	changes := tracker.RecordedChangesSince(cutoff)
@@ -2400,3 +2394,4 @@ func PrintDashboard() error {
 	return encodeJSON(map[string]string{
 		"status": "not_implemented",
 	})
+}
