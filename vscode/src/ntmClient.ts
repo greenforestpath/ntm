@@ -85,12 +85,17 @@ export class NtmClient {
     }
 
     async send(session: string, prompt: string, targets: string[] = []): Promise<void> {
-        const args = ['send', session, prompt];
-        if (targets.length > 0) {
-            // Mapping target logic logic is complex in flags.
-            // For now assume generic --all or similar if targets empty.
-            // Or pass targets as flags.
+        const args = ['send', session];
+        
+        if (targets.includes('all')) {
+            args.push('--all');
+        } else {
+            if (targets.includes('cc')) args.push('--cc');
+            if (targets.includes('cod')) args.push('--cod');
+            if (targets.includes('gmi')) args.push('--gmi');
         }
+
+        args.push(prompt);
         await this.run(args);
     }
     

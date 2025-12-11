@@ -80,7 +80,68 @@ export function activate(context: vscode.ExtensionContext) {
         NtmDashboard.createOrShow(context.extensionUri, client);
     });
 
-	context.subscriptions.push(dispStatus, dispSpawn, dispOpenPalette, dispDashboard);
+    const handleSend = async (content: string) => {
+        try {
+            let session = currentSession;
+            if (!session) {
+                const status = await client.getStatus();
+                const primary = pickPrimarySession(status);
+                session = primary?.name;
+            }
+            
+            const chosenSession = session ?? await vscode.window.showInputBox({ prompt: 'NTM Session' });
+            if (!chosenSession) return;
+            currentSession = chosenSession;
+
+            const target = await vscode.window.showQuickPick(
+                ['Claude (--cc)', 'Codex (--cod)', 'Gemini (--gmi)', 'All (--all)'],
+                { placeHolder: 'Select Target Agents' }
+            );
+            if (!target) return;
+
+            let targets: string[] = [];
+            if (target.includes('--all')) targets = ['all'];
+            else if (target.includes('--cc')) targets = ['cc'];
+            else if (target.includes('--cod')) targets = ['cod'];
+            else if (target.includes('--gmi')) targets = ['gmi'];
+
+            const instruction = await vscode.window.showInputBox({ prompt: 'Additional Instructions (optional)' });
+            const fullPrompt = content + (instruction ? `\nInstructions: ${instruction}` : '');
+
+            await client.send(chosenSession, fullPrompt, targets);
+            vscode.window.showInformationMessage(`Sent to ${chosenSession} (${targets.join(',')})`);
+        } catch (e) {
+            vscode.window.showErrorMessage(`Send failed: ${e}`);
+        }
+    };
+
+    let dispSendSelection = vscode.commands.registerCommand('ntm.sendSelection', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) return;
+
+        const selection = editor.selection;
+        const text = editor.document.getText(selection);
+        if (!text) {
+            vscode.window.showWarningMessage('No text selected');
+            return;
+        }
+
+        const filePath = vscode.workspace.asRelativePath(editor.document.uri);
+        const prompt = `File: ${filePath}\n\`\`\`\n${text}\n\`\`\`\n`;
+        await handleSend(prompt);
+    });
+
+    let dispSendFile = vscode.commands.registerCommand('ntm.sendCurrentFile', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) return;
+
+        const text = editor.document.getText();
+        const filePath = vscode.workspace.asRelativePath(editor.document.uri);
+        const prompt = `File: ${filePath}\n\`\`\`\n${text}\n\`\`\`\n`;
+        await handleSend(prompt);
+    });
+
+	context.subscriptions.push(dispStatus, dispSpawn, dispOpenPalette, dispDashboard, dispSendSelection, dispSendFile);
 }
 
 function pickPrimarySession(status: ReturnType<NtmClient['getStatus']> extends Promise<infer T> ? T : never) {
