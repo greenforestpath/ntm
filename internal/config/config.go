@@ -48,10 +48,11 @@ type Config struct {
 	Checkpoints   CheckpointsConfig `toml:"checkpoints"`
 	Notifications notify.Config     `toml:"notifications"`
 	Resilience    ResilienceConfig  `toml:"resilience"`
-	Scanner       ScannerConfig     `toml:"scanner"`  // UBS scanner configuration
-	CASS          CASSConfig        `toml:"cass"`     // CASS integration configuration
-	Accounts      AccountsConfig    `toml:"accounts"` // Multi-account management
-	Rotation      RotationConfig    `toml:"rotation"` // Account rotation configuration
+	Scanner       ScannerConfig     `toml:"scanner"`      // UBS scanner configuration
+	CASS          CASSConfig        `toml:"cass"`         // CASS integration configuration
+	Accounts      AccountsConfig    `toml:"accounts"`     // Multi-account management
+	Rotation      RotationConfig    `toml:"rotation"`     // Account rotation configuration
+	GeminiSetup   GeminiSetupConfig `toml:"gemini_setup"` // Gemini post-spawn setup
 
 	// Runtime-only fields (populated by project config merging)
 	ProjectDefaults map[string]int `toml:"-"`
@@ -324,6 +325,32 @@ type AgentConfig struct {
 	Claude string `toml:"claude"`
 	Codex  string `toml:"codex"`
 	Gemini string `toml:"gemini"`
+}
+
+// GeminiSetupConfig holds configuration for Gemini post-spawn setup.
+type GeminiSetupConfig struct {
+	// AutoSelectProModel automatically selects Pro model after Gemini spawns.
+	// When true, NTM sends /model, Down, Enter to select Pro mode.
+	AutoSelectProModel bool `toml:"auto_select_pro_model"`
+
+	// ReadyTimeoutSeconds is how long to wait for Gemini CLI to be ready.
+	ReadyTimeoutSeconds int `toml:"ready_timeout_seconds"`
+
+	// ModelSelectTimeoutSeconds is how long to wait for model menu.
+	ModelSelectTimeoutSeconds int `toml:"model_select_timeout_seconds"`
+
+	// Verbose enables debug output during setup.
+	Verbose bool `toml:"verbose"`
+}
+
+// DefaultGeminiSetupConfig returns sensible defaults for Gemini setup.
+func DefaultGeminiSetupConfig() GeminiSetupConfig {
+	return GeminiSetupConfig{
+		AutoSelectProModel:        true,  // Select Pro by default
+		ReadyTimeoutSeconds:       30,    // 30 seconds to wait for ready
+		ModelSelectTimeoutSeconds: 10,    // 10 seconds for model menu
+		Verbose:                   false, // Quiet by default
+	}
 }
 
 // PaletteCmd represents a command in the palette
@@ -615,6 +642,7 @@ func Default() *Config {
 		CASS:          DefaultCASSConfig(),
 		Accounts:      DefaultAccountsConfig(),
 		Rotation:      DefaultRotationConfig(),
+		GeminiSetup:   DefaultGeminiSetupConfig(),
 	}
 
 	// Try to load palette from markdown file
@@ -951,6 +979,29 @@ func Load(path string) (*Config, error) {
 		cfg.Rotation.Enabled = rotationEnabled == "1" || rotationEnabled == "true"
 	}
 
+	// Apply GeminiSetup defaults
+	// If ReadyTimeoutSeconds is 0, the section was likely missing - apply all defaults
+	geminiDefaults := DefaultGeminiSetupConfig()
+	if cfg.GeminiSetup.ReadyTimeoutSeconds == 0 {
+		cfg.GeminiSetup.ReadyTimeoutSeconds = geminiDefaults.ReadyTimeoutSeconds
+	}
+	if cfg.GeminiSetup.ModelSelectTimeoutSeconds == 0 {
+		cfg.GeminiSetup.ModelSelectTimeoutSeconds = geminiDefaults.ModelSelectTimeoutSeconds
+	}
+	// AutoSelectProModel defaults to true, but Go's zero value is false.
+	// If both timeouts were 0 (now set to defaults), assume section was missing and apply AutoSelectProModel default.
+	if cfg.GeminiSetup.ReadyTimeoutSeconds == geminiDefaults.ReadyTimeoutSeconds &&
+		cfg.GeminiSetup.ModelSelectTimeoutSeconds == geminiDefaults.ModelSelectTimeoutSeconds &&
+		!cfg.GeminiSetup.AutoSelectProModel {
+		// Section likely missing - apply all defaults including AutoSelectProModel=true
+		cfg.GeminiSetup = geminiDefaults
+	}
+
+	// Environment variable override for Gemini setup
+	if autoSelect := os.Getenv("NTM_GEMINI_AUTO_PRO"); autoSelect != "" {
+		cfg.GeminiSetup.AutoSelectProModel = autoSelect == "1" || autoSelect == "true"
+	}
+
 	// Try to load palette from markdown file
 	// This takes precedence over TOML [[palette]] entries
 	mdPath := cfg.PaletteFile
@@ -1239,6 +1290,16 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "show_quota_bars = %t       # Show quota bars in dashboard\n", cfg.Rotation.Dashboard.ShowQuotaBars)
 	fmt.Fprintf(w, "show_account_status = %t   # Show account status\n", cfg.Rotation.Dashboard.ShowAccountStatus)
 	fmt.Fprintf(w, "show_reset_timers = %t     # Show reset countdown\n", cfg.Rotation.Dashboard.ShowResetTimers)
+	fmt.Fprintln(w)
+
+	// Write Gemini setup configuration
+	fmt.Fprintln(w, "[gemini_setup]")
+	fmt.Fprintln(w, "# Gemini CLI post-spawn setup configuration")
+	fmt.Fprintln(w, "# When enabled, NTM automatically selects the Pro model after spawning Gemini agents")
+	fmt.Fprintf(w, "auto_select_pro_model = %t       # Auto-select Pro model (Gemini 3) on spawn\n", cfg.GeminiSetup.AutoSelectProModel)
+	fmt.Fprintf(w, "ready_timeout_seconds = %d       # Seconds to wait for Gemini CLI to be ready\n", cfg.GeminiSetup.ReadyTimeoutSeconds)
+	fmt.Fprintf(w, "model_select_timeout_seconds = %d # Seconds to wait for model selection menu\n", cfg.GeminiSetup.ModelSelectTimeoutSeconds)
+	fmt.Fprintf(w, "verbose = %t                     # Show debug output during setup\n", cfg.GeminiSetup.Verbose)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "# Command Palette entries")

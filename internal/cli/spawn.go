@@ -12,6 +12,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
+	"github.com/Dicklesworthstone/ntm/internal/gemini"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
@@ -549,6 +550,30 @@ func spawnSessionLogic(opts SpawnOptions) error {
 
 		if err := tmux.SendKeys(pane.ID, cmd, true); err != nil {
 			return outputError(fmt.Errorf("launching %s agent: %w", agent.Type, err))
+		}
+
+		// Gemini post-spawn setup: auto-select Pro model
+		if agent.Type == AgentTypeGemini && cfg.GeminiSetup.AutoSelectProModel {
+			geminiCfg := gemini.SetupConfig{
+				AutoSelectProModel: cfg.GeminiSetup.AutoSelectProModel,
+				ReadyTimeout:       time.Duration(cfg.GeminiSetup.ReadyTimeoutSeconds) * time.Second,
+				ModelSelectTimeout: time.Duration(cfg.GeminiSetup.ModelSelectTimeoutSeconds) * time.Second,
+				PollInterval:       500 * time.Millisecond,
+				Verbose:            cfg.GeminiSetup.Verbose,
+			}
+			setupCtx, setupCancel := context.WithTimeout(context.Background(), geminiCfg.ReadyTimeout+geminiCfg.ModelSelectTimeout+10*time.Second)
+			if err := gemini.PostSpawnSetup(setupCtx, pane.ID, geminiCfg); err != nil {
+				setupCancel()
+				if !IsJSONOutput() {
+					fmt.Printf("⚠ Warning: Gemini Pro model setup failed: %v\n", err)
+				}
+				// Don't fail spawn - agent is still running, just possibly with default model
+			} else {
+				setupCancel()
+				if !IsJSONOutput() && cfg.GeminiSetup.Verbose {
+					fmt.Printf("✓ Gemini %d configured for Pro model\n", agent.Index)
+				}
+			}
 		}
 
 		// Inject CASS context if available
