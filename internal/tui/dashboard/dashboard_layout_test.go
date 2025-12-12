@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
 )
 
@@ -207,5 +210,54 @@ func TestSplitProportionsAcrossThresholds(t *testing.T) {
 				t.Fatalf("total %d: both panels should be non-zero (left=%d right=%d)", tc.total, left, right)
 			}
 		})
+	}
+}
+
+func TestSidebarRendersCASSContext(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(layout.UltraWideViewThreshold)
+	now := time.Now().Add(-2 * time.Hour).Unix()
+	hits := []cass.SearchHit{
+		{
+			Title:     "Session: auth refactor",
+			Score:     0.90,
+			CreatedAt: &now,
+		},
+	}
+
+	updated, _ := m.Update(CASSContextMsg{Hits: hits})
+	m = updated.(Model)
+
+	out := status.StripANSI(m.renderSidebar(60, 25))
+	if !strings.Contains(out, "auth refactor") {
+		t.Fatalf("expected sidebar to include CASS hit title; got:\n%s", out)
+	}
+}
+
+func TestSidebarRendersFileChanges(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(layout.UltraWideViewThreshold)
+	now := time.Now().Add(-2 * time.Minute)
+
+	changes := []tracker.RecordedFileChange{
+		{
+			Timestamp: now,
+			Session:   "test",
+			Agents:    []string{"BluePond"},
+			Change: tracker.FileChange{
+				Path: "/src/main.go",
+				Type: tracker.FileModified,
+			},
+		},
+	}
+
+	updated, _ := m.Update(FileChangeMsg{Changes: changes})
+	m = updated.(Model)
+
+	out := status.StripANSI(m.renderSidebar(60, 25))
+	if !strings.Contains(out, "main.go") {
+		t.Fatalf("expected sidebar to include file change; got:\n%s", out)
 	}
 }

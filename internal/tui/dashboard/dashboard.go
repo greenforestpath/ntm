@@ -209,6 +209,7 @@ type Model struct {
 	metricsPanel *panels.MetricsPanel
 	historyPanel *panels.HistoryPanel
 	cassPanel    *panels.CASSPanel
+	filesPanel   *panels.FilesPanel
 	tickerPanel  *panels.TickerPanel
 
 	// Data for new panels
@@ -358,6 +359,7 @@ func New(session string) Model {
 		metricsPanel: panels.NewMetricsPanel(),
 		historyPanel: panels.NewHistoryPanel(),
 		cassPanel:    panels.NewCASSPanel(),
+		filesPanel:   panels.NewFilesPanel(),
 		tickerPanel:  panels.NewTickerPanel(),
 	}
 
@@ -695,6 +697,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fileChangesError = msg.Err
 		if msg.Err == nil {
 			m.fileChanges = msg.Changes
+		}
+		if m.filesPanel != nil {
+			m.filesPanel.SetData(m.fileChanges, m.fileChangesError)
 		}
 		return m, nil
 
@@ -1789,13 +1794,34 @@ func (m Model) renderSidebar(width, height int) string {
 		lines = append(lines, m.renderScanBadge())
 	}
 
+	// File activity (best-effort, height-gated)
+	if m.filesPanel != nil && height > 0 && (len(m.fileChanges) > 0 || m.fileChangesError != nil) {
+		used := lipgloss.Height(strings.Join(lines, "\n"))
+		spacer := 1
+		panelHeight := height - used - spacer
+		if panelHeight >= m.filesPanel.Config().MinHeight {
+			if panelHeight > 14 {
+				panelHeight = 14
+			}
+
+			if m.focusedPanel == PanelSidebar {
+				m.filesPanel.Focus()
+			} else {
+				m.filesPanel.Blur()
+			}
+			m.filesPanel.SetSize(width, panelHeight)
+			lines = append(lines, "", m.filesPanel.View())
+		}
+	}
+
 	// CASS context (best-effort, height-gated)
 	if m.cassPanel != nil && height > 0 {
 		used := lipgloss.Height(strings.Join(lines, "\n"))
-		remaining := height - used
-		if remaining >= m.cassPanel.Config().MinHeight {
-			if remaining > 14 {
-				remaining = 14
+		spacer := 1
+		panelHeight := height - used - spacer
+		if panelHeight >= m.cassPanel.Config().MinHeight {
+			if panelHeight > 14 {
+				panelHeight = 14
 			}
 
 			if m.focusedPanel == PanelSidebar {
@@ -1803,7 +1829,7 @@ func (m Model) renderSidebar(width, height int) string {
 			} else {
 				m.cassPanel.Blur()
 			}
-			m.cassPanel.SetSize(width, remaining)
+			m.cassPanel.SetSize(width, panelHeight)
 			lines = append(lines, "", m.cassPanel.View())
 		}
 	}
