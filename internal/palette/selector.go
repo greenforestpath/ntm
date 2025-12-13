@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -218,9 +219,12 @@ func (s SessionSelector) View() string {
 
 	if len(s.sessions) == 0 {
 		// Empty state with styled message
-		emptyIcon := lipgloss.NewStyle().Foreground(t.Warning).Render(ic.Warning)
-		emptyText := lipgloss.NewStyle().Foreground(t.Overlay).Italic(true).Render("No tmux sessions found")
-		b.WriteString("  " + emptyIcon + " " + emptyText + "\n\n")
+		b.WriteString(components.RenderState(components.StateOptions{
+			Kind:    components.StateEmpty,
+			Icon:    ic.Warning,
+			Message: "No tmux sessions found",
+			Width:   boxWidth,
+		}) + "\n\n")
 
 		hintStyle := lipgloss.NewStyle().Foreground(t.Subtext)
 		cmdStyle := lipgloss.NewStyle().Foreground(t.Blue).Bold(true)

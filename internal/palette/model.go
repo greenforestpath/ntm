@@ -262,13 +262,17 @@ func (m *Model) updateCommandPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return *m, tea.Quit
 
 	case key.Matches(msg, keys.Up):
-		if m.cursor > 0 {
-			m.cursor--
+		if len(m.visualOrder) > 0 {
+			if pos := m.cursorVisualPos(); pos > 0 {
+				m.cursor = m.visualOrder[pos-1]
+			}
 		}
 
 	case key.Matches(msg, keys.Down):
-		if m.cursor < len(m.filtered)-1 {
-			m.cursor++
+		if len(m.visualOrder) > 0 {
+			if pos := m.cursorVisualPos(); pos < len(m.visualOrder)-1 {
+				m.cursor = m.visualOrder[pos+1]
+			}
 		}
 
 	case key.Matches(msg, keys.Select):
@@ -369,6 +373,11 @@ func (m *Model) updateTargetPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateFiltered() {
+	prevKey := ""
+	if m.cursor >= 0 && m.cursor < len(m.filtered) {
+		prevKey = m.filtered[m.cursor].Key
+	}
+
 	query := strings.ToLower(m.filter.Value())
 	if query == "" {
 		m.filtered = m.commands
@@ -386,6 +395,16 @@ func (m *Model) updateFiltered() {
 	// Build visual order mapping (items grouped by category)
 	m.buildVisualOrder()
 
+	// Preserve selection when filtering, if possible.
+	if prevKey != "" {
+		for i, cmd := range m.filtered {
+			if cmd.Key == prevKey {
+				m.cursor = i
+				break
+			}
+		}
+	}
+
 	// Keep cursor in bounds
 	if m.cursor >= len(m.filtered) {
 		m.cursor = len(m.filtered) - 1
@@ -393,6 +412,15 @@ func (m *Model) updateFiltered() {
 	if m.cursor < 0 {
 		m.cursor = 0
 	}
+}
+
+func (m Model) cursorVisualPos() int {
+	for pos, idx := range m.visualOrder {
+		if idx == m.cursor {
+			return pos
+		}
+	}
+	return 0
 }
 
 // buildVisualOrder creates a mapping from visual position to filtered index.
@@ -683,10 +711,7 @@ func (m Model) renderCommandList(width int) string {
 	ic := m.icons
 
 	if len(m.filtered) == 0 {
-		emptyStyle := lipgloss.NewStyle().
-			Foreground(t.Overlay).
-			Italic(true)
-		return emptyStyle.Render("No commands match your filter")
+		return components.EmptyState("No commands match your filter", width)
 	}
 
 	var lines []string
@@ -707,6 +732,7 @@ func (m Model) renderCommandList(width int) string {
 	}
 
 	itemNum := 0
+	query := strings.TrimSpace(m.filter.Value())
 	for _, cat := range categoryOrder {
 		indices := categories[cat]
 
@@ -751,7 +777,8 @@ func (m Model) renderCommandList(width int) string {
 				line.WriteString(styles.GradientText(label, string(t.Pink), string(t.Rosewater)))
 			} else {
 				labelStyle := lipgloss.NewStyle().Foreground(t.Text)
-				line.WriteString(labelStyle.Render(label))
+				matchStyle := lipgloss.NewStyle().Foreground(t.Mauve).Bold(true)
+				line.WriteString(renderMatchHighlighted(label, query, labelStyle, matchStyle))
 			}
 
 			lines = append(lines, line.String())
@@ -763,15 +790,40 @@ func (m Model) renderCommandList(width int) string {
 	return strings.Join(lines, "\n")
 }
 
+func renderMatchHighlighted(text, query string, baseStyle, matchStyle lipgloss.Style) string {
+	query = strings.TrimSpace(query)
+	if query == "" || text == "" {
+		return baseStyle.Render(text)
+	}
+
+	runes := []rune(text)
+	needle := []rune(query)
+	if len(needle) > len(runes) {
+		return baseStyle.Render(text)
+	}
+
+	for i := 0; i <= len(runes)-len(needle); i++ {
+		if strings.EqualFold(string(runes[i:i+len(needle)]), query) {
+			return baseStyle.Render(string(runes[:i])) +
+				matchStyle.Render(string(runes[i:i+len(needle)])) +
+				baseStyle.Render(string(runes[i+len(needle):]))
+		}
+	}
+
+	return baseStyle.Render(text)
+}
+
 func (m Model) renderPreview(width int) string {
 	t := m.theme
 	ic := m.icons
 
 	if len(m.filtered) == 0 || m.cursor >= len(m.filtered) {
-		emptyStyle := lipgloss.NewStyle().
-			Foreground(t.Overlay).
-			Italic(true)
-		return styles.CenterText(emptyStyle.Render("Select a command to preview"), width)
+		return components.RenderState(components.StateOptions{
+			Kind:    components.StateEmpty,
+			Message: "Select a command to preview",
+			Width:   width,
+			Align:   lipgloss.Center,
+		})
 	}
 
 	cmd := m.filtered[m.cursor]

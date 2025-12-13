@@ -186,6 +186,37 @@ func TestNavigationDownAtBottom(t *testing.T) {
 	}
 }
 
+func TestNavigationUsesVisualOrderWhenCategoriesInterleave(t *testing.T) {
+	commands := []config.PaletteCmd{
+		{Key: "a", Label: "Alpha One", Category: "Alpha", Prompt: "A"},
+		{Key: "b", Label: "Beta One", Category: "Beta", Prompt: "B"},
+		{Key: "c", Label: "Alpha Two", Category: "Alpha", Prompt: "C"},
+	}
+
+	m := New("test-session", commands)
+	m.buildVisualOrder()
+
+	// Visual order should be [0,2,1]. Pressing down from first item should land on index 2.
+	newModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = newModel.(Model)
+
+	if m.cursor != 2 {
+		t.Fatalf("Expected cursor to follow visual order to index 2, got %d", m.cursor)
+	}
+
+	// Selecting should pick the visually selected command (key 'c').
+	newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(Model)
+
+	if m.selected == nil || m.selected.Key != "c" {
+		got := "<nil>"
+		if m.selected != nil {
+			got = m.selected.Key
+		}
+		t.Fatalf("Expected selected key 'c', got %s", got)
+	}
+}
+
 func TestNavigationWithK(t *testing.T) {
 	m := New("test-session", testCommands)
 	m.cursor = 2
@@ -311,6 +342,30 @@ func TestUpdateFilteredClearFilter(t *testing.T) {
 
 	if len(m.filtered) != len(testCommands) {
 		t.Errorf("Expected all commands after clearing filter, got %d", len(m.filtered))
+	}
+}
+
+func TestUpdateFilteredPreservesSelectionByKey(t *testing.T) {
+	commands := []config.PaletteCmd{
+		{Key: "foo", Label: "Foo", Category: "", Prompt: "Foo"},
+		{Key: "bar", Label: "Bar", Category: "", Prompt: "Bar"},
+		{Key: "baz", Label: "Baz", Category: "", Prompt: "Baz"},
+	}
+
+	m := New("test-session", commands)
+	m.cursor = 1 // "bar"
+
+	m.filter.SetValue("ba") // Matches "bar" and "baz"
+	m.updateFiltered()
+
+	if len(m.filtered) != 2 {
+		t.Fatalf("Expected 2 filtered commands for 'ba', got %d", len(m.filtered))
+	}
+	if m.filtered[0].Key != "bar" || m.filtered[1].Key != "baz" {
+		t.Fatalf("Unexpected filtered order: got [%s, %s]", m.filtered[0].Key, m.filtered[1].Key)
+	}
+	if m.cursor != 0 {
+		t.Fatalf("Expected cursor to remain on 'bar' (index 0), got %d", m.cursor)
 	}
 }
 
