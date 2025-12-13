@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -140,7 +141,9 @@ func SessionExists(name string) bool {
 
 // ListSessions returns all tmux sessions
 func (c *Client) ListSessions() ([]Session, error) {
-	output, err := c.Run("list-sessions", "-F", "#{session_name}:#{session_windows}:#{session_attached}:#{session_created_string}")
+	sep := "|===|"
+	format := fmt.Sprintf("#{session_name}%[1]s#{session_windows}%[1]s#{session_attached}%[1]s#{session_created_string}", sep)
+	output, err := c.Run("list-sessions", "-F", format)
 	if err != nil {
 		// No sessions is not an error - handle various tmux error messages
 		errMsg := err.Error()
@@ -159,7 +162,7 @@ func (c *Client) ListSessions() ([]Session, error) {
 
 	var sessions []Session
 	for _, line := range strings.Split(output, "\n") {
-		parts := strings.SplitN(line, ":", 4)
+		parts := strings.Split(line, sep)
 		if len(parts) < 4 {
 			continue
 		}
@@ -190,12 +193,14 @@ func (c *Client) GetSession(name string) (*Session, error) {
 	}
 
 	// Get session info
-	output, err := c.Run("list-sessions", "-F", "#{session_name}:#{session_windows}:#{session_attached}", "-f", fmt.Sprintf("#{==:#{session_name},%s}", name))
+	sep := "|===|"
+	format := fmt.Sprintf("#{session_name}%[1]s#{session_windows}%[1]s#{session_attached}", sep)
+	output, err := c.Run("list-sessions", "-F", format, "-f", fmt.Sprintf("#{==:#{session_name},%s}", name))
 	if err != nil {
 		return nil, err
 	}
 
-	parts := strings.SplitN(output, ":", 3)
+	parts := strings.Split(output, sep)
 	if len(parts) < 3 {
 		return nil, fmt.Errorf("unexpected session format")
 	}
@@ -236,9 +241,14 @@ func CreateSession(name, directory string) error {
 
 // GetPanes returns all panes in a session
 func (c *Client) GetPanes(session string) ([]Pane, error) {
-	sep := "|#|"
+	return c.GetPanesContext(context.Background(), session)
+}
+
+// GetPanesContext returns all panes in a session with cancellation support.
+func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
+	sep := "|===|"
 	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}", sep)
-	output, err := c.Run("list-panes", "-s", "-t", session, "-F", format)
+	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", session, "-F", format)
 	if err != nil {
 		return nil, err
 	}
@@ -282,6 +292,11 @@ func (c *Client) GetPanes(session string) ([]Pane, error) {
 // GetPanes returns all panes in a session (default client)
 func GetPanes(session string) ([]Pane, error) {
 	return DefaultClient.GetPanes(session)
+}
+
+// GetPanesContext returns all panes in a session with cancellation support (default client).
+func GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
+	return DefaultClient.GetPanesContext(ctx, session)
 }
 
 // GetFirstWindow returns the first window index for a session
@@ -529,9 +544,26 @@ func stripTags(title string) string {
 
 // SendKeys sends keys to a pane
 func (c *Client) SendKeys(target, keys string, enter bool) error {
-	if err := c.RunSilent("send-keys", "-t", target, "-l", "--", keys); err != nil {
-		return err
+	// Send large payloads in chunks to avoid ARG_MAX limits or tmux buffer issues
+	const chunkSize = 4096
+
+	if len(keys) <= chunkSize {
+		if err := c.RunSilent("send-keys", "-t", target, "-l", "--", keys); err != nil {
+			return err
+		}
+	} else {
+		for i := 0; i < len(keys); i += chunkSize {
+			end := i + chunkSize
+			if end > len(keys) {
+				end = len(keys)
+			}
+			chunk := keys[i:end]
+			if err := c.RunSilent("send-keys", "-t", target, "-l", "--", chunk); err != nil {
+				return err
+			}
+		}
 	}
+
 	if enter {
 		return c.RunSilent("send-keys", "-t", target, "C-m")
 	}
@@ -703,12 +735,22 @@ func ZoomPane(session string, paneIndex int) error {
 
 // CapturePaneOutput captures the output of a pane
 func (c *Client) CapturePaneOutput(target string, lines int) (string, error) {
-	return c.Run("capture-pane", "-t", target, "-p", "-S", fmt.Sprintf("-%d", lines))
+	return c.CapturePaneOutputContext(context.Background(), target, lines)
+}
+
+// CapturePaneOutputContext captures the output of a pane with cancellation support.
+func (c *Client) CapturePaneOutputContext(ctx context.Context, target string, lines int) (string, error) {
+	return c.RunContext(ctx, "capture-pane", "-t", target, "-p", "-S", fmt.Sprintf("-%d", lines))
 }
 
 // CapturePaneOutput captures the output of a pane (default client)
 func CapturePaneOutput(target string, lines int) (string, error) {
 	return DefaultClient.CapturePaneOutput(target, lines)
+}
+
+// CapturePaneOutputContext captures the output of a pane with cancellation support (default client).
+func CapturePaneOutputContext(ctx context.Context, target string, lines int) (string, error) {
+	return DefaultClient.CapturePaneOutputContext(ctx, target, lines)
 }
 
 // GetCurrentSession returns the current session name (if in tmux)
@@ -739,8 +781,8 @@ func ValidateSessionName(name string) error {
 	if name == "" {
 		return errors.New("session name cannot be empty")
 	}
-	if strings.ContainsAny(name, ":.") {
-		return errors.New("session name cannot contain ':' or '.'")
+	if strings.ContainsAny(name, ":./\\") {
+		return errors.New("session name cannot contain ':', '.', '/', or '\\'")
 	}
 	return nil
 }
@@ -776,11 +818,11 @@ type PaneActivity struct {
 	LastActivity time.Time
 }
 
-// GetPanesWithActivity returns all panes in a session with their activity times
-func (c *Client) GetPanesWithActivity(session string) ([]PaneActivity, error) {
-	sep := "|#|"
+// GetPanesWithActivityContext returns all panes in a session with their activity times with cancellation support.
+func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string) ([]PaneActivity, error) {
+	sep := "|===|"
 	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_last_activity}", sep)
-	output, err := c.Run("list-panes", "-s", "-t", session, "-F", format)
+	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", session, "-F", format)
 	if err != nil {
 		return nil, err
 	}
@@ -824,9 +866,19 @@ func (c *Client) GetPanesWithActivity(session string) ([]PaneActivity, error) {
 	return panes, nil
 }
 
+// GetPanesWithActivity returns all panes in a session with their activity times
+func (c *Client) GetPanesWithActivity(session string) ([]PaneActivity, error) {
+	return c.GetPanesWithActivityContext(context.Background(), session)
+}
+
 // GetPanesWithActivity returns all panes in a session with their activity times (default client)
 func GetPanesWithActivity(session string) ([]PaneActivity, error) {
 	return DefaultClient.GetPanesWithActivity(session)
+}
+
+// GetPanesWithActivityContext returns all panes in a session with their activity times with cancellation support (default client).
+func GetPanesWithActivityContext(ctx context.Context, session string) ([]PaneActivity, error) {
+	return DefaultClient.GetPanesWithActivityContext(ctx, session)
 }
 
 // IsRecentlyActive checks if a pane has had activity within the threshold

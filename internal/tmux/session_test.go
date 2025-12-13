@@ -80,9 +80,11 @@ func TestValidateSessionName(t *testing.T) {
 		{"my-project", false},
 		{"my_project", false},
 		{"MyProject123", false},
-		{"", true},           // empty
-		{"my.project", true}, // contains .
-		{"my:project", true}, // contains :
+		{"", true},            // empty
+		{"my.project", true},  // contains .
+		{"my:project", true},  // contains :
+		{"my/project", true},  // contains /
+		{"my\\project", true}, // contains \
 	}
 
 	for _, tt := range tests {

@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -22,14 +23,22 @@ var DefaultClient = NewClient("")
 
 // Run executes a tmux command
 func (c *Client) Run(args ...string) (string, error) {
+	return c.RunContext(context.Background(), args...)
+}
+
+// RunContext executes a tmux command with cancellation support.
+func (c *Client) RunContext(ctx context.Context, args ...string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if c.Remote == "" {
-		return runLocal(args...)
+		return runLocalContext(ctx, args...)
 	}
 
 	// Remote execution via ssh
 	remoteCmd := buildRemoteShellCommand("tmux", args...)
 	// Use "--" to prevent Remote from being parsed as an ssh option.
-	return runSSH("--", c.Remote, remoteCmd)
+	return runSSHContext(ctx, "--", c.Remote, remoteCmd)
 }
 
 // shellQuote returns a POSIX-shell-safe single-quoted string.
@@ -56,13 +65,23 @@ func buildRemoteShellCommand(command string, args ...string) string {
 
 // runLocal executes a tmux command locally
 func runLocal(args ...string) (string, error) {
-	cmd := exec.Command("tmux", args...)
+	return runLocalContext(context.Background(), args...)
+}
+
+func runLocalContext(ctx context.Context, args ...string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, "tmux", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
 		return "", fmt.Errorf("tmux %s: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}
 	return strings.TrimSpace(stdout.String()), nil
@@ -70,13 +89,23 @@ func runLocal(args ...string) (string, error) {
 
 // runSSH executes an ssh command and returns stdout
 func runSSH(args ...string) (string, error) {
-	cmd := exec.Command("ssh", args...)
+	return runSSHContext(context.Background(), args...)
+}
+
+func runSSHContext(ctx context.Context, args ...string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, "ssh", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
 		return "", fmt.Errorf("ssh %s: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}
 	return strings.TrimSpace(stdout.String()), nil
@@ -85,6 +114,12 @@ func runSSH(args ...string) (string, error) {
 // RunSilent executes a tmux command ignoring output
 func (c *Client) RunSilent(args ...string) error {
 	_, err := c.Run(args...)
+	return err
+}
+
+// RunSilentContext executes a tmux command with cancellation support, ignoring stdout.
+func (c *Client) RunSilentContext(ctx context.Context, args ...string) error {
+	_, err := c.RunContext(ctx, args...)
 	return err
 }
 
