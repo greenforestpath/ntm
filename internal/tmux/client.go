@@ -5,11 +5,27 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Client handles tmux operations, optionally on a remote host
 type Client struct {
 	Remote string // "user@host" or empty for local
+
+	captureMu    sync.Mutex
+	captureCache map[captureCacheKey]captureCacheEntry
+}
+
+type captureCacheKey struct {
+	target string
+	lines  int
+}
+
+type captureCacheEntry struct {
+	lastActivityUnix int64
+	capturedAt       time.Time
+	output           string
 }
 
 // NewClient creates a new tmux client
