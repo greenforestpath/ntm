@@ -9,7 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
+	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -141,12 +141,13 @@ func (m *MetricsPanel) View() string {
 
 	// Show error message if present
 	if m.err != nil {
-		errorStyle := lipgloss.NewStyle().
-			Foreground(t.Red).
-			Italic(true).
-			Padding(0, 1)
-		errMsg := layout.TruncateRunes(m.err.Error(), w-6, "…")
-		content.WriteString(errorStyle.Render("⚠ "+errMsg) + "\n")
+		content.WriteString(components.ErrorState(m.err.Error(), "Press r to retry", w-4) + "\n")
+	}
+
+	// Empty state: no agents
+	if m.data.TotalTokens == 0 && len(m.data.Agents) == 0 && m.err == nil {
+		content.WriteString("\n" + components.EmptyState("No metrics yet", w-4))
+		return boxStyle.Render(content.String())
 	}
 	content.WriteString("\n")
 

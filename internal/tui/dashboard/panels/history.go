@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Dicklesworthstone/ntm/internal/history"
-	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
+	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
@@ -170,16 +170,11 @@ func (m *HistoryPanel) View() string {
 
 	// Show error message if present
 	if m.err != nil {
-		errorStyle := lipgloss.NewStyle().
-			Foreground(t.Red).
-			Italic(true).
-			Padding(0, 1)
-		errMsg := layout.TruncateRunes(m.err.Error(), w-6, "…")
-		content.WriteString(errorStyle.Render("⚠ "+errMsg) + "\n")
+		content.WriteString(components.ErrorState(m.err.Error(), "Press r to retry", w-4) + "\n")
 	}
 
 	if len(m.entries) == 0 {
-		content.WriteString("\n" + lipgloss.NewStyle().Foreground(t.Overlay).Italic(true).Render("No history"))
+		content.WriteString("\n" + components.EmptyState("No command history", w-4))
 		return boxStyle.Render(content.String())
 	}
 
