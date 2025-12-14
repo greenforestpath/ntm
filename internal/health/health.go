@@ -192,7 +192,7 @@ func checkAgent(pa tmux.PaneActivity) AgentHealth {
 	agent := AgentHealth{
 		Pane:          pa.Pane.Index,
 		PaneID:        pa.Pane.ID,
-		AgentType:     detectAgentType(pa.Pane.Title),
+		AgentType:     string(pa.Pane.Type),
 		Status:        StatusUnknown,
 		ProcessStatus: ProcessUnknown,
 		Activity:      ActivityUnknown,
@@ -235,23 +235,6 @@ func checkAgent(pa tmux.PaneActivity) AgentHealth {
 	agent.Status = calculateStatus(agent)
 
 	return agent
-}
-
-// detectAgentType determines agent type from pane title
-func detectAgentType(title string) string {
-	titleLower := strings.ToLower(title)
-	switch {
-	case strings.Contains(titleLower, "__cc") || strings.Contains(titleLower, "claude"):
-		return "claude"
-	case strings.Contains(titleLower, "__cod") || strings.Contains(titleLower, "codex"):
-		return "codex"
-	case strings.Contains(titleLower, "__gmi") || strings.Contains(titleLower, "gemini"):
-		return "gemini"
-	case strings.Contains(titleLower, "user"):
-		return "user"
-	default:
-		return "unknown"
-	}
 }
 
 // detectErrors scans output for error patterns
@@ -481,25 +464,20 @@ func detectActivity(output string, lastActivity time.Time, title string) Activit
 	// Determine activity level
 	// If we don't have reliable timing (idleTime == 0 from zero lastActivity),
 	// use prompt detection as the primary signal
+	if hasIdlePrompt {
+		return ActivityIdle
+	}
+
 	if idleTime == 0 {
-		if hasIdlePrompt {
-			return ActivityIdle
-		}
 		return ActivityUnknown
 	}
 
 	if idleTime < 30*time.Second {
 		return ActivityActive
 	} else if idleTime < 5*time.Minute {
-		if hasIdlePrompt {
-			return ActivityIdle
-		}
 		return ActivityActive
 	} else {
 		// Stale if > 5 minutes with no activity
-		if hasIdlePrompt {
-			return ActivityIdle // Still responsive, just waiting
-		}
 		return ActivityStale
 	}
 }

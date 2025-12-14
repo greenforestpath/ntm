@@ -98,6 +98,12 @@ func TestDetectActivity(t *testing.T) {
 	if idle != ActivityIdle {
 		t.Errorf("Expected Idle for prompt without timestamp, got %v", idle)
 	}
+
+	// Recent timestamp but prompt visible -> Idle (new behavior)
+	idleWithTime := detectActivity("claude>", now.Add(-5*time.Second), "title")
+	if idleWithTime != ActivityIdle {
+		t.Errorf("Expected Idle for prompt with recent timestamp, got %v", idleWithTime)
+	}
 }
 
 func TestCalculateStatus(t *testing.T) {
