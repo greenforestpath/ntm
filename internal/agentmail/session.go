@@ -236,9 +236,9 @@ func (c *Client) RegisterSessionAgent(ctx context.Context, sessionName, workingD
 
 // UpdateSessionActivity updates the last_active timestamp for a session's agent.
 // If Agent Mail is unavailable, update silently fails without blocking.
-func (c *Client) UpdateSessionActivity(ctx context.Context, sessionName string) error {
+func (c *Client) UpdateSessionActivity(ctx context.Context, sessionName, projectKey string) error {
 	// Load existing agent info
-	info, err := LoadSessionAgent(sessionName, "")
+	info, err := LoadSessionAgent(sessionName, projectKey)
 	if err != nil {
 		return err
 	}

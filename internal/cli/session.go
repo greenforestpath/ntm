@@ -608,7 +608,12 @@ func updateSessionActivity(sessionName string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_ = client.UpdateSessionActivity(ctx, sessionName)
+	projectKey := ""
+	if cfg != nil {
+		projectKey = cfg.GetProjectDir(sessionName)
+	}
+
+	_ = client.UpdateSessionActivity(ctx, sessionName, projectKey)
 }
 
 // fetchAgentMailStatus retrieves Agent Mail status for display in ntm status.
