@@ -6,13 +6,17 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/events"
+	"github.com/Dicklesworthstone/ntm/internal/gemini"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -57,6 +61,7 @@ func newAddCmd() *cobra.Command {
 			}
 
 			// Handle personas (they contribute to agentSpecs)
+			personaMap := make(map[string]*persona.Persona)
 			if len(personaSpecs) > 0 {
 				resolved, err := ResolvePersonas(personaSpecs, dir)
 				if err != nil {
@@ -72,13 +77,16 @@ func newAddCmd() *cobra.Command {
 						Model: pa.PersonaName, // Use persona name as variant
 					})
 				}
+				for _, r := range resolved {
+					personaMap[r.Persona.Name] = r.Persona
+				}
 
 				if !IsJSONOutput() {
 					fmt.Printf("Resolved %d persona agent(s)\n", len(personaAgents))
 				}
 			}
 
-			return runAdd(sessionName, agentSpecs, pluginMap)
+			return runAdd(sessionName, agentSpecs, pluginMap, personaMap)
 		},
 	}
 
@@ -102,7 +110,7 @@ func newAddCmd() *cobra.Command {
 	return cmd
 }
 
-func runAdd(session string, specs AgentSpecs, pluginMap map[string]plugins.AgentPlugin) error {
+func runAdd(session string, specs AgentSpecs, pluginMap map[string]plugins.AgentPlugin, personaMap map[string]*persona.Persona) error {
 	totalAgents := specs.TotalCount()
 	// Helper for JSON error output
 	outputError := func(err error) error {
@@ -156,7 +164,7 @@ func runAdd(session string, specs AgentSpecs, pluginMap map[string]plugins.Agent
 	}
 
 	if !IsJSONOutput() {
-		fmt.Printf("Adding %d agent(s) to session '%s'...\n", totalAgents, session)
+		fmt.Printf("Adding %d agent(s) to session '%s'\n", totalAgents, session)
 	}
 
 	// Auto-checkpoint before adding many agents
@@ -198,27 +206,11 @@ func runAdd(session string, specs AgentSpecs, pluginMap map[string]plugins.Agent
 	parseIndex := func(title string) {
 		parts := strings.Split(title, "__")
 		if len(parts) >= 2 {
-			// part[1] is like "cc_2" or "cc_2_opus"
-			// Split by first underscore to get type
-			// But type can contain underscore? No, usually short.
-			// Format is {type}_{index} or {type}_{index}_{variant}
-			// But type itself might be "claude_code"?
-			// Standard types are "cc", "cod", "gmi".
-			// Plugin types are user defined.
-			// Let's iterate types we know? No, dynamic.
-			// We scan for last "_" before digits?
-			// Example: "cursor_1" -> type "cursor", index 1.
-			// "local_llm_2" -> type "local_llm", index 2?
-			// Tmux format: FormatPaneName uses `{type}_{index}` prefix.
-			// So `cc_1`. `cursor_1`.
-			// We can try to split by `_` and find where the number is.
 			sub := parts[1]
 			subParts := strings.Split(sub, "_")
 			// Iterate to find the index part
 			for i, p := range subParts {
 				if num, err := strconv.Atoi(p); err == nil && num > 0 {
-					// Found the index. Everything before is type.
-					// Everything after is variant.
 					typeStr := strings.Join(subParts[:i], "_")
 					if num > maxIndices[typeStr] {
 						maxIndices[typeStr] = num
@@ -278,14 +270,37 @@ func runAdd(session string, specs AgentSpecs, pluginMap map[string]plugins.Agent
 		}
 
 		// Resolve model alias to full model name
-		model := ResolveModel(agent.Type, agent.Model)
+		resolvedModel := ResolveModel(agent.Type, agent.Model)
+
+		// Check if this is a persona agent and prepare system prompt
+		var systemPromptFile string
+		var personaName string
+		if personaMap != nil {
+			if p, ok := personaMap[agent.Model]; ok {
+				personaName = p.Name
+				// Prepare system prompt file
+				promptFile, err := persona.PrepareSystemPrompt(p, dir)
+				if err != nil {
+					if !IsJSONOutput() {
+						fmt.Printf("⚠ Warning: could not prepare system prompt for %s: %v\n", p.Name, err)
+					}
+				} else {
+					systemPromptFile = promptFile
+				}
+				// For persona agents, resolve the model from the persona config
+				resolvedModel = ResolveModel(agent.Type, p.Model)
+			}
+		}
 
 		finalCmd, err := config.GenerateAgentCommand(agentCmd, config.AgentTemplateVars{
-			Model:       model,
-			SessionName: session,
-			PaneIndex:   num,
-			AgentType:   agentTypeStr,
-			ProjectDir:  dir,
+			Model:            resolvedModel,
+			ModelAlias:       agent.Model,
+			SessionName:      session,
+			PaneIndex:        num,
+			AgentType:        agentTypeStr,
+			ProjectDir:       dir,
+			SystemPromptFile: systemPromptFile,
+			PersonaName:      personaName,
 		})
 		if err != nil {
 			return outputError(fmt.Errorf("generating command for %s agent: %w", agent.Type, err))
@@ -313,6 +328,41 @@ func runAdd(session string, specs AgentSpecs, pluginMap map[string]plugins.Agent
 		if err := tmux.SendKeys(paneID, cmd, true); err != nil {
 			return outputError(fmt.Errorf("launching agent: %w", err))
 		}
+
+		// Gemini post-spawn setup: auto-select Pro model
+		if agent.Type == AgentTypeGemini && cfg.GeminiSetup.AutoSelectProModel {
+			geminiCfg := gemini.SetupConfig{
+				AutoSelectProModel: cfg.GeminiSetup.AutoSelectProModel,
+				ReadyTimeout:       time.Duration(cfg.GeminiSetup.ReadyTimeoutSeconds) * time.Second,
+				ModelSelectTimeout: time.Duration(cfg.GeminiSetup.ModelSelectTimeoutSeconds) * time.Second,
+				PollInterval:       500 * time.Millisecond,
+				Verbose:            cfg.GeminiSetup.Verbose,
+			}
+			setupCtx, setupCancel := context.WithTimeout(context.Background(), geminiCfg.ReadyTimeout+geminiCfg.ModelSelectTimeout+10*time.Second)
+			// Defer cancel is safer here, but since we are in a loop, defer runs at function exit.
+			// So we must cancel manually or wrap in func.
+			func() {
+				defer setupCancel()
+				if err := gemini.PostSpawnSetup(setupCtx, paneID, geminiCfg); err != nil {
+					if !IsJSONOutput() {
+						fmt.Printf("⚠ Warning: Gemini Pro model setup failed: %v\n", err)
+					}
+					// Don't fail spawn
+				} else {
+					if !IsJSONOutput() && cfg.GeminiSetup.Verbose {
+						fmt.Printf("✓ Gemini %d configured for Pro model\n", num)
+					}
+				}
+			}()
+		}
+
+		// Emit agent_spawn event
+		events.Emit(events.EventAgentSpawn, session, events.AgentSpawnData{
+			AgentType: agentTypeStr,
+			Model:     resolvedModel,
+			Variant:   agent.Model,
+			PaneIndex: num,
+		})
 
 		// Track for JSON output
 		newPanes = append(newPanes, output.PaneResponse{

@@ -64,6 +64,9 @@ func TestSanitizeName(t *testing.T) {
 		{"a*b?c<d>e|f", "a-b-c-d-e-f"},
 		{"  trimmed  ", "trimmed"},
 		{"verylongnamethatexceedsfiftycharacterssothatshouldbetruncated", "verylongnamethatexceedsfiftycharacterssothatshould"},
+		// 49 'a's (49 bytes) + '€' (3 bytes) = 52 bytes. Cutting at 50 splits the Euro sign.
+		// Result should be 49 'a's (length 49), dropping the partial char.
+		{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa€", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 	}
 
 	for _, tt := range tests {

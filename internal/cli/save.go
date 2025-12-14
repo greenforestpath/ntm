@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -128,7 +127,7 @@ func runSave(w io.Writer, session, outputDir string, lines int, filter AgentFilt
 		}
 
 		// Sanitize title for filename
-		title := sanitizeFilename(p.Title)
+		title := SanitizeFilename(p.Title)
 		if title == "" {
 			title = fmt.Sprintf("pane_%d", p.Index)
 		}
@@ -164,34 +163,4 @@ func runSave(w io.Writer, session, outputDir string, lines int, filter AgentFilt
 		colorize(t.Success), colorize(t.Text), savedFiles, outputDir)
 
 	return nil
-}
-
-// sanitizeFilename removes/replaces characters that are invalid in filenames
-func sanitizeFilename(name string) string {
-	// Remove or replace invalid characters
-	replacer := strings.NewReplacer(
-		"/", "_",
-		"\\", "_",
-		":", "_",
-		"*", "_",
-		"?", "_",
-		"\"", "_",
-		"<", "_",
-		">", "_",
-		"|", "_",
-		" ", "_",
-		"__", "_", // Collapse double underscores
-	)
-
-	result := replacer.Replace(name)
-
-	// Remove leading/trailing underscores
-	result = strings.Trim(result, "_")
-
-	// Limit length
-	if len(result) > 50 {
-		result = result[:50]
-	}
-
-	return result
 }

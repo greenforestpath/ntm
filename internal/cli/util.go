@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mattn/go-isatty"
 
@@ -219,4 +220,45 @@ func orderSessionsForSelection(sessions []tmux.Session) []tmux.Session {
 	})
 
 	return ordered
+}
+
+// SanitizeFilename removes/replaces characters that are invalid in filenames.
+// It ensures the filename is safe for the filesystem and truncated correctly.
+func SanitizeFilename(name string) string {
+	// Remove or replace invalid characters
+	replacer := strings.NewReplacer(
+		"/", "_",
+		"\\", "_",
+		":", "_",
+		"*", "_",
+		"?", "_",
+		"\"", "_",
+		"<", "_",
+		">", "_",
+		"|", "_",
+		" ", "_",
+		"__", "_", // Collapse double underscores
+	)
+
+	result := replacer.Replace(name)
+
+	// Remove leading/trailing underscores
+	result = strings.Trim(result, "_")
+
+	// Limit length while respecting UTF-8 boundaries
+	if len(result) > 50 {
+		// Find the last valid rune boundary within the limit
+		for i := 50; i >= 0; i-- {
+			if utf8.RuneStart(result[i]) {
+				// We found the start of the character that crosses or is at the boundary.
+				// If i == 50, result[:50] is valid.
+				// If i < 50, result[:i] is valid.
+				return result[:i]
+			}
+		}
+		// Fallback for extremely weird cases
+		return result[:50]
+	}
+
+	return result
 }
