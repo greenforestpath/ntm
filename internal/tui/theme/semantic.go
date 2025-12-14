@@ -239,7 +239,7 @@ func NewSemanticStyles(t Theme) SemanticStyles {
 		Padding(0, 1).
 		Bold(true)
 
-	return SemanticStyles{
+	styles := SemanticStyles{
 		// Text
 		TextPrimary: lipgloss.NewStyle().
 			Foreground(p.FgPrimary),
@@ -252,12 +252,16 @@ func NewSemanticStyles(t Theme) SemanticStyles {
 
 		// Status text
 		TextSuccess: lipgloss.NewStyle().
+			Bold(true).
 			Foreground(p.StatusSuccess),
 		TextWarning: lipgloss.NewStyle().
+			Bold(true).
 			Foreground(p.StatusWarning),
 		TextError: lipgloss.NewStyle().
+			Bold(true).
 			Foreground(p.StatusError),
 		TextInfo: lipgloss.NewStyle().
+			Bold(true).
 			Foreground(p.StatusInfo),
 
 		// Interactive
@@ -349,6 +353,16 @@ func NewSemanticStyles(t Theme) SemanticStyles {
 		Unselected: lipgloss.NewStyle().
 			Foreground(p.FgSecondary),
 	}
+
+	if t == Plain {
+		styles.Selected = lipgloss.NewStyle().
+			Bold(true).
+			Reverse(true)
+		styles.TextWarning = styles.TextWarning.Copy().Underline(true)
+		styles.TextError = styles.TextError.Copy().Underline(true)
+	}
+
+	return styles
 }
 
 // SemanticStyles returns semantic styles for the current theme.

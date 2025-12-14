@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/truncate"
 
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -522,15 +523,7 @@ func StatusDot(color lipgloss.Color, animated bool, tick int) string {
 
 // Truncate truncates text to max width with ellipsis
 func Truncate(text string, maxWidth int) string {
-	if lipgloss.Width(text) <= maxWidth {
-		return text
-	}
-	// Simple truncation - doesn't handle ANSI codes perfectly
-	runes := []rune(text)
-	if len(runes) <= maxWidth-1 {
-		return text
-	}
-	return string(runes[:maxWidth-1]) + "…"
+	return truncate.StringWithTail(text, uint(maxWidth), "…")
 }
 
 // CenterText centers text within a given width

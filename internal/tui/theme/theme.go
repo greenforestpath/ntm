@@ -393,7 +393,7 @@ type Styles struct {
 
 // NewStyles creates a Styles instance from a theme
 func NewStyles(t Theme) Styles {
-	return Styles{
+	styles := Styles{
 		// Base styles
 		App: lipgloss.NewStyle().
 			Background(t.Base),
@@ -427,15 +427,19 @@ func NewStyles(t Theme) Styles {
 
 		// Status styles
 		Success: lipgloss.NewStyle().
+			Bold(true).
 			Foreground(t.Success),
 
 		Warning: lipgloss.NewStyle().
+			Bold(true).
 			Foreground(t.Warning),
 
 		Error: lipgloss.NewStyle().
+			Bold(true).
 			Foreground(t.Error),
 
 		Info: lipgloss.NewStyle().
+			Bold(true).
 			Foreground(t.Info),
 
 		// Component styles
@@ -458,12 +462,13 @@ func NewStyles(t Theme) Styles {
 
 		ListSelected: lipgloss.NewStyle().
 			Bold(true).
-			Foreground(t.Pink).
-			Background(t.Surface0).
+			Foreground(t.Base).
+			Background(t.Primary).
 			Padding(0, 1),
 
 		ListCursor: lipgloss.NewStyle().
-			Foreground(t.Pink),
+			Bold(true).
+			Foreground(t.Primary),
 
 		// Agent styles
 		Claude: lipgloss.NewStyle().
@@ -511,6 +516,20 @@ func NewStyles(t Theme) Styles {
 			Background(t.Surface0).
 			Padding(0, 1),
 	}
+
+	// Guard rails for no-color / extremely low-color environments:
+	// do not rely on subtle background shades for selection, and avoid
+	// encoding status meaning by color alone.
+	if t == Plain {
+		styles.ListSelected = lipgloss.NewStyle().
+			Bold(true).
+			Reverse(true).
+			Padding(0, 1)
+		styles.Warning = styles.Warning.Copy().Underline(true)
+		styles.Error = styles.Error.Copy().Underline(true)
+	}
+
+	return styles
 }
 
 // DefaultStyles returns styles for the current theme
