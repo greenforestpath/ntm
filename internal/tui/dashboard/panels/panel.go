@@ -100,10 +100,11 @@ type Panel interface {
 // PanelBase provides common functionality for panel implementations.
 // Embed this in concrete panel types to get default implementations.
 type PanelBase struct {
-	config  PanelConfig
-	width   int
-	height  int
-	focused bool
+	config     PanelConfig
+	width      int
+	height     int
+	focused    bool
+	lastUpdate time.Time // When data was last successfully updated
 }
 
 // NewPanelBase creates a new PanelBase with the given config.
@@ -151,6 +152,16 @@ func (b *PanelBase) Width() int {
 // Height returns the current panel height
 func (b *PanelBase) Height() int {
 	return b.height
+}
+
+// LastUpdate returns the time of the last successful data update.
+func (b *PanelBase) LastUpdate() time.Time {
+	return b.lastUpdate
+}
+
+// SetLastUpdate records when data was last successfully updated.
+func (b *PanelBase) SetLastUpdate(t time.Time) {
+	b.lastUpdate = t
 }
 
 // PadToHeight pads content with empty lines to fill the specified height.

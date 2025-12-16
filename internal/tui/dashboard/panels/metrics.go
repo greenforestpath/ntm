@@ -73,6 +73,10 @@ func (m *MetricsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *MetricsPanel) SetData(data MetricsData, err error) {
 	m.data = data
 	m.err = err
+	// Only update timestamp on successful fetch
+	if err == nil {
+		m.SetLastUpdate(time.Now())
+	}
 }
 
 // HasError returns true if there's an active error
@@ -116,7 +120,7 @@ func (m *MetricsPanel) View() string {
 
 	var content strings.Builder
 
-	// Build header with error badge if needed
+	// Build header with stale/error badge if needed
 	title := m.Config().Title
 	if m.err != nil {
 		errorBadge := lipgloss.NewStyle().
@@ -126,6 +130,8 @@ func (m *MetricsPanel) View() string {
 			Padding(0, 1).
 			Render("⚠ Error")
 		title = title + " " + errorBadge
+	} else if staleBadge := components.RenderStaleBadge(m.LastUpdate(), m.Config().RefreshInterval); staleBadge != "" {
+		title = title + " " + staleBadge
 	}
 
 	// Header
@@ -213,6 +219,15 @@ func (m *MetricsPanel) View() string {
 		// Mini bar
 		miniBar := styles.ProgressBar(agent.ContextPct/100.0, w-6, "━", "┄", string(typeColor))
 		content.WriteString(miniBar + "\n")
+	}
+
+	// Add freshness indicator at the bottom
+	if footer := components.RenderFreshnessFooter(components.FreshnessOptions{
+		LastUpdate:      m.LastUpdate(),
+		RefreshInterval: m.Config().RefreshInterval,
+		Width:           w - 4,
+	}); footer != "" {
+		content.WriteString(footer + "\n")
 	}
 
 	// Ensure stable height to prevent layout jitter
