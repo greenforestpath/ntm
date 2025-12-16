@@ -237,6 +237,16 @@ func (m *HistoryPanel) View() string {
 		content.WriteString(lineStyle.Render(line) + "\n")
 	}
 
+	// Add scroll indicator if there's more content
+	scrollState := components.ScrollState{
+		FirstVisible: m.offset,
+		LastVisible:  end - 1,
+		TotalItems:   len(m.entries),
+	}
+	if footer := components.ScrollFooter(scrollState, w-4); footer != "" {
+		content.WriteString(footer + "\n")
+	}
+
 	// Ensure stable height to prevent layout jitter
 	return boxStyle.Render(FitToHeight(content.String(), h-4))
 }
