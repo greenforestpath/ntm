@@ -2324,12 +2324,85 @@ func (m Model) renderQuickActions() string {
 }
 
 func (m Model) renderHelpBar() string {
+	// Build hints: global navigation first
+	hints := []components.KeyHint{
+		{Key: "↑↓", Desc: "navigate"},
+		{Key: "1-9", Desc: "select"},
+		{Key: "z", Desc: "zoom"},
+	}
+
+	// Add panel-specific hints (max 3 to avoid overwhelming)
+	panelHints := m.getFocusedPanelHints()
+	for i, hint := range panelHints {
+		if i >= 3 {
+			break
+		}
+		hints = append(hints, hint)
+	}
+
+	// Always end with essential global hints
+	hints = append(hints,
+		components.KeyHint{Key: "r", Desc: "refresh"},
+		components.KeyHint{Key: "?", Desc: "help"},
+		components.KeyHint{Key: "q", Desc: "quit"},
+	)
+
 	// Use the reusable RenderHelpBar component with width-aware truncation.
 	// Hints are progressively hidden from right-to-left when they don't fit.
 	return components.RenderHelpBar(components.HelpBarOptions{
-		Hints: components.DefaultDashboardHints(),
+		Hints: hints,
 		Width: m.width - 4, // Account for margins
 	})
+}
+
+// getFocusedPanelHints returns keybindings for the currently focused panel as KeyHints.
+func (m Model) getFocusedPanelHints() []components.KeyHint {
+	var keybindings []panels.Keybinding
+
+	switch m.focusedPanel {
+	case PanelBeads:
+		if m.beadsPanel != nil {
+			keybindings = m.beadsPanel.Keybindings()
+		}
+	case PanelAlerts:
+		if m.alertsPanel != nil {
+			keybindings = m.alertsPanel.Keybindings()
+		}
+	case PanelMetrics:
+		if m.metricsPanel != nil {
+			keybindings = m.metricsPanel.Keybindings()
+		}
+	case PanelHistory:
+		if m.historyPanel != nil {
+			keybindings = m.historyPanel.Keybindings()
+		}
+	case PanelSidebar:
+		// Sidebar contains multiple sub-panels; could extend to show focused sub-panel
+		if m.filesPanel != nil && m.filesPanel.IsFocused() {
+			keybindings = m.filesPanel.Keybindings()
+		} else if m.cassPanel != nil && m.cassPanel.IsFocused() {
+			keybindings = m.cassPanel.Keybindings()
+		} else if m.historyPanel != nil && m.historyPanel.IsFocused() {
+			keybindings = m.historyPanel.Keybindings()
+		} else if m.metricsPanel != nil && m.metricsPanel.IsFocused() {
+			keybindings = m.metricsPanel.Keybindings()
+		}
+	}
+
+	// Convert keybindings to KeyHints
+	var hints []components.KeyHint
+	for _, kb := range keybindings {
+		// Skip navigation keys (j/k/up/down) - already shown globally
+		action := kb.Action
+		if action == "up" || action == "down" {
+			continue
+		}
+		hints = append(hints, components.KeyHint{
+			Key:  kb.Key.Help().Key,
+			Desc: action,
+		})
+	}
+	return hints
 }
 
 func (m Model) renderHeaderContextLine(width int) string {
