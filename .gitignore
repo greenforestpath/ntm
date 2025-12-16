@@ -28,3 +28,6 @@ vendor/
 *.test
 coverage.out
 dashboard_debug.txt
+
+# Debug output files
+internal/cli/outputs/

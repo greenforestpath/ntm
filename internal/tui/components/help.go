@@ -267,6 +267,7 @@ func DefaultPaletteHints() []KeyHint {
 }
 
 // DefaultDashboardHints returns the standard dashboard key hints.
+// Order matters: most important hints first (quit, help) so they remain visible at narrow widths.
 func DefaultDashboardHints() []KeyHint {
 	return []KeyHint{
 		{Key: "↑↓", Desc: "navigate"},
@@ -275,6 +276,8 @@ func DefaultDashboardHints() []KeyHint {
 		{Key: "c", Desc: "context"},
 		{Key: "m", Desc: "mail"},
 		{Key: "r", Desc: "refresh"},
+		{Key: "d", Desc: "diag"},
+		{Key: "?", Desc: "help"},
 		{Key: "q", Desc: "quit"},
 	}
 }

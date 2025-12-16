@@ -2324,38 +2324,12 @@ func (m Model) renderQuickActions() string {
 }
 
 func (m Model) renderHelpBar() string {
-	t := m.theme
-
-	keyStyle := lipgloss.NewStyle().
-		Background(t.Surface0).
-		Foreground(t.Text).
-		Bold(true).
-		Padding(0, 1)
-
-	descStyle := lipgloss.NewStyle().
-		Foreground(t.Overlay)
-
-	items := []struct {
-		key  string
-		desc string
-	}{
-		{"↑↓", "navigate"},
-		{"1-9", "select"},
-		{"z", "zoom"},
-		{"c", "context"},
-		{"m", "mail"},
-		{"r", "refresh"},
-		{"d", "diag"},
-		{"?", "help"},
-		{"q", "quit"},
-	}
-
-	var parts []string
-	for _, item := range items {
-		parts = append(parts, keyStyle.Render(item.key)+" "+descStyle.Render(item.desc))
-	}
-
-	return strings.Join(parts, "  ")
+	// Use the reusable RenderHelpBar component with width-aware truncation.
+	// Hints are progressively hidden from right-to-left when they don't fit.
+	return components.RenderHelpBar(components.HelpBarOptions{
+		Hints: components.DefaultDashboardHints(),
+		Width: m.width - 4, // Account for margins
+	})
 }
 
 func (m Model) renderHeaderContextLine(width int) string {
