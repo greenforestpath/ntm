@@ -777,49 +777,25 @@ func Load(path string) (*Config, error) {
 		path = DefaultPath()
 	}
 
-	data, err := os.ReadFile(path)
-	if err != nil {
+	// 1. Initialize with defaults
+	cfg := Default()
+
+	// 2. Read and unmarshal TOML over defaults
+	if data, err := os.ReadFile(path); err == nil {
+		if err := toml.Unmarshal(data, cfg); err != nil {
+			return nil, fmt.Errorf("parsing config: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
 
-	var cfg Config
-	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
-	}
+	// 3. Apply Environment Variable Overrides (Env > TOML > Default)
 
-	// Apply defaults for missing values
-	if cfg.ProjectsBase == "" {
-		cfg.ProjectsBase = DefaultProjectsBase()
-	}
-	// Environment variable override for projects base directory
 	if envBase := os.Getenv("NTM_PROJECTS_BASE"); envBase != "" {
 		cfg.ProjectsBase = envBase
 	}
-	if cfg.Agents.Claude == "" {
-		cfg.Agents.Claude = Default().Agents.Claude
-	}
-	if cfg.Agents.Codex == "" {
-		cfg.Agents.Codex = Default().Agents.Codex
-	}
-	if cfg.Agents.Gemini == "" {
-		cfg.Agents.Gemini = Default().Agents.Gemini
-	}
-	if cfg.Tmux.DefaultPanes == 0 {
-		cfg.Tmux.DefaultPanes = 10
-	}
-	if cfg.Tmux.PaletteKey == "" {
-		cfg.Tmux.PaletteKey = "F6"
-	}
 
-	// Apply AgentMail defaults
-	if cfg.AgentMail.URL == "" {
-		cfg.AgentMail.URL = DefaultAgentMailURL
-	}
-	if cfg.AgentMail.ProgramName == "" {
-		cfg.AgentMail.ProgramName = "ntm"
-	}
-
-	// Environment variable overrides for AgentMail
+	// AgentMail Env Overrides
 	if url := os.Getenv("AGENT_MAIL_URL"); url != "" {
 		cfg.AgentMail.URL = url
 	}
@@ -830,85 +806,10 @@ func Load(path string) (*Config, error) {
 		cfg.AgentMail.Enabled = enabled == "1" || enabled == "true"
 	}
 
-	// Apply Alerts defaults
-	defaults := DefaultAlertsConfig()
-	if cfg.Alerts.AgentStuckMinutes == 0 {
-		cfg.Alerts.AgentStuckMinutes = defaults.AgentStuckMinutes
-	}
-	if cfg.Alerts.DiskLowThresholdGB == 0 {
-		cfg.Alerts.DiskLowThresholdGB = defaults.DiskLowThresholdGB
-	}
-	if cfg.Alerts.MailBacklogThreshold == 0 {
-		cfg.Alerts.MailBacklogThreshold = defaults.MailBacklogThreshold
-	}
-	if cfg.Alerts.BeadStaleHours == 0 {
-		cfg.Alerts.BeadStaleHours = defaults.BeadStaleHours
-	}
-	if cfg.Alerts.ResolvedPruneMinutes == 0 {
-		cfg.Alerts.ResolvedPruneMinutes = defaults.ResolvedPruneMinutes
-	}
-
-	// Apply Checkpoints defaults
-	cpDefaults := DefaultCheckpointsConfig()
-	// Note: Enabled defaults to false from TOML, but we want true by default
-	// Only override if section is completely missing (checked by MaxAutoCheckpoints)
-	if cfg.Checkpoints.MaxAutoCheckpoints == 0 {
-		cfg.Checkpoints.MaxAutoCheckpoints = cpDefaults.MaxAutoCheckpoints
-	}
-	if cfg.Checkpoints.ScrollbackLines == 0 {
-		cfg.Checkpoints.ScrollbackLines = cpDefaults.ScrollbackLines
-	}
-	// For bool fields, if checkpoints section is missing, apply defaults
-	// We detect this by checking if MaxAutoCheckpoints was 0 (now set to default)
-	if cfg.Checkpoints.MaxAutoCheckpoints == cpDefaults.MaxAutoCheckpoints && !cfg.Checkpoints.Enabled {
-		// Section likely missing, apply all defaults
-		cfg.Checkpoints = cpDefaults
-	}
-
-	// Apply Notifications defaults
-	// If Events is empty, apply all defaults (section likely missing)
-	if len(cfg.Notifications.Events) == 0 {
-		cfg.Notifications = notify.DefaultConfig()
-	}
-
-	// Apply Resilience defaults
-	// If MaxRestarts is 0, apply all defaults (section likely missing)
-	if cfg.Resilience.MaxRestarts == 0 {
-		cfg.Resilience = DefaultResilienceConfig()
-	}
-
-	// Apply Scanner defaults
-	// If Timeout is empty, apply defaults (section likely missing)
-	if cfg.Scanner.Defaults.Timeout == "" {
-		cfg.Scanner = DefaultScannerConfig()
-	}
-	// Apply environment variable overrides for scanner
+	// Scanner Env Overrides
 	applyEnvOverrides(&cfg.Scanner)
 
-	// Apply CASS defaults for individual fields
-	// We check each field separately to avoid overwriting user-specified values
-	cassDefaults := DefaultCASSConfig()
-	if cfg.CASS.Timeout == 0 {
-		cfg.CASS.Timeout = cassDefaults.Timeout
-	}
-	// For nested configs, check if they appear unset (all zero values)
-	if cfg.CASS.Context.MaxSessions == 0 && cfg.CASS.Context.LookbackDays == 0 {
-		cfg.CASS.Context = cassDefaults.Context
-	}
-	if cfg.CASS.Duplicates.LookbackDays == 0 && cfg.CASS.Duplicates.SimilarityThreshold == 0 {
-		cfg.CASS.Duplicates = cassDefaults.Duplicates
-	}
-	if cfg.CASS.Search.DefaultLimit == 0 {
-		cfg.CASS.Search = cassDefaults.Search
-	}
-	// TUI booleans default to false in Go, but we want true by default.
-	// If both are false (Go zero value), apply TUI defaults.
-	// Users who explicitly want both disabled is an edge case we accept.
-	if !cfg.CASS.TUI.ShowActivitySparkline && !cfg.CASS.TUI.ShowStatusIndicator {
-		cfg.CASS.TUI = cassDefaults.TUI
-	}
-
-	// Apply environment variable overrides for CASS
+	// CASS Env Overrides
 	if enabled := os.Getenv("NTM_CASS_ENABLED"); enabled != "" {
 		cfg.CASS.Enabled = enabled == "1" || enabled == "true"
 	}
@@ -922,43 +823,7 @@ func Load(path string) (*Config, error) {
 		cfg.CASS.BinaryPath = binary
 	}
 
-	// Apply Accounts defaults
-	accountsDefaults := DefaultAccountsConfig()
-	if cfg.Accounts.StateFile == "" {
-		cfg.Accounts.StateFile = accountsDefaults.StateFile
-	}
-	if cfg.Accounts.ResetBufferMinutes == 0 {
-		cfg.Accounts.ResetBufferMinutes = accountsDefaults.ResetBufferMinutes
-	}
-	// AutoRotate defaults to true, so only set if entire section appears missing
-	// We detect this by checking if StateFile was empty (now set to default)
-	if cfg.Accounts.StateFile == accountsDefaults.StateFile && !cfg.Accounts.AutoRotate && len(cfg.Accounts.Claude) == 0 {
-		cfg.Accounts.AutoRotate = accountsDefaults.AutoRotate
-	}
-
-	// Apply Rotation defaults
-	rotationDefaults := DefaultRotationConfig()
-	if cfg.Rotation.ContinuationPrompt == "" {
-		cfg.Rotation.ContinuationPrompt = rotationDefaults.ContinuationPrompt
-	}
-	if cfg.Rotation.Thresholds.WarningPercent == 0 {
-		cfg.Rotation.Thresholds.WarningPercent = rotationDefaults.Thresholds.WarningPercent
-	}
-	if cfg.Rotation.Thresholds.CriticalPercent == 0 {
-		cfg.Rotation.Thresholds.CriticalPercent = rotationDefaults.Thresholds.CriticalPercent
-	}
-	if cfg.Rotation.Thresholds.RestartIfTokensAbove == 0 {
-		cfg.Rotation.Thresholds.RestartIfTokensAbove = rotationDefaults.Thresholds.RestartIfTokensAbove
-	}
-	if cfg.Rotation.Thresholds.RestartIfSessionHours == 0 {
-		cfg.Rotation.Thresholds.RestartIfSessionHours = rotationDefaults.Thresholds.RestartIfSessionHours
-	}
-	// Dashboard bools default to false; if all are false, apply defaults
-	if !cfg.Rotation.Dashboard.ShowQuotaBars && !cfg.Rotation.Dashboard.ShowAccountStatus && !cfg.Rotation.Dashboard.ShowResetTimers {
-		cfg.Rotation.Dashboard = rotationDefaults.Dashboard
-	}
-
-	// Environment variable overrides for accounts/rotation
+	// Accounts/Rotation Env Overrides
 	if autoRotate := os.Getenv("NTM_ACCOUNTS_AUTO_ROTATE"); autoRotate != "" {
 		cfg.Accounts.AutoRotate = autoRotate == "1" || autoRotate == "true"
 	}
@@ -966,31 +831,16 @@ func Load(path string) (*Config, error) {
 		cfg.Rotation.Enabled = rotationEnabled == "1" || rotationEnabled == "true"
 	}
 
-	// Apply GeminiSetup defaults
-	// If ReadyTimeoutSeconds is 0, the section was likely missing - apply all defaults
-	geminiDefaults := DefaultGeminiSetupConfig()
-	if cfg.GeminiSetup.ReadyTimeoutSeconds == 0 {
-		cfg.GeminiSetup.ReadyTimeoutSeconds = geminiDefaults.ReadyTimeoutSeconds
-	}
-	if cfg.GeminiSetup.ModelSelectTimeoutSeconds == 0 {
-		cfg.GeminiSetup.ModelSelectTimeoutSeconds = geminiDefaults.ModelSelectTimeoutSeconds
-	}
-	// AutoSelectProModel defaults to true, but Go's zero value is false.
-	// If both timeouts were 0 (now set to defaults), assume section was missing and apply AutoSelectProModel default.
-	if cfg.GeminiSetup.ReadyTimeoutSeconds == geminiDefaults.ReadyTimeoutSeconds &&
-		cfg.GeminiSetup.ModelSelectTimeoutSeconds == geminiDefaults.ModelSelectTimeoutSeconds &&
-		!cfg.GeminiSetup.AutoSelectProModel {
-		// Section likely missing - apply all defaults including AutoSelectProModel=true
-		cfg.GeminiSetup = geminiDefaults
-	}
-
-	// Environment variable override for Gemini setup
+	// Gemini Env Overrides
 	if autoSelect := os.Getenv("NTM_GEMINI_AUTO_PRO"); autoSelect != "" {
 		cfg.GeminiSetup.AutoSelectProModel = autoSelect == "1" || autoSelect == "true"
 	}
 
-	// Try to load palette from markdown file
-	// This takes precedence over TOML [[palette]] entries
+	// 4. Palette Precedence: Markdown > TOML > Default
+	// Default() already loaded Markdown if available.
+	// Unmarshal() might have overwritten cfg.Palette with TOML entries.
+	// We need to re-check Markdown to enforce Markdown > TOML.
+
 	mdPath := cfg.PaletteFile
 	if mdPath == "" {
 		mdPath = findPaletteMarkdown()
@@ -1001,16 +851,10 @@ func Load(path string) (*Config, error) {
 	if mdPath != "" {
 		if mdCmds, err := LoadPaletteFromMarkdown(mdPath); err == nil && len(mdCmds) > 0 {
 			cfg.Palette = mdCmds
-			return &cfg, nil
 		}
 	}
 
-	// If no palette commands from TOML, use defaults
-	if len(cfg.Palette) == 0 {
-		cfg.Palette = defaultPaletteCommands()
-	}
-
-	return &cfg, nil
+	return cfg, nil
 }
 
 // CreateDefault creates a default config file
