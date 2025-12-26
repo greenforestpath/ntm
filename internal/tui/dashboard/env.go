@@ -34,6 +34,14 @@ func applyDashboardEnvOverrides(m *Model) {
 	if seconds, ok := envPositiveInt("NTM_DASH_CASS_REFRESH_SECS"); ok {
 		m.cassContextRefreshInterval = time.Duration(seconds) * time.Second
 	}
+	// NTM_DASH_SCAN_REFRESH_SECS: set to 0 to disable UBS scanning entirely
+	if seconds, ok := envNonNegativeInt("NTM_DASH_SCAN_REFRESH_SECS"); ok {
+		if seconds == 0 {
+			m.scanRefreshInterval = 0 // Disables scanning
+		} else {
+			m.scanRefreshInterval = time.Duration(seconds) * time.Second
+		}
+	}
 
 	if lines, ok := envPositiveInt("NTM_DASH_CAPTURE_LINES"); ok {
 		m.paneOutputLines = lines

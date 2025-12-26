@@ -1132,7 +1132,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, cmd)
 				}
 			}
-			if now.Sub(m.lastScanFetch) >= m.scanRefreshInterval && !m.fetchingScan {
+			if m.scanRefreshInterval > 0 && now.Sub(m.lastScanFetch) >= m.scanRefreshInterval && !m.fetchingScan {
 				m.lastScanFetch = now
 				if cmd := m.requestScanFetch(false); cmd != nil {
 					cmds = append(cmds, cmd)
