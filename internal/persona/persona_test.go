@@ -298,12 +298,12 @@ func TestPersonaInheritance(t *testing.T) {
 
 	// Add parent persona
 	parent := &Persona{
-		Name:        "base-claude",
-		AgentType:   "claude",
-		Model:       "sonnet",
-		Description: "Base Claude persona",
+		Name:         "base-claude",
+		AgentType:    "claude",
+		Model:        "sonnet",
+		Description:  "Base Claude persona",
 		SystemPrompt: "You are a helpful assistant.",
-		Tags:        []string{"base", "claude"},
+		Tags:         []string{"base", "claude"},
 	}
 	r.Add(parent)
 
