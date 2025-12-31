@@ -298,7 +298,8 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string) RotationResult {
 
 	var oldPane *tmux.Pane
 	for i := range panes {
-		if panes[i].Title == agentID || strings.Contains(panes[i].Title, agentID) {
+		// Use exact match only to avoid matching cc_1 against cc_10
+		if panes[i].Title == agentID {
 			oldPane = &panes[i]
 			break
 		}
@@ -315,7 +316,7 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string) RotationResult {
 
 	// Try compaction first if configured
 	if r.config.TryCompactFirst && r.compactor != nil {
-		compactResult := r.tryCompaction(session, agentID, oldPane.ID)
+		compactResult := r.tryCompaction(agentID, oldPane.ID)
 		if compactResult != nil && compactResult.Success {
 			// Check if we're now below threshold
 			estimate := r.monitor.GetEstimate(agentID)
@@ -433,7 +434,7 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string) RotationResult {
 }
 
 // tryCompaction attempts to compact the agent's context.
-func (r *Rotator) tryCompaction(session, agentID, paneID string) *CompactionResult {
+func (r *Rotator) tryCompaction(agentID, paneID string) *CompactionResult {
 	if r.compactor == nil {
 		return nil
 	}
