@@ -163,9 +163,23 @@ func runContextRotationHistory(args []string, limit int, failedOnly bool) error 
 	var records []ctxmon.RotationRecord
 	var err error
 
+	// Determine how to fetch records based on filters
 	if len(args) > 0 {
-		// Filter by session
+		// Filter by session first
 		records, err = store.ReadForSession(args[0])
+		if err != nil {
+			return err
+		}
+		// Additionally filter by failed if specified
+		if failedOnly {
+			var filtered []ctxmon.RotationRecord
+			for _, r := range records {
+				if !r.Success {
+					filtered = append(filtered, r)
+				}
+			}
+			records = filtered
+		}
 	} else if failedOnly {
 		records, err = store.ReadFailed()
 	} else {

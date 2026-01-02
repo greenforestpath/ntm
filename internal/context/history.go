@@ -261,7 +261,7 @@ func (s *RotationHistoryStore) Prune(keep int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	writer := bufio.NewWriter(tmpFile)
 	for _, record := range toKeep {
@@ -323,7 +323,7 @@ func (s *RotationHistoryStore) PruneByTime(cutoff time.Time) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	writer := bufio.NewWriter(tmpFile)
 	for _, record := range toKeep {
@@ -489,7 +489,7 @@ func NewRotationRecord(result *RotationResult, session, profile, estimationMetho
 func newRecordID() string {
 	ms := time.Now().UnixMilli()
 	b := make([]byte, 4)
-	rand.Read(b)
+	_, _ = rand.Read(b) // Error is extremely unlikely; fallback is still unique via timestamp
 	return fmt.Sprintf("rot-%d-%x", ms, b)
 }
 

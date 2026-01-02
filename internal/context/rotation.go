@@ -279,6 +279,7 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string) RotationResult {
 		result.State = RotationStateFailed
 		result.Error = "agent not found in monitor"
 		result.Duration = time.Since(startTime)
+		recordRotationToHistory(result, session, deriveAgentTypeFromID(agentID), 0)
 		return result
 	}
 
@@ -289,6 +290,11 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string) RotationResult {
 		result.State = RotationStateFailed
 		result.Error = fmt.Sprintf("failed to get panes: %v", err)
 		result.Duration = time.Since(startTime)
+		contextBefore := float64(0)
+		if state.Estimate != nil {
+			contextBefore = state.Estimate.UsagePercent
+		}
+		recordRotationToHistory(result, session, deriveAgentTypeFromID(agentID), contextBefore)
 		return result
 	}
 
@@ -306,6 +312,11 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string) RotationResult {
 		result.State = RotationStateFailed
 		result.Error = "pane not found for agent"
 		result.Duration = time.Since(startTime)
+		contextBefore := float64(0)
+		if state.Estimate != nil {
+			contextBefore = state.Estimate.UsagePercent
+		}
+		recordRotationToHistory(result, session, deriveAgentTypeFromID(agentID), contextBefore)
 		return result
 	}
 	result.OldPaneID = oldPane.ID
@@ -336,6 +347,11 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string) RotationResult {
 		result.State = RotationStateFailed
 		result.Error = fmt.Sprintf("failed to request summary: %v", err)
 		result.Duration = time.Since(startTime)
+		contextBefore := float64(0)
+		if state.Estimate != nil {
+			contextBefore = state.Estimate.UsagePercent
+		}
+		recordRotationToHistory(result, session, agentTypeLong(string(oldPane.Type)), contextBefore)
 		return result
 	}
 
@@ -379,6 +395,11 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string) RotationResult {
 		result.State = RotationStateFailed
 		result.Error = fmt.Sprintf("failed to spawn replacement: %v", err)
 		result.Duration = time.Since(startTime)
+		contextBefore := float64(0)
+		if state.Estimate != nil {
+			contextBefore = state.Estimate.UsagePercent
+		}
+		recordRotationToHistory(result, session, agentType, contextBefore)
 		return result
 	}
 	result.NewPaneID = newPaneID
@@ -427,24 +448,33 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string) RotationResult {
 	result.Duration = time.Since(startTime)
 
 	// Record to persistent history (for audit log)
+	recordRotationToHistory(result, session, agentType, contextBefore)
+
+	return result
+}
+
+// recordRotationToHistory persists a rotation result to the audit log.
+// This is best-effort; history write failures don't affect the rotation result.
+func recordRotationToHistory(result RotationResult, session, agentType string, contextBefore float64) {
 	historyRecord := &RotationRecord{
 		ID:               newRecordID(),
-		Timestamp:        startTime,
+		Timestamp:        result.Timestamp,
 		SessionName:      session,
-		AgentID:          agentID,
+		AgentID:          result.OldAgentID,
 		AgentType:        agentType,
 		ContextBefore:    contextBefore,
 		EstimationMethod: "token_count",
 		Method:           result.Method,
-		Success:          true,
+		Success:          result.Success,
 		SummaryTokens:    result.SummaryTokens,
 		ContextAfter:     0,
 		DurationMs:       result.Duration.Milliseconds(),
 	}
+	if !result.Success {
+		historyRecord.FailureReason = result.Error
+	}
 	// Best-effort persist - don't fail rotation if history write fails
 	_ = RecordRotation(historyRecord)
-
-	return result
 }
 
 // tryCompaction attempts to compact the agent's context.
