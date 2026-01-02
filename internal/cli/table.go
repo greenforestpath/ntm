@@ -203,9 +203,10 @@ func (t *StyledTable) String() string {
 	return t.Render()
 }
 
-// runeWidth returns the display width of a string (accounting for wide chars)
+// runeWidth returns the rune count of a string after stripping ANSI codes.
+// Note: This counts runes, not display width. CJK characters that occupy
+// 2 terminal columns are counted as 1. Sufficient for ASCII/Latin content.
 func runeWidth(s string) int {
-	// Strip ANSI escape codes for width calculation
 	cleaned := stripANSI(s)
 	return utf8.RuneCountInString(cleaned)
 }
