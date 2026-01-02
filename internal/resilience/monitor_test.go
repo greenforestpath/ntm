@@ -45,28 +45,30 @@ func TestRestartAgentUsesBuiltPaneCommandAndSendKeys(t *testing.T) {
 	restore := saveHooks()
 	defer restore()
 
-	// Stub functions
+	// Stub functions under lock for thread safety
 	var mu sync.Mutex
 	var capturedCmd string
-	sendKeysFn = func(paneID, cmd string, enter bool) error {
-		mu.Lock()
-		defer mu.Unlock()
-		capturedCmd = cmd
-		if paneID != "pane-1" {
-			t.Fatalf("unexpected pane id: %s", paneID)
+	setHooksLocked(func() {
+		sendKeysFn = func(paneID, cmd string, enter bool) error {
+			mu.Lock()
+			defer mu.Unlock()
+			capturedCmd = cmd
+			if paneID != "pane-1" {
+				t.Fatalf("unexpected pane id: %s", paneID)
+			}
+			if !enter {
+				t.Fatalf("expected enter=true")
+			}
+			return nil
 		}
-		if !enter {
-			t.Fatalf("expected enter=true")
+		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
+			if projectDir != "/tmp/project with space" {
+				return "", fmt.Errorf("unexpected dir: %s", projectDir)
+			}
+			return fmt.Sprintf("cd %q && %s", projectDir, agentCmd), nil
 		}
-		return nil
-	}
-	buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
-		if projectDir != "/tmp/project with space" {
-			return "", fmt.Errorf("unexpected dir: %s", projectDir)
-		}
-		return fmt.Sprintf("cd %q && %s", projectDir, agentCmd), nil
-	}
-	sleepFn = func(d time.Duration) {} // no-op for speed
+		sleepFn = func(d time.Duration) {} // no-op for speed
+	})
 
 	cfg := config.Default()
 	cfg.Resilience.AutoRestart = true
@@ -182,12 +184,14 @@ func TestStartAndStop(t *testing.T) {
 	cfg.Resilience.HealthCheckSeconds = 1 // Fast for testing
 
 	// Mock checkSessionFn to avoid actual tmux calls
-	checkSessionFn = func(session string) (*health.SessionHealth, error) {
-		return &health.SessionHealth{
-			Session: session,
-			Agents:  []health.AgentHealth{},
-		}, nil
-	}
+	setHooksLocked(func() {
+		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+			return &health.SessionHealth{
+				Session: session,
+				Agents:  []health.AgentHealth{},
+			}, nil
+		}
+	})
 
 	m := NewMonitor("test-session", "/tmp/project", cfg)
 
@@ -235,18 +239,20 @@ func TestCheckHealthWithHealthyAgent(t *testing.T) {
 	restore := saveHooks()
 	defer restore()
 
-	checkSessionFn = func(session string) (*health.SessionHealth, error) {
-		return &health.SessionHealth{
-			Session: session,
-			Agents: []health.AgentHealth{
-				{
-					PaneID:        "pane-1",
-					Status:        health.StatusOK,
-					ProcessStatus: health.ProcessRunning,
+	setHooksLocked(func() {
+		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+			return &health.SessionHealth{
+				Session: session,
+				Agents: []health.AgentHealth{
+					{
+						PaneID:        "pane-1",
+						Status:        health.StatusOK,
+						ProcessStatus: health.ProcessRunning,
+					},
 				},
-			},
-		}, nil
-	}
+			}, nil
+		}
+	})
 
 	cfg := config.Default()
 	m := NewMonitor("test-session", "/tmp/project", cfg)
@@ -273,26 +279,28 @@ func TestCheckHealthDetectsCrash(t *testing.T) {
 	restore := saveHooks()
 	defer restore()
 
-	checkSessionFn = func(session string) (*health.SessionHealth, error) {
-		return &health.SessionHealth{
-			Session: session,
-			Agents: []health.AgentHealth{
-				{
-					PaneID:        "pane-1",
-					Status:        health.StatusError,
-					ProcessStatus: health.ProcessExited,
-					Issues:        []health.Issue{{Type: "crash", Message: "Process exited"}},
+	setHooksLocked(func() {
+		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+			return &health.SessionHealth{
+				Session: session,
+				Agents: []health.AgentHealth{
+					{
+						PaneID:        "pane-1",
+						Status:        health.StatusError,
+						ProcessStatus: health.ProcessExited,
+						Issues:        []health.Issue{{Type: "crash", Message: "Process exited"}},
+					},
 				},
-			},
-		}, nil
-	}
+			}, nil
+		}
 
-	// Don't actually restart
-	sleepFn = func(d time.Duration) {}
-	sendKeysFn = func(paneID, cmd string, enter bool) error { return nil }
-	buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
-		return agentCmd, nil
-	}
+		// Don't actually restart
+		sleepFn = func(d time.Duration) {}
+		sendKeysFn = func(paneID, cmd string, enter bool) error { return nil }
+		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
+			return agentCmd, nil
+		}
+	})
 
 	cfg := config.Default()
 	cfg.Resilience.AutoRestart = true
@@ -322,19 +330,21 @@ func TestCheckHealthDetectsPaneMissing(t *testing.T) {
 	restore := saveHooks()
 	defer restore()
 
-	// Return empty agents list - pane doesn't exist
-	checkSessionFn = func(session string) (*health.SessionHealth, error) {
-		return &health.SessionHealth{
-			Session: session,
-			Agents:  []health.AgentHealth{},
-		}, nil
-	}
+	setHooksLocked(func() {
+		// Return empty agents list - pane doesn't exist
+		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+			return &health.SessionHealth{
+				Session: session,
+				Agents:  []health.AgentHealth{},
+			}, nil
+		}
 
-	sleepFn = func(d time.Duration) {}
-	sendKeysFn = func(paneID, cmd string, enter bool) error { return nil }
-	buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
-		return agentCmd, nil
-	}
+		sleepFn = func(d time.Duration) {}
+		sendKeysFn = func(paneID, cmd string, enter bool) error { return nil }
+		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
+			return agentCmd, nil
+		}
+	})
 
 	cfg := config.Default()
 	cfg.Resilience.MaxRestarts = 3
@@ -408,19 +418,21 @@ func TestCheckHealthRateLimitCleared(t *testing.T) {
 	restore := saveHooks()
 	defer restore()
 
-	checkSessionFn = func(session string) (*health.SessionHealth, error) {
-		return &health.SessionHealth{
-			Session: session,
-			Agents: []health.AgentHealth{
-				{
-					PaneID:        "pane-1",
-					Status:        health.StatusOK,
-					ProcessStatus: health.ProcessRunning,
-					RateLimited:   false,
+	setHooksLocked(func() {
+		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+			return &health.SessionHealth{
+				Session: session,
+				Agents: []health.AgentHealth{
+					{
+						PaneID:        "pane-1",
+						Status:        health.StatusOK,
+						ProcessStatus: health.ProcessRunning,
+						RateLimited:   false,
+					},
 				},
-			},
-		}, nil
-	}
+			}, nil
+		}
+	})
 
 	cfg := config.Default()
 	m := NewMonitor("test-session", "/tmp/project", cfg)
@@ -451,9 +463,11 @@ func TestCheckHealthError(t *testing.T) {
 	restore := saveHooks()
 	defer restore()
 
-	checkSessionFn = func(session string) (*health.SessionHealth, error) {
-		return nil, fmt.Errorf("session check failed")
-	}
+	setHooksLocked(func() {
+		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+			return nil, fmt.Errorf("session check failed")
+		}
+	})
 
 	cfg := config.Default()
 	m := NewMonitor("test-session", "/tmp/project", cfg)
@@ -477,14 +491,16 @@ func TestHandleCrashMaxRestartsExceeded(t *testing.T) {
 	defer restore()
 
 	var restartAttempted bool
-	sendKeysFn = func(paneID, cmd string, enter bool) error {
-		restartAttempted = true
-		return nil
-	}
-	sleepFn = func(d time.Duration) {}
-	buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
-		return agentCmd, nil
-	}
+	setHooksLocked(func() {
+		sendKeysFn = func(paneID, cmd string, enter bool) error {
+			restartAttempted = true
+			return nil
+		}
+		sleepFn = func(d time.Duration) {}
+		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
+			return agentCmd, nil
+		}
+	})
 
 	cfg := config.Default()
 	cfg.Resilience.MaxRestarts = 3
@@ -510,11 +526,13 @@ func TestRestartAgentIncreasesCount(t *testing.T) {
 	restore := saveHooks()
 	defer restore()
 
-	sleepFn = func(d time.Duration) {}
-	sendKeysFn = func(paneID, cmd string, enter bool) error { return nil }
-	buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
-		return agentCmd, nil
-	}
+	setHooksLocked(func() {
+		sleepFn = func(d time.Duration) {}
+		sendKeysFn = func(paneID, cmd string, enter bool) error { return nil }
+		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
+			return agentCmd, nil
+		}
+	})
 
 	cfg := config.Default()
 	cfg.Resilience.RestartDelaySeconds = 0
@@ -545,14 +563,16 @@ func TestRestartAgentSkipsIfHealthy(t *testing.T) {
 	defer restore()
 
 	var sendKeysCalled bool
-	sleepFn = func(d time.Duration) {}
-	sendKeysFn = func(paneID, cmd string, enter bool) error {
-		sendKeysCalled = true
-		return nil
-	}
-	buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
-		return agentCmd, nil
-	}
+	setHooksLocked(func() {
+		sleepFn = func(d time.Duration) {}
+		sendKeysFn = func(paneID, cmd string, enter bool) error {
+			sendKeysCalled = true
+			return nil
+		}
+		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
+			return agentCmd, nil
+		}
+	})
 
 	cfg := config.Default()
 	cfg.Resilience.RestartDelaySeconds = 0
@@ -571,15 +591,17 @@ func TestRestartAgentHandlesBuildError(t *testing.T) {
 	restore := saveHooks()
 	defer restore()
 
-	sleepFn = func(d time.Duration) {}
-	buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
-		return "", fmt.Errorf("build error")
-	}
 	var sendKeysCalled bool
-	sendKeysFn = func(paneID, cmd string, enter bool) error {
-		sendKeysCalled = true
-		return nil
-	}
+	setHooksLocked(func() {
+		sleepFn = func(d time.Duration) {}
+		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
+			return "", fmt.Errorf("build error")
+		}
+		sendKeysFn = func(paneID, cmd string, enter bool) error {
+			sendKeysCalled = true
+			return nil
+		}
+	})
 
 	cfg := config.Default()
 	m := NewMonitor("test-session", "/tmp/project", cfg)
@@ -600,13 +622,15 @@ func TestRestartAgentHandlesSendKeysError(t *testing.T) {
 	restore := saveHooks()
 	defer restore()
 
-	sleepFn = func(d time.Duration) {}
-	buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
-		return agentCmd, nil
-	}
-	sendKeysFn = func(paneID, cmd string, enter bool) error {
-		return fmt.Errorf("send keys error")
-	}
+	setHooksLocked(func() {
+		sleepFn = func(d time.Duration) {}
+		buildPaneCmdFn = func(projectDir, agentCmd string) (string, error) {
+			return agentCmd, nil
+		}
+		sendKeysFn = func(paneID, cmd string, enter bool) error {
+			return fmt.Errorf("send keys error")
+		}
+	})
 
 	cfg := config.Default()
 	m := NewMonitor("test-session", "/tmp/project", cfg)
@@ -635,12 +659,14 @@ func TestMonitorLoopRespectsMinCheckInterval(t *testing.T) {
 
 	var checkCount int
 	var mu sync.Mutex
-	checkSessionFn = func(session string) (*health.SessionHealth, error) {
-		mu.Lock()
-		checkCount++
-		mu.Unlock()
-		return &health.SessionHealth{Session: session, Agents: []health.AgentHealth{}}, nil
-	}
+	setHooksLocked(func() {
+		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+			mu.Lock()
+			checkCount++
+			mu.Unlock()
+			return &health.SessionHealth{Session: session, Agents: []health.AgentHealth{}}, nil
+		}
+	})
 
 	cfg := config.Default()
 	cfg.Resilience.HealthCheckSeconds = 0 // Should become 10 seconds minimum

@@ -212,8 +212,13 @@ func (m *Monitor) monitorLoop(ctx context.Context) {
 
 // checkHealth performs a health check on all monitored agents
 func (m *Monitor) checkHealth() {
+	// Snapshot hook under lock for thread-safe access
+	hooksMu.RLock()
+	checkFn := checkSessionFn
+	hooksMu.RUnlock()
+
 	// Get health status for the session
-	sessionHealth, err := checkSessionFn(m.session)
+	sessionHealth, err := checkFn(m.session)
 	if err != nil {
 		log.Printf("[resilience] health check failed: %v", err)
 		return
@@ -414,7 +419,14 @@ func (m *Monitor) restartAgent(agent *AgentState) {
 	delay := time.Duration(m.cfg.Resilience.RestartDelaySeconds) * time.Second
 	log.Printf("[resilience] Restarting agent %s in %v...", agent.PaneID, delay)
 
-	sleepFn(delay)
+	// Snapshot hooks under lock for thread-safe access from spawned goroutines
+	hooksMu.RLock()
+	sleepFunc := sleepFn
+	buildFunc := buildPaneCmdFn
+	sendFunc := sendKeysFn
+	hooksMu.RUnlock()
+
+	sleepFunc(delay)
 
 	m.mu.Lock()
 	// Check if still in crashed state (could have been stopped)
@@ -429,13 +441,13 @@ func (m *Monitor) restartAgent(agent *AgentState) {
 	m.mu.Unlock()
 
 	// Re-run the agent command in the pane
-	paneCmd, err := buildPaneCmdFn(m.projectDir, agentCommand)
+	paneCmd, err := buildFunc(m.projectDir, agentCommand)
 	if err != nil {
 		log.Printf("[resilience] Refusing to restart agent %s: %v", agent.PaneID, err)
 		return
 	}
 
-	if err := sendKeysFn(agent.PaneID, paneCmd, true); err != nil {
+	if err := sendFunc(agent.PaneID, paneCmd, true); err != nil {
 		log.Printf("[resilience] Failed to restart agent %s: %v", agent.PaneID, err)
 		return
 	}
