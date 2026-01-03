@@ -501,8 +501,8 @@ func TestNavigateNested(t *testing.T) {
 	}{
 		{[]string{"level1", "level2", "value"}, "deep", false},
 		{[]string{"level1", "array", "1"}, "b", false},
-		{[]string{"level1", "array", "5"}, nil, true},        // out of bounds
-		{[]string{"level1", "missing"}, nil, true},           // field not found
+		{[]string{"level1", "array", "5"}, nil, true},          // out of bounds
+		{[]string{"level1", "missing"}, nil, true},             // field not found
 		{[]string{"level1", "array", "notanumber"}, nil, true}, // invalid index
 	}
 
@@ -541,10 +541,10 @@ func TestValidateVarRefs(t *testing.T) {
 	}{
 		{"${vars.name}", 0},
 		{"${vars.undefined}", 1},
-		{"${env.PATH}", 0},       // env is always valid
-		{"${session}", 0},        // context vars are valid
-		{"${unknown.var}", 1},    // unknown namespace
-		{"\\${vars.name}", 0},    // escaped is ignored
+		{"${env.PATH}", 0},         // env is always valid
+		{"${session}", 0},          // context vars are valid
+		{"${unknown.var}", 1},      // unknown namespace
+		{"\\${vars.name}", 0},      // escaped is ignored
 		{"${vars.x} ${vars.y}", 2}, // both undefined
 	}
 

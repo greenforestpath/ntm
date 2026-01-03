@@ -258,13 +258,13 @@ func TestRouteStrategyNames(t *testing.T) {
 	}
 
 	expected := map[string]bool{
-		"least-loaded":           true,
-		"first-available":        true,
-		"round-robin":            true,
-		"round-robin-available":  true,
-		"random":                 true,
-		"sticky":                 true,
-		"explicit":               true,
+		"least-loaded":          true,
+		"first-available":       true,
+		"round-robin":           true,
+		"round-robin-available": true,
+		"random":                true,
+		"sticky":                true,
+		"explicit":              true,
 	}
 
 	for _, name := range names {

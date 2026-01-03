@@ -55,12 +55,12 @@ type Executor struct {
 	rrCounter int
 
 	// Runtime state (reset per execution)
-	state     *ExecutionState
-	stateMu   sync.RWMutex // Protects state.Steps for concurrent access
-	varMu     sync.RWMutex // Protects state.Variables for concurrent access
-	graph     *DependencyGraph
-	progress  chan<- ProgressEvent
-	cancelFn  context.CancelFunc
+	state    *ExecutionState
+	stateMu  sync.RWMutex // Protects state.Steps for concurrent access
+	varMu    sync.RWMutex // Protects state.Variables for concurrent access
+	graph    *DependencyGraph
+	progress chan<- ProgressEvent
+	cancelFn context.CancelFunc
 }
 
 // NewExecutor creates a new workflow executor

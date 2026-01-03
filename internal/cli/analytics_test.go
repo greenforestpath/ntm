@@ -139,4 +139,3 @@ func TestBuildSessionDetails(t *testing.T) {
 		}
 	}
 }
-

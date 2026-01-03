@@ -363,10 +363,10 @@ func TestFixedWidthBadge(t *testing.T) {
 
 func TestTruncateBadgeText(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		maxLen  int
-		want    string
+		name   string
+		input  string
+		maxLen int
+		want   string
 	}{
 		{"short_no_truncate", "opus", 8, "opus"},
 		{"exact_length", "12345678", 8, "12345678"},

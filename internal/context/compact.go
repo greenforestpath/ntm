@@ -37,17 +37,17 @@ type CompactionResult struct {
 
 // Compactor handles graceful degradation of context before rotation.
 type Compactor struct {
-	monitor         *ContextMonitor
-	minReduction    float64       // Minimum usage reduction to consider success (e.g., 0.10 = 10%)
-	builtinTimeout  time.Duration // Timeout for builtin compaction
+	monitor          *ContextMonitor
+	minReduction     float64       // Minimum usage reduction to consider success (e.g., 0.10 = 10%)
+	builtinTimeout   time.Duration // Timeout for builtin compaction
 	summarizeTimeout time.Duration // Timeout for summarization request
 }
 
 // CompactorConfig holds configuration for the Compactor.
 type CompactorConfig struct {
-	MinReduction      float64       // Minimum usage reduction to consider success (default: 0.10)
-	BuiltinTimeout    time.Duration // Timeout for builtin compaction (default: 10s)
-	SummarizeTimeout  time.Duration // Timeout for summarization (default: 30s)
+	MinReduction     float64       // Minimum usage reduction to consider success (default: 0.10)
+	BuiltinTimeout   time.Duration // Timeout for builtin compaction (default: 10s)
+	SummarizeTimeout time.Duration // Timeout for summarization (default: 30s)
 }
 
 // DefaultCompactorConfig returns sensible defaults.
@@ -233,12 +233,12 @@ func (c *Compactor) EvaluateCompactionResult(before, after *ContextEstimate) *Co
 
 // CompactionState tracks the state of a compaction attempt.
 type CompactionState struct {
-	AgentID       string
-	StartedAt     time.Time
-	Method        CompactionMethod
-	CommandsSent  int
-	LastCommand   string
-	WaitingUntil  time.Time
+	AgentID        string
+	StartedAt      time.Time
+	Method         CompactionMethod
+	CommandsSent   int
+	LastCommand    string
+	WaitingUntil   time.Time
 	EstimateBefore *ContextEstimate
 }
 

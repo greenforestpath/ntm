@@ -12,8 +12,8 @@ func TestNewCompactor(t *testing.T) {
 	monitor := NewContextMonitor(DefaultMonitorConfig())
 
 	tests := []struct {
-		name            string
-		cfg             CompactorConfig
+		name             string
+		cfg              CompactorConfig
 		wantMinReduction float64
 	}{
 		{
@@ -53,10 +53,10 @@ func TestGetAgentCapabilities(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		agentType       string
-		wantBuiltin     bool
-		wantClear       bool
-		wantBuiltinCmd  string
+		agentType      string
+		wantBuiltin    bool
+		wantClear      bool
+		wantBuiltinCmd string
 	}{
 		{"claude", true, true, "/compact"},
 		{"cc", true, true, "/compact"},
@@ -114,9 +114,9 @@ func TestGetCompactionCommands(t *testing.T) {
 	c := NewCompactor(monitor, DefaultCompactorConfig())
 
 	tests := []struct {
-		agentType    string
-		wantMinCmds  int
-		wantBuiltin  bool
+		agentType   string
+		wantMinCmds int
+		wantBuiltin bool
 	}{
 		{"claude", 2, true},  // /compact + summarize
 		{"codex", 1, false},  // just summarize
@@ -302,10 +302,10 @@ func TestPreRotationCheck(t *testing.T) {
 	monitor.RegisterAgent("test-agent", "pane1", "claude-opus-4")
 
 	tests := []struct {
-		name           string
-		messageCount   int
+		name            string
+		messageCount    int
 		rotateThreshold float64
-		wantRotate     bool
+		wantRotate      bool
 	}{
 		{
 			name:            "below threshold",

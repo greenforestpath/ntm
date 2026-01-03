@@ -7,17 +7,17 @@ import (
 
 // DependencyGraph represents step dependencies for execution ordering
 type DependencyGraph struct {
-	steps     map[string]*Step       // step ID -> step
-	edges     map[string][]string    // step ID -> steps it depends on
-	reverse   map[string][]string    // step ID -> steps that depend on it
-	inDegree  map[string]int         // step ID -> number of dependencies
-	executed  map[string]bool        // step ID -> has been executed
+	steps    map[string]*Step    // step ID -> step
+	edges    map[string][]string // step ID -> steps it depends on
+	reverse  map[string][]string // step ID -> steps that depend on it
+	inDegree map[string]int      // step ID -> number of dependencies
+	executed map[string]bool     // step ID -> has been executed
 }
 
 // DependencyError represents an error in the dependency graph
 type DependencyError struct {
-	Type    string   `json:"type"`    // cycle, missing_dep, unreachable
-	Steps   []string `json:"steps"`   // affected step IDs
+	Type    string   `json:"type"`  // cycle, missing_dep, unreachable
+	Steps   []string `json:"steps"` // affected step IDs
 	Message string   `json:"message"`
 }
 
@@ -27,10 +27,10 @@ func (e DependencyError) Error() string {
 
 // ExecutionPlan contains the resolved execution order
 type ExecutionPlan struct {
-	Order       []string           `json:"order"`        // Step IDs in execution order
-	Levels      [][]string         `json:"levels"`       // Parallelizable levels
-	Errors      []DependencyError  `json:"errors,omitempty"`
-	Valid       bool               `json:"valid"`
+	Order  []string          `json:"order"`  // Step IDs in execution order
+	Levels [][]string        `json:"levels"` // Parallelizable levels
+	Errors []DependencyError `json:"errors,omitempty"`
+	Valid  bool              `json:"valid"`
 }
 
 // NewDependencyGraph creates a dependency graph from workflow steps

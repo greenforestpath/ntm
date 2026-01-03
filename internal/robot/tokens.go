@@ -23,17 +23,17 @@ type TokensOptions struct {
 // TokensOutput is the structured output for --robot-tokens
 type TokensOutput struct {
 	RobotResponse
-	Period          string              `json:"period"`
-	GeneratedAt     time.Time           `json:"generated_at"`
-	GroupBy         string              `json:"group_by"`
-	TotalTokens     int                 `json:"total_tokens"`
-	TotalPrompts    int                 `json:"total_prompts"`
-	TotalCharacters int                 `json:"total_characters"`
-	Breakdown       []TokenBreakdown    `json:"breakdown"`
+	Period          string                     `json:"period"`
+	GeneratedAt     time.Time                  `json:"generated_at"`
+	GroupBy         string                     `json:"group_by"`
+	TotalTokens     int                        `json:"total_tokens"`
+	TotalPrompts    int                        `json:"total_prompts"`
+	TotalCharacters int                        `json:"total_characters"`
+	Breakdown       []TokenBreakdown           `json:"breakdown"`
 	AgentStats      map[string]AgentTokenStats `json:"agent_stats,omitempty"`
 	ModelStats      map[string]ModelTokenStats `json:"model_stats,omitempty"`
-	TimeStats       []TimeTokenStats    `json:"time_stats,omitempty"`
-	AgentHints      *TokensAgentHints   `json:"_agent_hints,omitempty"`
+	TimeStats       []TimeTokenStats           `json:"time_stats,omitempty"`
+	AgentHints      *TokensAgentHints          `json:"_agent_hints,omitempty"`
 }
 
 // TokenBreakdown is a single breakdown entry (generic for any grouping)

@@ -24,9 +24,9 @@ func NewConditionEvaluator(sub *Substitutor) *ConditionEvaluator {
 
 // ConditionResult contains the result of condition evaluation.
 type ConditionResult struct {
-	Value   bool   // True if condition is met (step should RUN)
-	Skip    bool   // True if step should be skipped (inverse of Value)
-	Reason  string // Human-readable explanation
+	Value  bool   // True if condition is met (step should RUN)
+	Skip   bool   // True if step should be skipped (inverse of Value)
+	Reason string // Human-readable explanation
 }
 
 // Evaluate evaluates a condition expression.
@@ -224,8 +224,8 @@ func (e *ConditionEvaluator) evaluateComparison(expr string) (bool, error) {
 
 	// Order matters: check longer operators first
 	operators := []struct {
-		op      string
-		evalFn  func(left, right string) (bool, error)
+		op     string
+		evalFn func(left, right string) (bool, error)
 	}{
 		{">=", e.evalGreaterEqual},
 		{"<=", e.evalLessEqual},

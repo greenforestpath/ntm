@@ -1375,7 +1375,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				state = "compacted"
 			}
 			ps.State = state
-			
+
 			// Pre-calculate token velocity
 			ps.TokenVelocity = tokenVelocityFromStatus(st)
 			m.paneStatus[idx] = ps

@@ -22,14 +22,14 @@ type RouteOptions struct {
 
 // RouteOutput is the structured output for --robot-route.
 type RouteOutput struct {
-	RobotResponse                          // Embed standard response fields (success, timestamp, error)
-	Session        string                  `json:"session"`
-	Strategy       StrategyName            `json:"strategy"`
-	Recommendation *RouteRecommendation    `json:"recommendation,omitempty"`
-	Candidates     []RouteCandidate        `json:"candidates"`
-	Excluded       []RouteExcluded         `json:"excluded,omitempty"`
-	FallbackUsed   bool                    `json:"fallback_used,omitempty"`
-	AgentHints     *RouteAgentHints        `json:"_agent_hints,omitempty"`
+	RobotResponse                       // Embed standard response fields (success, timestamp, error)
+	Session        string               `json:"session"`
+	Strategy       StrategyName         `json:"strategy"`
+	Recommendation *RouteRecommendation `json:"recommendation,omitempty"`
+	Candidates     []RouteCandidate     `json:"candidates"`
+	Excluded       []RouteExcluded      `json:"excluded,omitempty"`
+	FallbackUsed   bool                 `json:"fallback_used,omitempty"`
+	AgentHints     *RouteAgentHints     `json:"_agent_hints,omitempty"`
 }
 
 // RouteRecommendation contains the recommended agent for routing.

@@ -7,11 +7,11 @@ import (
 
 func TestOptionalDurationValue_Set(t *testing.T) {
 	tests := []struct {
-		name            string
-		input           string
-		wantDuration    time.Duration
-		wantEnabled     bool
-		wantErr         bool
+		name         string
+		input        string
+		wantDuration time.Duration
+		wantEnabled  bool
+		wantErr      bool
 	}{
 		{
 			name:         "empty string uses default",
@@ -128,11 +128,11 @@ func TestStaggerDelayCalculation(t *testing.T) {
 		agentIdx int
 		want     time.Duration
 	}{
-		{0, 0},                    // First agent: no delay
-		{1, 90 * time.Second},     // Second: 90s
-		{2, 180 * time.Second},    // Third: 180s (3m)
-		{3, 270 * time.Second},    // Fourth: 270s (4.5m)
-		{4, 360 * time.Second},    // Fifth: 360s (6m)
+		{0, 0},                 // First agent: no delay
+		{1, 90 * time.Second},  // Second: 90s
+		{2, 180 * time.Second}, // Third: 180s (3m)
+		{3, 270 * time.Second}, // Fourth: 270s (4.5m)
+		{4, 360 * time.Second}, // Fifth: 360s (6m)
 	}
 
 	for _, tt := range tests {
@@ -174,11 +174,11 @@ func TestStaggerMaxDelayCalculation(t *testing.T) {
 		numAgents    int
 		wantMaxDelay time.Duration
 	}{
-		{1, 0},                     // Single agent: no delay
-		{2, 90 * time.Second},      // 2 agents: last agent (idx 1) at 90s
-		{3, 180 * time.Second},     // 3 agents: last agent (idx 2) at 180s
-		{5, 360 * time.Second},     // 5 agents: last agent (idx 4) at 360s
-		{10, 810 * time.Second},    // 10 agents: last agent (idx 9) at 810s (13.5m)
+		{1, 0},                  // Single agent: no delay
+		{2, 90 * time.Second},   // 2 agents: last agent (idx 1) at 90s
+		{3, 180 * time.Second},  // 3 agents: last agent (idx 2) at 180s
+		{5, 360 * time.Second},  // 5 agents: last agent (idx 4) at 360s
+		{10, 810 * time.Second}, // 10 agents: last agent (idx 9) at 810s (13.5m)
 	}
 
 	for _, tt := range tests {
@@ -202,10 +202,10 @@ func TestStaggerDelayCalculation_CustomIntervals(t *testing.T) {
 		agentIdx int
 		want     time.Duration
 	}{
-		{30 * time.Second, 3, 90 * time.Second},    // 30s stagger, 4th agent
-		{2 * time.Minute, 2, 4 * time.Minute},       // 2m stagger, 3rd agent
+		{30 * time.Second, 3, 90 * time.Second},              // 30s stagger, 4th agent
+		{2 * time.Minute, 2, 4 * time.Minute},                // 2m stagger, 3rd agent
 		{500 * time.Millisecond, 5, 2500 * time.Millisecond}, // 500ms stagger, 6th agent
-		{1 * time.Hour, 1, 1 * time.Hour},           // 1h stagger, 2nd agent
+		{1 * time.Hour, 1, 1 * time.Hour},                    // 1h stagger, 2nd agent
 	}
 
 	for _, tt := range tests {

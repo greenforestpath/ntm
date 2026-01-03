@@ -759,9 +759,9 @@ func TestParseBool(t *testing.T) {
 
 func TestParseInt(t *testing.T) {
 	tests := []struct {
-		input   string
-		def     int
-		want    int
+		input string
+		def   int
+		want  int
 	}{
 		{"42", 0, 42},
 		{"-1", 0, -1},

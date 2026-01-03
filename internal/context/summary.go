@@ -255,6 +255,9 @@ func extractSection(response, header string) string {
 }
 
 // extractListSection extracts a bulleted list section.
+// numberedListPrefix matches numbered list prefixes like "1. ", "23. " etc.
+var numberedListPrefix = regexp.MustCompile(`^\d+\.\s+`)
+
 func extractListSection(response, header string) []string {
 	section := extractSection(response, header)
 	if section == "" {
@@ -270,10 +273,7 @@ func extractListSection(response, header string) []string {
 		line = strings.TrimPrefix(line, "* ")
 		line = strings.TrimPrefix(line, "• ")
 		// Remove numbered list prefixes
-		if matched, _ := regexp.MatchString(`^\d+\.\s+`, line); matched {
-			re := regexp.MustCompile(`^\d+\.\s+`)
-			line = re.ReplaceAllString(line, "")
-		}
+		line = numberedListPrefix.ReplaceAllString(line, "")
 		if line != "" {
 			items = append(items, line)
 		}
@@ -286,10 +286,10 @@ func extractListSection(response, header string) []string {
 func extractFilePaths(text string) []string {
 	// Match common file path patterns
 	patterns := []string{
-		`(?m)(?:^|\s)([a-zA-Z0-9_./\-]+\.[a-zA-Z]{1,10})(?:\s|$|:|,)`,          // file.ext
-		`(?m)(?:^|\s)((?:[a-zA-Z0-9_\-]+/)+[a-zA-Z0-9_\-]+\.[a-zA-Z]{1,10})`,   // path/to/file.ext
-		`(?m)(?:^|\s)(internal/[a-zA-Z0-9_./\-]+)`,                              // internal/...
-		`(?m)(?:^|\s)(cmd/[a-zA-Z0-9_./\-]+)`,                                   // cmd/...
+		`(?m)(?:^|\s)([a-zA-Z0-9_./\-]+\.[a-zA-Z]{1,10})(?:\s|$|:|,)`,        // file.ext
+		`(?m)(?:^|\s)((?:[a-zA-Z0-9_\-]+/)+[a-zA-Z0-9_\-]+\.[a-zA-Z]{1,10})`, // path/to/file.ext
+		`(?m)(?:^|\s)(internal/[a-zA-Z0-9_./\-]+)`,                           // internal/...
+		`(?m)(?:^|\s)(cmd/[a-zA-Z0-9_./\-]+)`,                                // cmd/...
 	}
 
 	seen := make(map[string]bool)

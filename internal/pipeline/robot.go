@@ -692,5 +692,5 @@ func ClearPipelineRegistry() {
 func outputJSON(v interface{}) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	enc.Encode(v)
+	_ = enc.Encode(v) // Error ignored: stdout output failure is unrecoverable
 }

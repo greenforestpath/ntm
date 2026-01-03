@@ -20,15 +20,15 @@ type AssignOptions struct {
 // AssignOutput is the structured output for --robot-assign
 type AssignOutput struct {
 	RobotResponse
-	Session           string              `json:"session"`
-	Strategy          string              `json:"strategy"`
-	GeneratedAt       time.Time           `json:"generated_at"`
-	Recommendations   []AssignRecommend   `json:"recommendations"`
-	BlockedBeads      []BlockedBead       `json:"blocked_beads"`
-	IdleAgents        []string            `json:"idle_agents"`
-	UnassignableBeads []UnassignableBead  `json:"unassignable_beads,omitempty"`
-	Summary           AssignSummary       `json:"summary"`
-	AgentHints        *AssignAgentHints   `json:"_agent_hints,omitempty"`
+	Session           string             `json:"session"`
+	Strategy          string             `json:"strategy"`
+	GeneratedAt       time.Time          `json:"generated_at"`
+	Recommendations   []AssignRecommend  `json:"recommendations"`
+	BlockedBeads      []BlockedBead      `json:"blocked_beads"`
+	IdleAgents        []string           `json:"idle_agents"`
+	UnassignableBeads []UnassignableBead `json:"unassignable_beads,omitempty"`
+	Summary           AssignSummary      `json:"summary"`
+	AgentHints        *AssignAgentHints  `json:"_agent_hints,omitempty"`
 }
 
 // AssignRecommend is a single assignment recommendation
@@ -356,7 +356,7 @@ func inferTaskType(bead bv.BeadPreview) string {
 // parsePriority converts "P0"-"P4" to integer
 func parsePriority(p string) int {
 	if len(p) == 2 && p[0] == 'P' {
-		if n := p[1] - '0'; n >= 0 && n <= 4 {
+		if n := p[1] - '0'; n <= 4 { // n is byte (unsigned), so >= 0 is always true
 			return int(n)
 		}
 	}

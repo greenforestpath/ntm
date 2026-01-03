@@ -443,9 +443,9 @@ func TestEstimateTokens(t *testing.T) {
 		expected int64
 	}{
 		{0, 0},
-		{35, 10},      // ~35 chars = ~10 tokens
-		{350, 100},    // ~350 chars = ~100 tokens
-		{3500, 1000},  // ~3500 chars = ~1000 tokens
+		{35, 10},     // ~35 chars = ~10 tokens
+		{350, 100},   // ~350 chars = ~100 tokens
+		{3500, 1000}, // ~3500 chars = ~1000 tokens
 	}
 
 	for _, tt := range tests {

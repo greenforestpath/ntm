@@ -461,52 +461,52 @@ func TestStateClassifier_classifyState(t *testing.T) {
 	sc := NewStateClassifier("test", nil)
 
 	tests := []struct {
-		name       string
-		velocity   float64
-		matches    []PatternMatch
-		wantState  AgentState
+		name        string
+		velocity    float64
+		matches     []PatternMatch
+		wantState   AgentState
 		wantMinConf float64
 	}{
 		{
-			name:       "error_pattern",
-			velocity:   0,
-			matches:    []PatternMatch{{Pattern: "rate_limit", Category: CategoryError}},
-			wantState:  StateError,
+			name:        "error_pattern",
+			velocity:    0,
+			matches:     []PatternMatch{{Pattern: "rate_limit", Category: CategoryError}},
+			wantState:   StateError,
 			wantMinConf: 0.95,
 		},
 		{
-			name:       "idle_prompt_low_velocity",
-			velocity:   0.5,
-			matches:    []PatternMatch{{Pattern: "claude_prompt", Category: CategoryIdle}},
-			wantState:  StateWaiting,
+			name:        "idle_prompt_low_velocity",
+			velocity:    0.5,
+			matches:     []PatternMatch{{Pattern: "claude_prompt", Category: CategoryIdle}},
+			wantState:   StateWaiting,
 			wantMinConf: 0.90,
 		},
 		{
-			name:       "thinking_pattern",
-			velocity:   0,
-			matches:    []PatternMatch{{Pattern: "thinking_text", Category: CategoryThinking}},
-			wantState:  StateThinking,
+			name:        "thinking_pattern",
+			velocity:    0,
+			matches:     []PatternMatch{{Pattern: "thinking_text", Category: CategoryThinking}},
+			wantState:   StateThinking,
 			wantMinConf: 0.80,
 		},
 		{
-			name:       "high_velocity",
-			velocity:   15.0,
-			matches:    nil,
-			wantState:  StateGenerating,
+			name:        "high_velocity",
+			velocity:    15.0,
+			matches:     nil,
+			wantState:   StateGenerating,
 			wantMinConf: 0.85,
 		},
 		{
-			name:       "medium_velocity",
-			velocity:   5.0,
-			matches:    nil,
-			wantState:  StateGenerating,
+			name:        "medium_velocity",
+			velocity:    5.0,
+			matches:     nil,
+			wantState:   StateGenerating,
 			wantMinConf: 0.70,
 		},
 		{
-			name:       "unknown_insufficient_signals",
-			velocity:   0.5,
-			matches:    nil,
-			wantState:  StateUnknown,
+			name:        "unknown_insufficient_signals",
+			velocity:    0.5,
+			matches:     nil,
+			wantState:   StateUnknown,
 			wantMinConf: 0.50,
 		},
 	}
@@ -1540,12 +1540,12 @@ func TestGenerateActivityHintsEdgeCases(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		available       []string
-		busy            []string
-		problem         []string
-		summary         ActivitySummary
-		checkSummary    func(string) bool
+		name         string
+		available    []string
+		busy         []string
+		problem      []string
+		summary      ActivitySummary
+		checkSummary func(string) bool
 	}{
 		{
 			name:      "single_available",
@@ -1603,7 +1603,7 @@ func TestNormalizeAgentTypeEdgeCases(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"", ""},                  // Empty string stays empty
+		{"", ""}, // Empty string stays empty
 		{"CLAUDE", "claude"},
 		{"CODEX", "codex"},
 		{"GEMINI", "gemini"},
@@ -1805,4 +1805,3 @@ func TestClassifyStateIdleAtBoundary(t *testing.T) {
 		t.Errorf("expected WAITING with idle prompt below threshold, got %s", state)
 	}
 }
-

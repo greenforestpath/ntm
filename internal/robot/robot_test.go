@@ -2423,9 +2423,9 @@ func TestGenerateHistoryHints(t *testing.T) {
 
 func TestGenerateTokenHints(t *testing.T) {
 	tests := []struct {
-		name       string
-		output     TokensOutput
-		checkFunc  func(*testing.T, *TokensAgentHints)
+		name      string
+		output    TokensOutput
+		checkFunc func(*testing.T, *TokensAgentHints)
 	}{
 		{
 			name: "no tokens",

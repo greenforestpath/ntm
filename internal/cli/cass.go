@@ -71,8 +71,7 @@ func runCassStatus() error {
 	if err != nil {
 		return handleCassError(err)
 	}
-// ... rest of function unchanged
-
+	// ... rest of function unchanged
 
 	if IsJSONOutput() {
 		return output.PrintJSON(status)

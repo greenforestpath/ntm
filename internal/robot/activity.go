@@ -22,9 +22,9 @@ type VelocitySample struct {
 // It maintains a sliding window of samples for smoothed velocity calculation.
 type VelocityTracker struct {
 	PaneID        string           `json:"pane_id"`
-	Samples       []VelocitySample `json:"samples"`        // circular buffer, last N samples
-	MaxSamples    int              `json:"max_samples"`    // size of circular buffer
-	LastCapture   string           `json:"-"`              // previous capture (not serialized)
+	Samples       []VelocitySample `json:"samples"`     // circular buffer, last N samples
+	MaxSamples    int              `json:"max_samples"` // size of circular buffer
+	LastCapture   string           `json:"-"`           // previous capture (not serialized)
 	LastCaptureAt time.Time        `json:"last_capture_at"`
 
 	mu sync.Mutex
@@ -383,19 +383,19 @@ type StateTransition struct {
 
 // AgentActivity represents the current activity state of an agent pane.
 type AgentActivity struct {
-	PaneID           string          `json:"pane_id"`
-	AgentType        string          `json:"agent_type"` // "claude", "codex", "gemini", "*"
-	State            AgentState      `json:"state"`
-	Confidence       float64         `json:"confidence"` // 0.0-1.0
-	Velocity         float64         `json:"velocity"`   // current chars/sec
-	StateSince       time.Time       `json:"state_since"`
-	DetectedPatterns []string        `json:"detected_patterns,omitempty"`
-	LastOutput       time.Time       `json:"last_output,omitempty"`
+	PaneID           string            `json:"pane_id"`
+	AgentType        string            `json:"agent_type"` // "claude", "codex", "gemini", "*"
+	State            AgentState        `json:"state"`
+	Confidence       float64           `json:"confidence"` // 0.0-1.0
+	Velocity         float64           `json:"velocity"`   // current chars/sec
+	StateSince       time.Time         `json:"state_since"`
+	DetectedPatterns []string          `json:"detected_patterns,omitempty"`
+	LastOutput       time.Time         `json:"last_output,omitempty"`
 	StateHistory     []StateTransition `json:"state_history,omitempty"`
 
 	// Hysteresis tracking - prevents rapid state flapping
-	PendingState  AgentState `json:"pending_state,omitempty"`
-	PendingSince  time.Time  `json:"pending_since,omitempty"`
+	PendingState AgentState `json:"pending_state,omitempty"`
+	PendingSince time.Time  `json:"pending_since,omitempty"`
 }
 
 // StateClassifier combines velocity and pattern signals to classify agent state.

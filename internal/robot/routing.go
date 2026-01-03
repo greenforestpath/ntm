@@ -23,10 +23,10 @@ type RoutingConfig struct {
 	AffinityBonus   float64 `toml:"affinity_bonus"`   // Default: 20
 
 	// Exclusion thresholds
-	ExcludeContextAbove   float64 `toml:"exclude_context_above"`   // Default: 85
-	ExcludeIfGenerating   bool    `toml:"exclude_if_generating"`   // Default: true
-	ExcludeIfRateLimited  bool    `toml:"exclude_if_rate_limited"` // Default: true
-	ExcludeIfErrorState   bool    `toml:"exclude_if_error"`        // Default: true
+	ExcludeContextAbove  float64 `toml:"exclude_context_above"`   // Default: 85
+	ExcludeIfGenerating  bool    `toml:"exclude_if_generating"`   // Default: true
+	ExcludeIfRateLimited bool    `toml:"exclude_if_rate_limited"` // Default: true
+	ExcludeIfErrorState  bool    `toml:"exclude_if_error"`        // Default: true
 }
 
 // DefaultRoutingConfig returns sensible default configuration.
@@ -67,10 +67,10 @@ type ScoredAgent struct {
 	RateLimited bool        `json:"rate_limited"`
 
 	// Scoring results
-	Score       float64       `json:"score"`       // Final composite score (0-100)
-	Excluded    bool          `json:"excluded"`    // If true, agent should not receive work
-	ExcludeReason string      `json:"exclude_reason,omitempty"`
-	ScoreDetail ScoreBreakdown `json:"score_detail,omitempty"`
+	Score         float64        `json:"score"`    // Final composite score (0-100)
+	Excluded      bool           `json:"excluded"` // If true, agent should not receive work
+	ExcludeReason string         `json:"exclude_reason,omitempty"`
+	ScoreDetail   ScoreBreakdown `json:"score_detail,omitempty"`
 }
 
 // ScoreBreakdown shows how the score was calculated.
@@ -98,8 +98,8 @@ const (
 
 // AgentScorer scores agents for routing decisions.
 type AgentScorer struct {
-	config   RoutingConfig
-	monitor  *ActivityMonitor
+	config  RoutingConfig
+	monitor *ActivityMonitor
 }
 
 // NewAgentScorer creates a new agent scorer with the given configuration.
@@ -474,12 +474,12 @@ type RoutingStrategy interface {
 
 // RoutingResult represents the outcome of a routing decision.
 type RoutingResult struct {
-	Selected    *ScoredAgent   `json:"selected,omitempty"`
-	Strategy    StrategyName   `json:"strategy"`
-	Candidates  []ScoredAgent  `json:"candidates"`
-	Excluded    []ScoredAgent  `json:"excluded,omitempty"`
+	Selected     *ScoredAgent  `json:"selected,omitempty"`
+	Strategy     StrategyName  `json:"strategy"`
+	Candidates   []ScoredAgent `json:"candidates"`
+	Excluded     []ScoredAgent `json:"excluded,omitempty"`
 	FallbackUsed bool          `json:"fallback_used"`
-	Reason      string         `json:"reason,omitempty"`
+	Reason       string        `json:"reason,omitempty"`
 }
 
 // =============================================================================
@@ -687,8 +687,8 @@ func NewRouter() *Router {
 
 	// Default fallback order
 	r.fallbackOrder = []RoutingStrategy{
-		&LeastLoadedStrategy{},     // Try best score first
-		&FirstAvailableStrategy{},  // Then any waiting agent
+		&LeastLoadedStrategy{},    // Try best score first
+		&FirstAvailableStrategy{}, // Then any waiting agent
 	}
 
 	return r

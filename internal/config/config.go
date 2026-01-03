@@ -16,23 +16,23 @@ import (
 
 // Config represents the main configuration
 type Config struct {
-	ProjectsBase  string            `toml:"projects_base"`
-	Theme         string            `toml:"theme"`        // UI Theme (mocha, macchiato, nord, latte, auto)
-	PaletteFile   string            `toml:"palette_file"` // Path to command_palette.md (optional)
-	Agents        AgentConfig       `toml:"agents"`
-	Palette       []PaletteCmd      `toml:"palette"`
-	PaletteState  PaletteState      `toml:"palette_state"`
-	Tmux          TmuxConfig        `toml:"tmux"`
-	AgentMail     AgentMailConfig   `toml:"agent_mail"`
-	Models        ModelsConfig      `toml:"models"`
-	Alerts        AlertsConfig      `toml:"alerts"`
-	Checkpoints   CheckpointsConfig `toml:"checkpoints"`
-	Notifications notify.Config     `toml:"notifications"`
-	Resilience    ResilienceConfig  `toml:"resilience"`
-	Scanner       ScannerConfig     `toml:"scanner"`      // UBS scanner configuration
-	CASS          CASSConfig        `toml:"cass"`         // CASS integration configuration
-	Accounts      AccountsConfig    `toml:"accounts"`     // Multi-account management
-	Rotation      RotationConfig    `toml:"rotation"`     // Account rotation configuration
+	ProjectsBase    string                `toml:"projects_base"`
+	Theme           string                `toml:"theme"`        // UI Theme (mocha, macchiato, nord, latte, auto)
+	PaletteFile     string                `toml:"palette_file"` // Path to command_palette.md (optional)
+	Agents          AgentConfig           `toml:"agents"`
+	Palette         []PaletteCmd          `toml:"palette"`
+	PaletteState    PaletteState          `toml:"palette_state"`
+	Tmux            TmuxConfig            `toml:"tmux"`
+	AgentMail       AgentMailConfig       `toml:"agent_mail"`
+	Models          ModelsConfig          `toml:"models"`
+	Alerts          AlertsConfig          `toml:"alerts"`
+	Checkpoints     CheckpointsConfig     `toml:"checkpoints"`
+	Notifications   notify.Config         `toml:"notifications"`
+	Resilience      ResilienceConfig      `toml:"resilience"`
+	Scanner         ScannerConfig         `toml:"scanner"`          // UBS scanner configuration
+	CASS            CASSConfig            `toml:"cass"`             // CASS integration configuration
+	Accounts        AccountsConfig        `toml:"accounts"`         // Multi-account management
+	Rotation        RotationConfig        `toml:"rotation"`         // Account rotation configuration
 	GeminiSetup     GeminiSetupConfig     `toml:"gemini_setup"`     // Gemini post-spawn setup
 	ContextRotation ContextRotationConfig `toml:"context_rotation"` // Context window rotation
 
@@ -311,24 +311,24 @@ type AgentConfig struct {
 
 // ContextRotationConfig holds configuration for automatic context window rotation
 type ContextRotationConfig struct {
-	Enabled          bool    `toml:"enabled"`            // Master toggle for context rotation
-	WarningThreshold float64 `toml:"warning_threshold"`  // 0.0-1.0, warn when context usage exceeds this
-	RotateThreshold  float64 `toml:"rotate_threshold"`   // 0.0-1.0, rotate agent when usage exceeds this
-	SummaryMaxTokens int     `toml:"summary_max_tokens"` // Max tokens for handoff summary
+	Enabled          bool    `toml:"enabled"`             // Master toggle for context rotation
+	WarningThreshold float64 `toml:"warning_threshold"`   // 0.0-1.0, warn when context usage exceeds this
+	RotateThreshold  float64 `toml:"rotate_threshold"`    // 0.0-1.0, rotate agent when usage exceeds this
+	SummaryMaxTokens int     `toml:"summary_max_tokens"`  // Max tokens for handoff summary
 	MinSessionAgeSec int     `toml:"min_session_age_sec"` // Don't rotate agents younger than this
-	TryCompactFirst  bool    `toml:"try_compact_first"`  // Try to compact before rotating
-	RequireConfirm   bool    `toml:"require_confirm"`    // Require user confirmation before rotating
+	TryCompactFirst  bool    `toml:"try_compact_first"`   // Try to compact before rotating
+	RequireConfirm   bool    `toml:"require_confirm"`     // Require user confirmation before rotating
 }
 
 // DefaultContextRotationConfig returns sensible defaults for context rotation
 func DefaultContextRotationConfig() ContextRotationConfig {
 	return ContextRotationConfig{
 		Enabled:          true,
-		WarningThreshold: 0.80, // Warn at 80%
-		RotateThreshold:  0.95, // Rotate at 95%
-		SummaryMaxTokens: 2000, // 2000 tokens for handoff summary
-		MinSessionAgeSec: 300,  // 5 minutes minimum session age
-		TryCompactFirst:  true, // Try compaction before rotation
+		WarningThreshold: 0.80,  // Warn at 80%
+		RotateThreshold:  0.95,  // Rotate at 95%
+		SummaryMaxTokens: 2000,  // 2000 tokens for handoff summary
+		MinSessionAgeSec: 300,   // 5 minutes minimum session age
+		TryCompactFirst:  true,  // Try compaction before rotation
 		RequireConfirm:   false, // Don't require confirmation by default
 	}
 }
@@ -674,14 +674,14 @@ func Default() *Config {
 			AutoRegister: true,
 			ProgramName:  "ntm",
 		},
-		Models:        DefaultModels(),
-		Alerts:        DefaultAlertsConfig(),
-		Checkpoints:   DefaultCheckpointsConfig(),
-		Notifications: notify.DefaultConfig(),
-		Resilience:    DefaultResilienceConfig(),
-		Scanner:       DefaultScannerConfig(),
-		CASS:          DefaultCASSConfig(),
-		Accounts:      DefaultAccountsConfig(),
+		Models:          DefaultModels(),
+		Alerts:          DefaultAlertsConfig(),
+		Checkpoints:     DefaultCheckpointsConfig(),
+		Notifications:   notify.DefaultConfig(),
+		Resilience:      DefaultResilienceConfig(),
+		Scanner:         DefaultScannerConfig(),
+		CASS:            DefaultCASSConfig(),
+		Accounts:        DefaultAccountsConfig(),
 		Rotation:        DefaultRotationConfig(),
 		GeminiSetup:     DefaultGeminiSetupConfig(),
 		ContextRotation: DefaultContextRotationConfig(),

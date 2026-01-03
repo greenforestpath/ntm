@@ -45,8 +45,8 @@ const (
 
 // WorkflowSettings contains global workflow configuration
 type WorkflowSettings struct {
-	Timeout          Duration    `yaml:"timeout,omitempty" toml:"timeout,omitempty" json:"timeout,omitempty"`                       // Global timeout (e.g., "30m")
-	OnError          ErrorAction `yaml:"on_error,omitempty" toml:"on_error,omitempty" json:"on_error,omitempty"`                    // fail, continue
+	Timeout          Duration    `yaml:"timeout,omitempty" toml:"timeout,omitempty" json:"timeout,omitempty"`    // Global timeout (e.g., "30m")
+	OnError          ErrorAction `yaml:"on_error,omitempty" toml:"on_error,omitempty" json:"on_error,omitempty"` // fail, continue
 	NotifyOnComplete bool        `yaml:"notify_on_complete,omitempty" toml:"notify_on_complete,omitempty" json:"notify_on_complete,omitempty"`
 	NotifyOnError    bool        `yaml:"notify_on_error,omitempty" toml:"notify_on_error,omitempty" json:"notify_on_error,omitempty"`
 	NotifyChannels   []string    `yaml:"notify_channels,omitempty" toml:"notify_channels,omitempty" json:"notify_channels,omitempty"` // desktop, webhook, mail
@@ -84,12 +84,12 @@ const (
 // Step represents a single step in the workflow
 type Step struct {
 	// Identity
-	ID   string `yaml:"id" toml:"id" json:"id"`                               // Required, unique identifier
+	ID   string `yaml:"id" toml:"id" json:"id"`                                     // Required, unique identifier
 	Name string `yaml:"name,omitempty" toml:"name,omitempty" json:"name,omitempty"` // Human-readable name
 
 	// Agent selection (choose one)
-	Agent string         `yaml:"agent,omitempty" toml:"agent,omitempty" json:"agent,omitempty"` // Agent type: claude, codex, gemini
-	Pane  int            `yaml:"pane,omitempty" toml:"pane,omitempty" json:"pane,omitempty"`    // Specific pane index
+	Agent string          `yaml:"agent,omitempty" toml:"agent,omitempty" json:"agent,omitempty"` // Agent type: claude, codex, gemini
+	Pane  int             `yaml:"pane,omitempty" toml:"pane,omitempty" json:"pane,omitempty"`    // Specific pane index
 	Route RoutingStrategy `yaml:"route,omitempty" toml:"route,omitempty" json:"route,omitempty"` // Routing strategy
 
 	// Prompt (choose one)
@@ -97,23 +97,23 @@ type Step struct {
 	PromptFile string `yaml:"prompt_file,omitempty" toml:"prompt_file,omitempty" json:"prompt_file,omitempty"`
 
 	// Wait configuration
-	Wait    WaitCondition `yaml:"wait,omitempty" toml:"wait,omitempty" json:"wait,omitempty"`       // completion, idle, time, none
+	Wait    WaitCondition `yaml:"wait,omitempty" toml:"wait,omitempty" json:"wait,omitempty"` // completion, idle, time, none
 	Timeout Duration      `yaml:"timeout,omitempty" toml:"timeout,omitempty" json:"timeout,omitempty"`
 
 	// Dependencies
 	DependsOn []string `yaml:"depends_on,omitempty" toml:"depends_on,omitempty" json:"depends_on,omitempty"`
 
 	// Error handling
-	OnError       ErrorAction `yaml:"on_error,omitempty" toml:"on_error,omitempty" json:"on_error,omitempty"`
-	RetryCount    int         `yaml:"retry_count,omitempty" toml:"retry_count,omitempty" json:"retry_count,omitempty"`
-	RetryDelay    Duration    `yaml:"retry_delay,omitempty" toml:"retry_delay,omitempty" json:"retry_delay,omitempty"`
-	RetryBackoff  string      `yaml:"retry_backoff,omitempty" toml:"retry_backoff,omitempty" json:"retry_backoff,omitempty"` // linear, exponential, none
+	OnError      ErrorAction `yaml:"on_error,omitempty" toml:"on_error,omitempty" json:"on_error,omitempty"`
+	RetryCount   int         `yaml:"retry_count,omitempty" toml:"retry_count,omitempty" json:"retry_count,omitempty"`
+	RetryDelay   Duration    `yaml:"retry_delay,omitempty" toml:"retry_delay,omitempty" json:"retry_delay,omitempty"`
+	RetryBackoff string      `yaml:"retry_backoff,omitempty" toml:"retry_backoff,omitempty" json:"retry_backoff,omitempty"` // linear, exponential, none
 
 	// Conditionals
 	When string `yaml:"when,omitempty" toml:"when,omitempty" json:"when,omitempty"` // Skip if evaluates to false
 
 	// Output handling
-	OutputVar   string      `yaml:"output_var,omitempty" toml:"output_var,omitempty" json:"output_var,omitempty"`     // Store output in variable
+	OutputVar   string      `yaml:"output_var,omitempty" toml:"output_var,omitempty" json:"output_var,omitempty"`       // Store output in variable
 	OutputParse OutputParse `yaml:"output_parse,omitempty" toml:"output_parse,omitempty" json:"output_parse,omitempty"` // none, json, yaml, lines, first_line, regex
 
 	// Parallel execution (mutually exclusive with Prompt)
@@ -144,7 +144,7 @@ const (
 
 // OutputParse defines how to parse step output
 type OutputParse struct {
-	Type    string `yaml:"type,omitempty" toml:"type,omitempty" json:"type,omitempty"`       // none, json, yaml, lines, first_line, regex
+	Type    string `yaml:"type,omitempty" toml:"type,omitempty" json:"type,omitempty"`          // none, json, yaml, lines, first_line, regex
 	Pattern string `yaml:"pattern,omitempty" toml:"pattern,omitempty" json:"pattern,omitempty"` // For regex type
 }
 
@@ -156,9 +156,9 @@ func (o *OutputParse) UnmarshalText(text []byte) error {
 
 // LoopConfig defines loop iteration settings (Phase 2)
 type LoopConfig struct {
-	Items         string `yaml:"items" toml:"items" json:"items"`                                           // Variable reference for array
-	As            string `yaml:"as,omitempty" toml:"as,omitempty" json:"as,omitempty"`                       // Loop variable name
-	Steps         []Step `yaml:"steps,omitempty" toml:"steps,omitempty" json:"steps,omitempty"`               // Steps to execute per iteration
+	Items         string `yaml:"items" toml:"items" json:"items"`                                                          // Variable reference for array
+	As            string `yaml:"as,omitempty" toml:"as,omitempty" json:"as,omitempty"`                                     // Loop variable name
+	Steps         []Step `yaml:"steps,omitempty" toml:"steps,omitempty" json:"steps,omitempty"`                            // Steps to execute per iteration
 	MaxIterations int    `yaml:"max_iterations,omitempty" toml:"max_iterations,omitempty" json:"max_iterations,omitempty"` // Safety limit
 }
 
@@ -192,25 +192,25 @@ type StepResult struct {
 
 // StepError contains detailed error information for a failed step
 type StepError struct {
-	Type      string `json:"type"`       // timeout, agent_error, crash, validation
-	Message   string `json:"message"`
-	Details   string `json:"details,omitempty"`   // Full error output
-	Attempt   int    `json:"attempt,omitempty"`   // Which retry attempt
+	Type      string    `json:"type"` // timeout, agent_error, crash, validation
+	Message   string    `json:"message"`
+	Details   string    `json:"details,omitempty"` // Full error output
+	Attempt   int       `json:"attempt,omitempty"` // Which retry attempt
 	Timestamp time.Time `json:"timestamp"`
 }
 
 // ExecutionState contains the complete state of a workflow execution
 type ExecutionState struct {
-	RunID       string                  `json:"run_id"`
-	WorkflowID  string                  `json:"workflow_id"`
-	Status      ExecutionStatus         `json:"status"`
-	StartedAt   time.Time               `json:"started_at"`
-	UpdatedAt   time.Time               `json:"updated_at"`
-	FinishedAt  time.Time               `json:"finished_at,omitempty"`
-	CurrentStep string                  `json:"current_step,omitempty"`
-	Steps       map[string]StepResult   `json:"steps"`
-	Variables   map[string]interface{}  `json:"variables"` // Runtime variables including step outputs
-	Errors      []ExecutionError        `json:"errors,omitempty"`
+	RunID       string                 `json:"run_id"`
+	WorkflowID  string                 `json:"workflow_id"`
+	Status      ExecutionStatus        `json:"status"`
+	StartedAt   time.Time              `json:"started_at"`
+	UpdatedAt   time.Time              `json:"updated_at"`
+	FinishedAt  time.Time              `json:"finished_at,omitempty"`
+	CurrentStep string                 `json:"current_step,omitempty"`
+	Steps       map[string]StepResult  `json:"steps"`
+	Variables   map[string]interface{} `json:"variables"` // Runtime variables including step outputs
+	Errors      []ExecutionError       `json:"errors,omitempty"`
 }
 
 // ExecutionError represents an error that occurred during execution
@@ -224,10 +224,10 @@ type ExecutionError struct {
 
 // ProgressEvent is emitted during workflow execution for monitoring
 type ProgressEvent struct {
-	Type      string    `json:"type"`       // step_start, step_complete, step_error, parallel_start, workflow_complete
+	Type      string    `json:"type"` // step_start, step_complete, step_error, parallel_start, workflow_complete
 	StepID    string    `json:"step_id,omitempty"`
 	Message   string    `json:"message"`
-	Progress  float64   `json:"progress"`   // 0.0 - 1.0
+	Progress  float64   `json:"progress"` // 0.0 - 1.0
 	Timestamp time.Time `json:"timestamp"`
 }
 

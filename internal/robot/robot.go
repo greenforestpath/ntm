@@ -1460,11 +1460,11 @@ func encodeJSON(v interface{}) error {
 
 // TailOutput is the structured output for --robot-tail
 type TailOutput struct {
-	RobotResponse                           // Embed standard response fields (success, timestamp, error)
-	Session       string                    `json:"session"`
-	CapturedAt    time.Time                 `json:"captured_at"`
-	Panes         map[string]PaneOutput     `json:"panes"`
-	AgentHints    *TailAgentHints           `json:"_agent_hints,omitempty"`
+	RobotResponse                       // Embed standard response fields (success, timestamp, error)
+	Session       string                `json:"session"`
+	CapturedAt    time.Time             `json:"captured_at"`
+	Panes         map[string]PaneOutput `json:"panes"`
+	AgentHints    *TailAgentHints       `json:"_agent_hints,omitempty"`
 }
 
 // TailAgentHints provides agent guidance specific to tail output
@@ -2057,16 +2057,16 @@ func agentTypeString(t tmux.AgentType) string {
 
 // SendOutput is the structured output for --robot-send
 type SendOutput struct {
-	RobotResponse                   // Embed standard response fields (success, timestamp, error)
-	Session        string           `json:"session"`
-	SentAt         time.Time        `json:"sent_at"`
-	Targets        []string         `json:"targets"`
-	Successful     []string         `json:"successful"`
-	Failed         []SendError      `json:"failed"`
-	MessagePreview string           `json:"message_preview"`
-	DryRun         bool             `json:"dry_run,omitempty"`
-	WouldSendTo    []string         `json:"would_send_to,omitempty"`
-	AgentHints     *SendAgentHints  `json:"_agent_hints,omitempty"`
+	RobotResponse                  // Embed standard response fields (success, timestamp, error)
+	Session        string          `json:"session"`
+	SentAt         time.Time       `json:"sent_at"`
+	Targets        []string        `json:"targets"`
+	Successful     []string        `json:"successful"`
+	Failed         []SendError     `json:"failed"`
+	MessagePreview string          `json:"message_preview"`
+	DryRun         bool            `json:"dry_run,omitempty"`
+	WouldSendTo    []string        `json:"would_send_to,omitempty"`
+	AgentHints     *SendAgentHints `json:"_agent_hints,omitempty"`
 }
 
 // SendAgentHints provides agent guidance specific to send output
@@ -3466,11 +3466,11 @@ type ActivityOptions struct {
 // ActivityOutput represents the output for --robot-activity
 type ActivityOutput struct {
 	RobotResponse
-	Session    string                  `json:"session"`
-	CapturedAt time.Time               `json:"captured_at"`
-	Agents     []AgentActivityInfo     `json:"agents"`
-	Summary    ActivitySummary         `json:"summary"`
-	AgentHints *ActivityAgentHints     `json:"_agent_hints,omitempty"`
+	Session    string              `json:"session"`
+	CapturedAt time.Time           `json:"captured_at"`
+	Agents     []AgentActivityInfo `json:"agents"`
+	Summary    ActivitySummary     `json:"summary"`
+	AgentHints *ActivityAgentHints `json:"_agent_hints,omitempty"`
 }
 
 // AgentActivityInfo contains activity state for a single agent pane.
@@ -3495,9 +3495,9 @@ type ActivitySummary struct {
 // ActivityAgentHints provides actionable hints for AI agents.
 type ActivityAgentHints struct {
 	Summary          string   `json:"summary"`
-	AvailableAgents  []string `json:"available_agents,omitempty"`   // panes in WAITING state
-	BusyAgents       []string `json:"busy_agents,omitempty"`        // panes in GENERATING/THINKING state
-	ProblemAgents    []string `json:"problem_agents,omitempty"`     // panes in ERROR/STALLED state
+	AvailableAgents  []string `json:"available_agents,omitempty"` // panes in WAITING state
+	BusyAgents       []string `json:"busy_agents,omitempty"`      // panes in GENERATING/THINKING state
+	ProblemAgents    []string `json:"problem_agents,omitempty"`   // panes in ERROR/STALLED state
 	SuggestedActions []string `json:"suggested_actions,omitempty"`
 }
 
@@ -3577,10 +3577,10 @@ func PrintActivity(opts ActivityOptions) error {
 		if err != nil {
 			// Include with unknown state on error
 			output.Agents = append(output.Agents, AgentActivityInfo{
-				Pane:      paneKey,
-				PaneIdx:   pane.Index,
-				AgentType: agentType,
-				State:     string(StateUnknown),
+				Pane:       paneKey,
+				PaneIdx:    pane.Index,
+				AgentType:  agentType,
+				State:      string(StateUnknown),
 				Confidence: 0.0,
 			})
 			output.Summary.ByState[string(StateUnknown)]++

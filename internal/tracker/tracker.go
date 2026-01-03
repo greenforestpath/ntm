@@ -475,7 +475,7 @@ func gitCheckIgnored(root string, entries []fileEntry) (map[string]bool, error) 
 	result := make(map[string]bool)
 
 	cmd := exec.Command("git", "-C", root, "check-ignore", "-z", "--stdin")
-	
+
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return result, err

@@ -81,9 +81,9 @@ func TestExecuteParallel_ErrorModes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		onError        ErrorAction
-		expectStatus   ExecutionStatus
+		name         string
+		onError      ErrorAction
+		expectStatus ExecutionStatus
 	}{
 		{
 			name:         "fail mode - wait for all",

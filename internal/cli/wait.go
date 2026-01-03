@@ -37,7 +37,7 @@ type WaitOptions struct {
 	Condition    WaitCondition
 	Timeout      time.Duration
 	PollInterval time.Duration
-	PaneIndex    int  // -1 means all panes
+	PaneIndex    int // -1 means all panes
 	AgentType    string
 	WaitForAny   bool // If true, wait for ANY agent; otherwise wait for ALL
 	ExitOnError  bool // If true, exit immediately on ERROR state

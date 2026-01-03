@@ -297,7 +297,7 @@ func TestEvaluateCondition_BackwardCompatibility(t *testing.T) {
 		wantSkip  bool // true = step should be SKIPPED
 	}{
 		// Original tests from executor_test.go
-		{"${vars.name}", false},           // truthy, don't skip
+		{"${vars.name}", false},            // truthy, don't skip
 		{"", false},                        // empty, don't skip
 		{`${vars.name} == "Alice"`, false}, // equal, don't skip
 		{`${vars.name} != "Alice"`, true},  // not equal, skip
@@ -401,8 +401,8 @@ func TestFindLogicalOp(t *testing.T) {
 	}{
 		{"a AND b", " AND ", 1},
 		{"a OR b", " OR ", 1},
-		{`"a AND b" OR c`, " OR ", 9},  // AND inside quotes should be ignored, " OR " starts at 9
-		{"(a AND b) OR c", " OR ", 9},  // AND inside parens should be ignored, " OR " starts at 9
+		{`"a AND b" OR c`, " OR ", 9}, // AND inside quotes should be ignored, " OR " starts at 9
+		{"(a AND b) OR c", " OR ", 9}, // AND inside parens should be ignored, " OR " starts at 9
 		{"no operators", " AND ", -1},
 	}
 

@@ -43,8 +43,8 @@ type JSONSchema struct {
 // SchemaOutput is the structured output for --robot-schema.
 type SchemaOutput struct {
 	RobotResponse
-	SchemaType string       `json:"schema_type"`
-	Schema     *JSONSchema  `json:"schema,omitempty"`
+	SchemaType string        `json:"schema_type"`
+	Schema     *JSONSchema   `json:"schema,omitempty"`
 	Schemas    []*JSONSchema `json:"schemas,omitempty"` // For --robot-schema=all
 }
 

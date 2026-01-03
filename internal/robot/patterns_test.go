@@ -672,22 +672,22 @@ func TestPatternLibraryIdlePromptVariants(t *testing.T) {
 	lib := NewPatternLibrary()
 
 	idlePrompts := map[string]string{
-		"claude>":        "claude",
-		"claude> ":       "claude",
-		"Claude>":        "claude",
-		"claude code>":   "claude",
-		"╰─>":            "claude",
-		"codex>":         "codex",
-		"Codex> ":        "codex",
-		"$":              "codex",
-		"$ ":             "codex",
-		"gemini>":        "gemini",
-		"Gemini> ":       "gemini",
-		">>>":            "gemini",
-		">>> ":           "gemini",
-		">":              "*",
-		"#":              "*",
-		"%":              "*",
+		"claude>":      "claude",
+		"claude> ":     "claude",
+		"Claude>":      "claude",
+		"claude code>": "claude",
+		"╰─>":          "claude",
+		"codex>":       "codex",
+		"Codex> ":      "codex",
+		"$":            "codex",
+		"$ ":           "codex",
+		"gemini>":      "gemini",
+		"Gemini> ":     "gemini",
+		">>>":          "gemini",
+		">>> ":         "gemini",
+		">":            "*",
+		"#":            "*",
+		"%":            "*",
 	}
 
 	for prompt, agent := range idlePrompts {

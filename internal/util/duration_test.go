@@ -65,13 +65,13 @@ func TestParseDurationWithDefault(t *testing.T) {
 	defer func() { os.Stderr = originalStderr }()
 
 	tests := []struct {
-		name         string
-		input        string
-		defaultUnit  time.Duration
-		flagName     string
-		expected     time.Duration
-		wantErr      bool
-		wantWarning  bool
+		name        string
+		input       string
+		defaultUnit time.Duration
+		flagName    string
+		expected    time.Duration
+		wantErr     bool
+		wantWarning bool
 	}{
 		{
 			name:        "explicit seconds",

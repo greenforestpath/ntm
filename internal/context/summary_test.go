@@ -10,34 +10,34 @@ func TestNewSummaryGenerator(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		cfg       SummaryGeneratorConfig
-		wantMax   int
-		wantTime  time.Duration
+		name     string
+		cfg      SummaryGeneratorConfig
+		wantMax  int
+		wantTime time.Duration
 	}{
 		{
-			name:      "default config",
-			cfg:       DefaultSummaryGeneratorConfig(),
-			wantMax:   2000,
-			wantTime:  30 * time.Second,
+			name:     "default config",
+			cfg:      DefaultSummaryGeneratorConfig(),
+			wantMax:  2000,
+			wantTime: 30 * time.Second,
 		},
 		{
-			name:      "custom config",
-			cfg:       SummaryGeneratorConfig{MaxTokens: 3000, PromptTimeout: 60 * time.Second},
-			wantMax:   3000,
-			wantTime:  60 * time.Second,
+			name:     "custom config",
+			cfg:      SummaryGeneratorConfig{MaxTokens: 3000, PromptTimeout: 60 * time.Second},
+			wantMax:  3000,
+			wantTime: 60 * time.Second,
 		},
 		{
-			name:      "zero values get defaults",
-			cfg:       SummaryGeneratorConfig{},
-			wantMax:   2000,
-			wantTime:  30 * time.Second,
+			name:     "zero values get defaults",
+			cfg:      SummaryGeneratorConfig{},
+			wantMax:  2000,
+			wantTime: 30 * time.Second,
 		},
 		{
-			name:      "negative values get defaults",
-			cfg:       SummaryGeneratorConfig{MaxTokens: -100, PromptTimeout: -5 * time.Second},
-			wantMax:   2000,
-			wantTime:  30 * time.Second,
+			name:     "negative values get defaults",
+			cfg:      SummaryGeneratorConfig{MaxTokens: -100, PromptTimeout: -5 * time.Second},
+			wantMax:  2000,
+			wantTime: 30 * time.Second,
 		},
 	}
 
