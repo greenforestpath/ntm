@@ -813,3 +813,10 @@ func GetInProgressList(dir string, limit int) []BeadInProgress {
 
 	return items
 }
+
+// RunRaw executes bv with given args and returns the raw output.
+// This is useful for commands where the caller wants to parse or display
+// the output directly rather than using typed wrappers.
+func RunRaw(dir string, args ...string) (string, error) {
+	return run(dir, args...)
+}

@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -983,9 +984,11 @@ func init() {
 		newHooksCmd(),
 		newHealthCmd(),
 		newDoctorCmd(),
+		newSafetyCmd(),
 		newActivityCmd(),
 		newHistoryCmd(),
 		newAnalyticsCmd(),
+		newWorkCmd(),
 
 		// Internal commands
 		newMonitorCmd(),
