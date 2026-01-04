@@ -698,3 +698,147 @@ func calculateHealthConfidence(check *HealthCheck) float64 {
 
 	return confidence
 }
+
+// =============================================================================
+// Session Health API (--robot-health=SESSION)
+// =============================================================================
+
+// SessionHealthOutput is the response format for --robot-health=SESSION
+type SessionHealthOutput struct {
+	Success   bool                       `json:"success"`
+	Session   string                     `json:"session"`
+	CheckedAt time.Time                  `json:"checked_at"`
+	Agents    []SessionAgentHealth       `json:"agents"`
+	Summary   SessionHealthSummary       `json:"summary"`
+	Error     string                     `json:"error,omitempty"`
+}
+
+// SessionAgentHealth contains health metrics for a single agent pane
+type SessionAgentHealth struct {
+	Pane             int     `json:"pane"`
+	AgentType        string  `json:"agent_type"`
+	Health           string  `json:"health"` // healthy, degraded, unhealthy, rate_limited
+	UptimeSeconds    int     `json:"uptime_seconds"`
+	Restarts         int     `json:"restarts"`
+	LastError        string  `json:"last_error,omitempty"`
+	RateLimitCount   int     `json:"rate_limit_count"`
+	BackoffRemaining int     `json:"backoff_remaining"` // seconds until ready
+	Confidence       float64 `json:"confidence"`
+}
+
+// SessionHealthSummary contains aggregate health counts
+type SessionHealthSummary struct {
+	Total       int `json:"total"`
+	Healthy     int `json:"healthy"`
+	Degraded    int `json:"degraded"`
+	Unhealthy   int `json:"unhealthy"`
+	RateLimited int `json:"rate_limited"`
+}
+
+// PrintSessionHealth outputs per-agent health for a specific session
+func PrintSessionHealth(session string) error {
+	output := SessionHealthOutput{
+		Success:   true,
+		Session:   session,
+		CheckedAt: time.Now().UTC(),
+		Agents:    []SessionAgentHealth{},
+		Summary:   SessionHealthSummary{},
+	}
+
+	// Check if session exists
+	if !tmux.SessionExists(session) {
+		output.Success = false
+		output.Error = fmt.Sprintf("session '%s' not found", session)
+		return encodeJSON(output)
+	}
+
+	// Get panes in the session
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		output.Success = false
+		output.Error = fmt.Sprintf("failed to get panes: %v", err)
+		return encodeJSON(output)
+	}
+
+	// Check health for each pane
+	for _, pane := range panes {
+		agentType := detectAgentTypeFromPane(pane)
+		if agentType == "user" || agentType == "unknown" {
+			continue // Skip non-agent panes
+		}
+
+		agentHealth := SessionAgentHealth{
+			Pane:      pane.Index,
+			AgentType: agentType,
+			Health:    "healthy",
+		}
+
+		// Get activity time for uptime calculation
+		activityTime, err := tmux.GetPaneActivity(pane.ID)
+		if err == nil {
+			agentHealth.UptimeSeconds = int(time.Since(activityTime).Seconds())
+		}
+
+		// Perform comprehensive health check
+		check, err := CheckAgentHealthWithActivity(pane.ID, agentType)
+		if err == nil {
+			agentHealth.Confidence = check.Confidence
+
+			// Map health state to string
+			switch check.HealthState {
+			case HealthHealthy:
+				agentHealth.Health = "healthy"
+			case HealthDegraded:
+				agentHealth.Health = "degraded"
+			case HealthUnhealthy:
+				agentHealth.Health = "unhealthy"
+				agentHealth.LastError = check.Reason
+			case HealthRateLimited:
+				agentHealth.Health = "rate_limited"
+				agentHealth.RateLimitCount = 1
+				if check.ErrorCheck != nil && check.ErrorCheck.WaitSeconds > 0 {
+					agentHealth.BackoffRemaining = check.ErrorCheck.WaitSeconds
+				}
+			}
+
+			// Track errors
+			if check.ProcessCheck != nil && check.ProcessCheck.Crashed {
+				agentHealth.Restarts++ // Track as a restart indicator
+				agentHealth.LastError = check.ProcessCheck.Reason
+			}
+		}
+
+		output.Agents = append(output.Agents, agentHealth)
+
+		// Update summary
+		output.Summary.Total++
+		switch agentHealth.Health {
+		case "healthy":
+			output.Summary.Healthy++
+		case "degraded":
+			output.Summary.Degraded++
+		case "unhealthy":
+			output.Summary.Unhealthy++
+		case "rate_limited":
+			output.Summary.RateLimited++
+		}
+	}
+
+	return encodeJSON(output)
+}
+
+// detectAgentTypeFromPane determines the agent type from pane information
+func detectAgentTypeFromPane(pane tmux.Pane) string {
+	switch pane.Type {
+	case tmux.AgentClaude:
+		return "claude"
+	case tmux.AgentCodex:
+		return "codex"
+	case tmux.AgentGemini:
+		return "gemini"
+	case tmux.AgentUser:
+		return "user"
+	default:
+		return "unknown"
+	}
+}

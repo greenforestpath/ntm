@@ -433,8 +433,8 @@ Shell Integration:
 			}
 			return
 		}
-		if robotHealth {
-			if err := robot.PrintHealth(); err != nil {
+		if robotHealth != "" {
+			if err := robot.PrintSessionHealth(robotHealth); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -663,7 +663,7 @@ var (
 	robotAssignStrategy string // assignment strategy: balanced, speed, quality, dependency
 
 	// Robot-health flag
-	robotHealth bool // project health summary
+	robotHealth string // session health or project health (empty = project)
 
 	// Robot-recipes flag
 	robotRecipes bool // list available recipes as JSON
@@ -812,8 +812,8 @@ func init() {
 	rootCmd.Flags().StringVar(&robotAssignBeads, "beads", "", "Specific bead IDs to assign (comma-separated). Optional with --robot-assign. Example: --beads=ntm-abc,ntm-xyz")
 	rootCmd.Flags().StringVar(&robotAssignStrategy, "strategy", "balanced", "Assignment strategy: balanced (default), speed, quality, dependency. Optional with --robot-assign")
 
-	// Robot-health flag for project health summary
-	rootCmd.Flags().BoolVar(&robotHealth, "robot-health", false, "Get project health: tests, linting, coverage, dependencies (JSON). Example: ntm --robot-health")
+	// Robot-health flag for session/project health summary
+	rootCmd.Flags().StringVar(&robotHealth, "robot-health", "", "Get session or project health (JSON). SESSION for per-agent health, empty for project health. Example: ntm --robot-health=myproject")
 
 	// Robot-recipes flag for recipe listing
 	rootCmd.Flags().BoolVar(&robotRecipes, "robot-recipes", false, "List available spawn recipes/presets (JSON). Use with --robot-spawn --spawn-preset")
@@ -1203,6 +1203,175 @@ Examples:
 		},
 	})
 
+	// Add diff subcommand
+	cmd.AddCommand(&cobra.Command{
+		Use:   "diff",
+		Short: "Show configuration differences from defaults",
+		Long:  `Shows all configuration values that differ from the built-in defaults.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			effectiveCfg := cfg
+			if effectiveCfg == nil {
+				loaded, err := config.Load(cfgFile)
+				if err != nil {
+					loaded = config.Default()
+				}
+				effectiveCfg = loaded
+			}
+
+			diffs := config.Diff(effectiveCfg)
+
+			if IsJSONOutput() {
+				return output.PrintJSON(map[string]interface{}{
+					"count": len(diffs),
+					"diffs": diffs,
+				})
+			}
+
+			if len(diffs) == 0 {
+				fmt.Println("No differences from defaults")
+				return nil
+			}
+
+			fmt.Printf("Configuration differences (%d):\n\n", len(diffs))
+			for _, d := range diffs {
+				fmt.Printf("  %s\n", d.Path)
+				fmt.Printf("    default: %v\n", d.Default)
+				fmt.Printf("    current: %v\n", d.Current)
+				fmt.Println()
+			}
+			return nil
+		},
+	})
+
+	// Add validate subcommand
+	cmd.AddCommand(&cobra.Command{
+		Use:   "validate",
+		Short: "Validate configuration file",
+		Long:  `Checks the configuration file for errors and reports any issues found.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			effectiveCfg := cfg
+			if effectiveCfg == nil {
+				loaded, err := config.Load(cfgFile)
+				if err != nil {
+					return fmt.Errorf("loading config: %w", err)
+				}
+				effectiveCfg = loaded
+			}
+
+			errs := config.Validate(effectiveCfg)
+
+			if IsJSONOutput() {
+				errStrs := make([]string, len(errs))
+				for i, e := range errs {
+					errStrs[i] = e.Error()
+				}
+				return output.PrintJSON(map[string]interface{}{
+					"valid":  len(errs) == 0,
+					"errors": errStrs,
+				})
+			}
+
+			if len(errs) == 0 {
+				fmt.Println("Configuration is valid")
+				return nil
+			}
+
+			fmt.Printf("Configuration has %d error(s):\n", len(errs))
+			for _, e := range errs {
+				fmt.Printf("  - %s\n", e.Error())
+			}
+			return fmt.Errorf("configuration validation failed")
+		},
+	})
+
+	// Add get subcommand
+	cmd.AddCommand(&cobra.Command{
+		Use:   "get <key>",
+		Short: "Get a configuration value",
+		Long: `Retrieves a configuration value by its dotted path.
+
+Examples:
+  ntm config get projects_base
+  ntm config get alerts.enabled
+  ntm config get context_rotation.warning_threshold`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			effectiveCfg := cfg
+			if effectiveCfg == nil {
+				loaded, err := config.Load(cfgFile)
+				if err != nil {
+					loaded = config.Default()
+				}
+				effectiveCfg = loaded
+			}
+
+			value, err := config.GetValue(effectiveCfg, args[0])
+			if err != nil {
+				return err
+			}
+
+			if IsJSONOutput() {
+				return output.PrintJSON(map[string]interface{}{
+					"key":   args[0],
+					"value": value,
+				})
+			}
+
+			fmt.Printf("%v\n", value)
+			return nil
+		},
+	})
+
+	// Add edit subcommand
+	cmd.AddCommand(&cobra.Command{
+		Use:   "edit",
+		Short: "Open configuration file in editor",
+		Long:  `Opens the configuration file in your default editor ($EDITOR or vi).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := config.DefaultPath()
+
+			// Ensure config exists
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				if _, err := config.CreateDefault(); err != nil {
+					return fmt.Errorf("creating config: %w", err)
+				}
+			}
+
+			editor := os.Getenv("EDITOR")
+			if editor == "" {
+				editor = "vi"
+			}
+
+			editorCmd := exec.Command(editor, path)
+			editorCmd.Stdin = os.Stdin
+			editorCmd.Stdout = os.Stdout
+			editorCmd.Stderr = os.Stderr
+			return editorCmd.Run()
+		},
+	})
+
+	// Add reset subcommand
+	var resetConfirm bool
+	resetCmd := &cobra.Command{
+		Use:   "reset",
+		Short: "Reset configuration to defaults",
+		Long:  `Removes the current configuration file and creates a new one with defaults.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !resetConfirm {
+				return fmt.Errorf("use --confirm to reset configuration (this will delete your current config)")
+			}
+
+			if err := config.Reset(); err != nil {
+				return err
+			}
+
+			fmt.Printf("Configuration reset to defaults: %s\n", config.DefaultPath())
+			return nil
+		},
+	}
+	resetCmd.Flags().BoolVar(&resetConfirm, "confirm", false, "confirm reset operation")
+	cmd.AddCommand(resetCmd)
+
 	projectCmd := &cobra.Command{
 		Use:   "project",
 		Short: "Manage project-specific configuration",
@@ -1275,7 +1444,7 @@ func needsConfigLoading(cmdName string) bool {
 		// Most other robot flags need full config
 		if robotStatus || robotPlan || robotSnapshot || robotTail != "" ||
 			robotSend != "" || robotAck != "" || robotSpawn != "" ||
-			robotInterrupt != "" || robotGraph || robotMail || robotHealth ||
+			robotInterrupt != "" || robotGraph || robotMail || robotHealth != "" ||
 			robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
 			robotContext != "" {
 			return true
