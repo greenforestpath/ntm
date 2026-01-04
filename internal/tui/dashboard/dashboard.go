@@ -21,7 +21,9 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/history"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -116,6 +118,20 @@ type FileChangeMsg struct {
 type CASSContextMsg struct {
 	Hits []cass.SearchHit
 	Err  error
+}
+
+// HealthUpdateMsg is sent when agent health check completes
+type HealthUpdateMsg struct {
+	Health map[string]PaneHealthInfo // keyed by pane ID
+	Err    error
+}
+
+// PaneHealthInfo holds health check results for a single pane
+type PaneHealthInfo struct {
+	Status       string   // "ok", "warning", "error", "unknown"
+	Issues       []string // Issue messages
+	RestartCount int      // Restarts in last hour
+	Uptime       int      // Seconds of uptime
 }
 
 // PanelID identifies a dashboard panel
@@ -295,6 +311,12 @@ type PaneStatus struct {
 	ContextModel   string  // Model name for context limit lookup
 
 	TokenVelocity float64 // Estimated tokens/sec
+
+	// Health tracking
+	HealthStatus  string   // "ok", "warning", "error", "unknown"
+	HealthIssues  []string // List of issue messages (rate limit, crash, etc.)
+	RestartCount  int      // Number of restarts in last hour
+	UptimeSeconds int      // Seconds since agent started (negative = uptime from tracker)
 }
 
 // AgentMailLockInfo represents a file lock for dashboard display
@@ -498,6 +520,7 @@ func (m Model) Init() tea.Cmd {
 		m.fetchSessionDataWithOutputs(),
 		m.fetchHealthStatus(),
 		m.fetchStatuses(),
+		m.fetchHealthCmd(), // Agent health check
 		m.fetchAgentMailStatus(),
 		m.fetchBeadsCmd(),
 		m.fetchAlertsCmd(),
@@ -1001,6 +1024,42 @@ func (m Model) fetchStatuses() tea.Cmd {
 	}
 }
 
+// fetchHealthCmd fetches health status for all agents in the session
+func (m Model) fetchHealthCmd() tea.Cmd {
+	session := m.session
+	return func() tea.Msg {
+		// Get health check from health package
+		sessionHealth, err := health.CheckSession(session)
+		if err != nil {
+			return HealthUpdateMsg{Health: nil, Err: err}
+		}
+
+		// Get health tracker for uptime/restart data
+		tracker := robot.GetHealthTracker(session)
+
+		// Build health info map
+		healthMap := make(map[string]PaneHealthInfo)
+		for _, agent := range sessionHealth.Agents {
+			info := PaneHealthInfo{
+				Status: string(agent.Status),
+			}
+
+			// Collect issues
+			for _, issue := range agent.Issues {
+				info.Issues = append(info.Issues, issue.Message)
+			}
+
+			// Get uptime and restart count from tracker
+			info.Uptime = int(tracker.GetUptime(agent.PaneID).Seconds())
+			info.RestartCount = tracker.GetRestartsInWindow(agent.PaneID)
+
+			healthMap[agent.PaneID] = info
+		}
+
+		return HealthUpdateMsg{Health: healthMap, Err: nil}
+	}
+}
+
 // Update implements tea.Model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -1384,6 +1443,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.lastRefresh = msg.Time
 		return m, followUp
+
+	case HealthUpdateMsg:
+		if msg.Err == nil && msg.Health != nil {
+			// Build pane ID to index lookup
+			paneIndexByID := make(map[string]int)
+			for _, p := range m.panes {
+				paneIndexByID[p.ID] = p.Index
+			}
+
+			// Update pane status with health info
+			for paneID, healthInfo := range msg.Health {
+				idx, ok := paneIndexByID[paneID]
+				if !ok {
+					continue
+				}
+
+				ps := m.paneStatus[idx]
+				ps.HealthStatus = healthInfo.Status
+				ps.HealthIssues = healthInfo.Issues
+				ps.RestartCount = healthInfo.RestartCount
+				ps.UptimeSeconds = healthInfo.Uptime
+				m.paneStatus[idx] = ps
+			}
+		}
+		return m, nil
 
 	case ConfigReloadMsg:
 		if msg.Config != nil {
@@ -2234,6 +2318,46 @@ func (m Model) renderPaneGrid() string {
 		}
 		if len(activityBadges) > 0 {
 			cardContent.WriteString(strings.Join(activityBadges, " ") + "\n")
+		}
+
+		// Health badges - show warning/error status and restart count
+		if ps, ok := m.paneStatus[p.Index]; ok {
+			var healthBadges []string
+
+			// Health status badge
+			if ps.HealthStatus == "warning" {
+				healthBadges = append(healthBadges, styles.TextBadge("⚠ WARN", t.Yellow, t.Base, styles.BadgeOptions{
+					Style:    styles.BadgeStyleCompact,
+					Bold:     true,
+					ShowIcon: false,
+				}))
+			} else if ps.HealthStatus == "error" {
+				healthBadges = append(healthBadges, styles.TextBadge("✗ ERR", t.Red, t.Base, styles.BadgeOptions{
+					Style:    styles.BadgeStyleCompact,
+					Bold:     true,
+					ShowIcon: false,
+				}))
+			}
+
+			// Restart count badge
+			if ps.RestartCount > 0 {
+				healthBadges = append(healthBadges, styles.TextBadge(fmt.Sprintf("↻%d", ps.RestartCount), t.Peach, t.Base, styles.BadgeOptions{
+					Style:    styles.BadgeStyleCompact,
+					Bold:     false,
+					ShowIcon: false,
+				}))
+			}
+
+			// Show first health issue as tooltip
+			if len(ps.HealthIssues) > 0 && showExtendedInfo {
+				issueStyle := lipgloss.NewStyle().Foreground(t.Overlay).Italic(true)
+				issue := layout.TruncateRunes(ps.HealthIssues[0], maxInt(cardWidth-4, 10), "…")
+				healthBadges = append(healthBadges, issueStyle.Render(issue))
+			}
+
+			if len(healthBadges) > 0 {
+				cardContent.WriteString(strings.Join(healthBadges, " ") + "\n")
+			}
 		}
 
 		// Size info - on wide displays show more detail
