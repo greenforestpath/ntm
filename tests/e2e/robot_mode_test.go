@@ -479,7 +479,7 @@ claude = "bash"
 
 	// Spawn session first
 	logger.LogSection("spawn session for send test")
-	_, _ = logger.Exec("ntm", "--config", configPath, "spawn", session, "--cc=1", "--safety")
+	_, _ = logger.Exec("ntm", "--config", configPath, "spawn", session, "--cc=1")
 	time.Sleep(500 * time.Millisecond)
 
 	// Verify session was created
@@ -587,7 +587,7 @@ claude = "bash"
 
 	// Spawn session
 	logger.LogSection("spawn session for interrupt test")
-	_, _ = logger.Exec("ntm", "--config", configPath, "spawn", session, "--cc=1", "--safety")
+	_, _ = logger.Exec("ntm", "--config", configPath, "spawn", session, "--cc=1")
 	time.Sleep(500 * time.Millisecond)
 
 	// Verify session was created
