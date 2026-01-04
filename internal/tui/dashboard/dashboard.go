@@ -1442,7 +1442,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.lastRefresh = msg.Time
-		return m, followUp
+		// Also refresh health data after status update
+		return m, tea.Batch(followUp, m.fetchHealthCmd())
 
 	case HealthUpdateMsg:
 		if msg.Err == nil && msg.Health != nil {
