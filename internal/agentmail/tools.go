@@ -473,15 +473,23 @@ func (c *Client) PrepareThread(ctx context.Context, opts PrepareThreadOptions) (
 	if opts.LLMModel != "" {
 		args["llm_model"] = opts.LLMModel
 	}
-
-	// Boolean options with non-default values
-	args["include_examples"] = opts.IncludeExamples
-	args["include_inbox_bodies"] = opts.IncludeInboxBodies
-	args["llm_mode"] = opts.LLMMode
-	args["register_if_missing"] = opts.RegisterIfMissing
-
 	if opts.InboxLimit > 0 {
 		args["inbox_limit"] = opts.InboxLimit
+	}
+
+	// Only send boolean options when explicitly set (non-nil).
+	// Server defaults: include_examples=true, include_inbox_bodies=false, llm_mode=true, register_if_missing=true
+	if opts.IncludeExamples != nil {
+		args["include_examples"] = *opts.IncludeExamples
+	}
+	if opts.IncludeInboxBodies != nil {
+		args["include_inbox_bodies"] = *opts.IncludeInboxBodies
+	}
+	if opts.LLMMode != nil {
+		args["llm_mode"] = *opts.LLMMode
+	}
+	if opts.RegisterIfMissing != nil {
+		args["register_if_missing"] = *opts.RegisterIfMissing
 	}
 
 	result, err := c.callTool(ctx, "macro_prepare_thread", args)

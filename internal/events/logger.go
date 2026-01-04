@@ -335,6 +335,8 @@ func EmitError(session, errorType, message string) {
 // Replay reads events from the log file and sends them to a channel.
 // Events are filtered to only include those after the 'since' timestamp.
 // The channel is closed when all events have been sent.
+// Note: Errors during reading are silently ignored since this runs in a goroutine.
+// Use Since() if you need error handling.
 func (l *Logger) Replay(since time.Time) (<-chan *Event, error) {
 	ch := make(chan *Event, 100)
 
@@ -347,8 +349,10 @@ func (l *Logger) Replay(since time.Time) (<-chan *Event, error) {
 
 		f, err := os.Open(l.path)
 		if err != nil {
-			if os.IsNotExist(err) {
-				return // No log file yet, nothing to replay
+			// No log file or can't open - nothing to replay
+			// Errors are logged to stderr for debugging
+			if !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "event log replay: %v\n", err)
 			}
 			return
 		}
@@ -369,6 +373,11 @@ func (l *Logger) Replay(since time.Time) (<-chan *Event, error) {
 			if event.Timestamp.After(since) {
 				ch <- &event
 			}
+		}
+
+		// Check for scanner errors (I/O errors during reading)
+		if err := scanner.Err(); err != nil {
+			fmt.Fprintf(os.Stderr, "event log replay scan error: %v\n", err)
 		}
 	}()
 

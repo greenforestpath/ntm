@@ -16,6 +16,8 @@ type Cache struct {
 	entries map[string]cacheEntry
 	ttl     time.Duration
 	mu      sync.RWMutex
+	done    chan struct{}
+	closed  bool
 }
 
 // NewCache creates a new cache with the specified TTL
@@ -23,12 +25,26 @@ func NewCache(ttl time.Duration) *Cache {
 	c := &Cache{
 		entries: make(map[string]cacheEntry),
 		ttl:     ttl,
+		done:    make(chan struct{}),
 	}
 
 	// Start cleanup goroutine
 	go c.cleanupLoop()
 
 	return c
+}
+
+// Close stops the cleanup goroutine and releases resources.
+// The cache should not be used after Close is called.
+func (c *Cache) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return
+	}
+	c.closed = true
+	close(c.done)
 }
 
 // Get retrieves a value from the cache
@@ -83,8 +99,13 @@ func (c *Cache) cleanupLoop() {
 	ticker := time.NewTicker(c.ttl / 2)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		c.cleanup()
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-ticker.C:
+			c.cleanup()
+		}
 	}
 }
 

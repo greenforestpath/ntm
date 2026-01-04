@@ -216,18 +216,20 @@ type OverseerSendResult struct {
 }
 
 // PrepareThreadOptions contains options for the macro_prepare_thread call.
+// Boolean pointers allow distinguishing "not set" from "explicitly set to false".
+// When nil, server defaults are used (include_examples=true, llm_mode=true, register_if_missing=true).
 type PrepareThreadOptions struct {
 	ProjectKey         string // Absolute path to project
 	ThreadID           string // Thread to prepare for (e.g., "FEAT-123")
 	Program            string // e.g., "claude-code"
 	Model              string // e.g., "opus-4.5"
 	AgentName          string // Optional; auto-generated if empty
-	IncludeExamples    bool   // Include sample messages from thread
-	IncludeInboxBodies bool   // Include full body in inbox messages
+	IncludeExamples    *bool  // Include sample messages from thread (default: true)
+	IncludeInboxBodies *bool  // Include full body in inbox messages (default: false)
 	InboxLimit         int    // Max inbox messages to fetch
-	LLMMode            bool   // Use LLM to refine summary
+	LLMMode            *bool  // Use LLM to refine summary (default: true)
 	LLMModel           string // Override LLM model for summary
-	RegisterIfMissing  bool   // Register agent if not already registered
+	RegisterIfMissing  *bool  // Register agent if not already registered (default: true)
 	TaskDescription    string // Current task description
 }
 

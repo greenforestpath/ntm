@@ -455,7 +455,6 @@ func checkProcess(paneID string) *ProcessCheckResult {
 	exitPatterns := []string{
 		"exit status", "exited with", "process exited",
 		"connection closed", "session ended", "terminated",
-		"bash$", "zsh$", "$", // shell prompt (agent crashed to shell)
 	}
 
 	for _, pattern := range exitPatterns {
@@ -482,6 +481,25 @@ func checkProcess(paneID string) *ProcessCheckResult {
 		result.Running = false
 		result.Crashed = true
 		result.Reason = "exit code detected"
+		return result
+	}
+
+	// Check for bare shell prompt at end of output (agent crashed to shell)
+	lines := splitLines(output)
+	if len(lines) > 0 {
+		lastLine := strings.TrimSpace(lines[len(lines)-1])
+		// Detect common shell prompts: "$", "bash$", "zsh%", "user@host$", etc.
+		// Be conservative - only match if line is very short (prompt-like)
+		if len(lastLine) < 50 {
+			if lastLine == "$" || lastLine == "%" ||
+				strings.HasSuffix(lastLine, " $") || strings.HasSuffix(lastLine, " %") ||
+				strings.HasSuffix(lastLine, "$ ") || strings.HasSuffix(lastLine, "% ") {
+				result.Running = false
+				result.Crashed = true
+				result.ExitStatus = "shell prompt"
+				result.Reason = "detected shell prompt - agent may have crashed"
+			}
+		}
 	}
 
 	return result
@@ -512,8 +530,8 @@ func checkStallWithActivity(paneID string, agentType string) *StallCheckResult {
 	result.Velocity = activity.Velocity
 	result.Confidence = activity.Confidence
 
-	// Calculate idle time from StateSince if in waiting state
-	if activity.State == StateWaiting && !activity.StateSince.IsZero() {
+	// Calculate idle time from StateSince for idle-like states
+	if !activity.StateSince.IsZero() {
 		result.IdleSeconds = int(time.Since(activity.StateSince).Seconds())
 	}
 
