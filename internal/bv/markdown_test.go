@@ -130,24 +130,36 @@ func TestRenderTriageMarkdown_WithScores(t *testing.T) {
 	}
 }
 
-func TestTruncate(t *testing.T) {
-	tests := []struct {
-		input  string
-		max    int
-		expect string
-	}{
-		{"short", 10, "short"},
-		{"hello world", 8, "hello..."},
-		{"ab", 2, "ab"},
-		{"abcd", 3, "abc"},
-		{"", 5, ""},
+func TestCompactMarkdownPreservesFullText(t *testing.T) {
+	// Verify compact mode does NOT truncate text - that was a broken design
+	longTitle := "This is a very long title that should not be truncated at all because truncation destroys information"
+	longReason := "This is a detailed reason explaining why this task is important and should be worked on next"
+
+	triage := &TriageResponse{
+		Triage: TriageData{
+			QuickRef: TriageQuickRef{
+				ActionableCount: 1,
+				TopPicks: []TriageTopPick{
+					{ID: "ntm-test", Title: longTitle, Score: 0.9, Reasons: []string{longReason}},
+				},
+			},
+		},
 	}
 
-	for _, tt := range tests {
-		result := truncate(tt.input, tt.max)
-		if result != tt.expect {
-			t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.max, result, tt.expect)
-		}
+	opts := CompactMarkdownOptions()
+	result := RenderTriageMarkdown(triage, opts)
+
+	// Full title must be present - NO truncation
+	if !strings.Contains(result, longTitle) {
+		t.Errorf("compact mode truncated title! got: %s", result)
+	}
+	// Full reason must be present - NO truncation
+	if !strings.Contains(result, longReason) {
+		t.Errorf("compact mode truncated reason! got: %s", result)
+	}
+	// No ellipsis from truncation
+	if strings.Contains(result, "...") {
+		t.Errorf("compact mode should not truncate with ellipsis, got: %s", result)
 	}
 }
 
