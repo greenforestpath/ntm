@@ -729,12 +729,14 @@ func updateAutomationInYAML(content string, auto policy.AutomationConfig) string
 	lines := strings.Split(content, "\n")
 	var result []string
 	inAutomation := false
+	foundAutomation := false
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
 		if trimmed == "automation:" {
 			inAutomation = true
+			foundAutomation = true
 			result = append(result, line)
 			continue
 		}
@@ -763,6 +765,11 @@ func updateAutomationInYAML(content string, auto policy.AutomationConfig) string
 		}
 
 		result = append(result, line)
+	}
+
+	// If no automation section was found, return empty string to signal regeneration
+	if !foundAutomation {
+		return ""
 	}
 
 	return strings.Join(result, "\n")
@@ -825,9 +832,12 @@ func escapeYAMLSingleQuote(s string) string {
 }
 
 // escapeYAMLDoubleQuote escapes characters for YAML double-quoted strings.
-// Backslashes and double quotes need to be escaped.
+// Backslashes, double quotes, and newlines need to be escaped.
 func escapeYAMLDoubleQuote(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	s = strings.ReplaceAll(s, "\t", "\\t")
 	return s
 }

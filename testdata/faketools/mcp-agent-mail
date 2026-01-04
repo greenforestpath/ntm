@@ -6,7 +6,8 @@ MODE="${FAKE_TOOL_MODE:-normal}"
 
 case "$MODE" in
     timeout)
-        sleep 3600
+        # Use exec to replace bash with sleep so the process can be killed properly
+        exec sleep 3600
         ;;
     error)
         echo "mcp-agent-mail: simulated error" >&2

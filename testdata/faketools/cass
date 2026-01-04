@@ -8,7 +8,8 @@ FIXTURES_DIR="$SCRIPT_DIR/../fixtures"
 
 case "$MODE" in
     timeout)
-        sleep 3600
+        # Use exec to replace bash with sleep so the process can be killed properly
+        exec sleep 3600
         ;;
     error)
         echo "cass: simulated error" >&2

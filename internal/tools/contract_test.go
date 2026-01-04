@@ -249,9 +249,21 @@ func TestAdapterTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	_, err := adapter.Version(ctx)
-	if err == nil {
-		t.Error("Version() should timeout")
+	// Run with a test-level deadline to prevent test from hanging forever
+	done := make(chan struct{})
+	var versionErr error
+	go func() {
+		_, versionErr = adapter.Version(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		if versionErr == nil {
+			t.Error("Version() should timeout")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Version() did not return within 5s - context timeout not working")
 	}
 }
 
