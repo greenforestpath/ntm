@@ -720,7 +720,7 @@ type SessionAgentHealth struct {
 	Pane             int     `json:"pane"`
 	AgentType        string  `json:"agent_type"`
 	Health           string  `json:"health"` // healthy, degraded, unhealthy, rate_limited
-	UptimeSeconds    int     `json:"uptime_seconds"`
+	IdleSinceSeconds int     `json:"idle_since_seconds"` // seconds since last pane activity
 	Restarts         int     `json:"restarts"`
 	LastError        string  `json:"last_error,omitempty"`
 	RateLimitCount   int     `json:"rate_limit_count"`
@@ -775,10 +775,10 @@ func PrintSessionHealth(session string) error {
 			Health:    "healthy",
 		}
 
-		// Get activity time for uptime calculation
+		// Get activity time - how long since last pane activity
 		activityTime, err := tmux.GetPaneActivity(pane.ID)
 		if err == nil {
-			agentHealth.UptimeSeconds = int(time.Since(activityTime).Seconds())
+			agentHealth.IdleSinceSeconds = int(time.Since(activityTime).Seconds())
 		}
 
 		// Perform comprehensive health check
@@ -1339,8 +1339,8 @@ func (bm *BackoffManager) GetBackoff(paneID string) *RateLimitBackoff {
 	}
 
 	// Return a copy
-	copy := *backoff
-	return &copy
+	backoffCopy := *backoff
+	return &backoffCopy
 }
 
 // ClearBackoff clears the backoff state for an agent (e.g., after recovery)
@@ -1379,8 +1379,8 @@ func (bm *BackoffManager) GetAllBackoffs() map[string]*RateLimitBackoff {
 
 	for paneID, backoff := range bm.backoffs {
 		if now.Before(backoff.BackoffEndsAt) {
-			copy := *backoff
-			result[paneID] = &copy
+			backoffCopy := *backoff
+			result[paneID] = &backoffCopy
 		}
 	}
 

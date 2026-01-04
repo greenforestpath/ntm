@@ -3,6 +3,7 @@ package status
 import (
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // ErrorPattern defines a pattern for error detection in agent output
@@ -16,6 +17,9 @@ type ErrorPattern struct {
 	// Description explains what this pattern matches (for debugging)
 	Description string
 }
+
+// errorPatternsMu protects errorPatterns from concurrent access.
+var errorPatternsMu sync.RWMutex
 
 // errorPatterns contains all known error patterns, ordered by priority.
 // More specific patterns should come first within each category.
@@ -88,6 +92,9 @@ func DetectErrorInOutput(output string) ErrorType {
 	recent := strings.Join(lines[start:], "\n")
 
 	// Patterns are ordered by priority, so first match wins
+	errorPatternsMu.RLock()
+	defer errorPatternsMu.RUnlock()
+
 	for _, p := range errorPatterns {
 		if p.Regex != nil && p.Regex.MatchString(recent) {
 			return p.Type
@@ -115,6 +122,9 @@ func DetectAllErrorsInOutput(output string) []ErrorType {
 	seen := make(map[ErrorType]bool)
 	var errors []ErrorType
 
+	errorPatternsMu.RLock()
+	defer errorPatternsMu.RUnlock()
+
 	for _, p := range errorPatterns {
 		matched := false
 		if p.Regex != nil && p.Regex.MatchString(recent) {
@@ -137,12 +147,16 @@ func IsError(e ErrorType) bool {
 	return e != ErrorNone
 }
 
-// AddErrorPattern allows adding custom error patterns at runtime
+// AddErrorPattern allows adding custom error patterns at runtime.
+// It is thread-safe and can be called concurrently with detection functions.
 func AddErrorPattern(errorType ErrorType, pattern string, description string) error {
 	regex, err := regexp.Compile(pattern)
 	if err != nil {
 		return err
 	}
+
+	errorPatternsMu.Lock()
+	defer errorPatternsMu.Unlock()
 
 	errorPatterns = append(errorPatterns, ErrorPattern{
 		Type:        errorType,
