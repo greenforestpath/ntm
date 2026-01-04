@@ -247,22 +247,6 @@ func (l *Logger) rotateOldEntries() error {
 	return nil
 }
 
-// splitLines splits data into lines without allocating new strings.
-func splitLines(data []byte) [][]byte {
-	var lines [][]byte
-	start := 0
-	for i, b := range data {
-		if b == '\n' {
-			lines = append(lines, data[start:i])
-			start = i + 1
-		}
-	}
-	if start < len(data) {
-		lines = append(lines, data[start:])
-	}
-	return lines
-}
-
 // expandPath expands ~ in a path to the home directory.
 func expandPath(path string) string {
 	if len(path) > 0 && path[0] == '~' {

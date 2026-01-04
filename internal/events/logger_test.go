@@ -1,6 +1,7 @@
 package events
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -160,7 +161,7 @@ func TestLogger_MultipleEvents(t *testing.T) {
 		t.Fatalf("ReadFile failed: %v", err)
 	}
 
-	lines := splitLines(data)
+	lines := bytes.Split(data, []byte("\n"))
 	nonEmpty := 0
 	for _, line := range lines {
 		if len(line) > 0 {
@@ -222,7 +223,7 @@ func TestRotateOldEntries(t *testing.T) {
 		t.Fatalf("ReadFile failed: %v", err)
 	}
 
-	lines := splitLines(data)
+	lines := bytes.Split(data, []byte("\n"))
 	nonEmpty := 0
 	for _, line := range lines {
 		if len(line) > 0 {

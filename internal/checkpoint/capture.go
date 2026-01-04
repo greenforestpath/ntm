@@ -287,11 +287,17 @@ func parseGitStatus(status string) (staged, unstaged, untracked int) {
 }
 
 // countLines counts the number of lines in a string.
+// Empty strings return 0, trailing newlines don't count as extra lines.
 func countLines(s string) int {
 	if s == "" {
 		return 0
 	}
-	return strings.Count(s, "\n") + 1
+	// Remove trailing newline to avoid counting an empty final line
+	s = strings.TrimSuffix(s, "\n")
+	if s == "" {
+		return 0 // String was just a newline
+	}
+	return len(strings.Split(s, "\n"))
 }
 
 // fileExists checks if a path exists.
