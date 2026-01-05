@@ -263,12 +263,15 @@ func TestRobotTailWithNonexistentSession(t *testing.T) {
 
 	// Should return JSON error or text error
 	outputStr := string(out)
-	if strings.Contains(outputStr, "{") {
+	jsonStart := strings.Index(outputStr, "{")
+	if jsonStart != -1 {
+		// Extract JSON portion (may have warnings before it)
+		jsonBytes := []byte(outputStr[jsonStart:])
 		var payload struct {
 			Success bool   `json:"success"`
 			Error   string `json:"error"`
 		}
-		if json.Unmarshal(out, &payload) == nil {
+		if json.Unmarshal(jsonBytes, &payload) == nil {
 			if payload.Success {
 				t.Errorf("expected success=false for nonexistent session")
 			}
@@ -722,10 +725,11 @@ func TestRobotMailHandlerDispatch(t *testing.T) {
 		t.Fatalf("invalid JSON: %v", err)
 	}
 
-	// Verify it has expected structure (may vary based on mail server availability)
-	// At minimum it should be valid JSON
-	if payload == nil {
-		t.Errorf("expected non-nil JSON payload")
+	// Verify it returns a valid JSON object (not empty)
+	// The response structure varies based on mail server availability,
+	// but should always contain some fields
+	if len(payload) == 0 {
+		t.Errorf("expected non-empty JSON object, got empty map")
 	}
 }
 
