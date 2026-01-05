@@ -1307,3 +1307,340 @@ func TestRobotInspectPaneAgentHints(t *testing.T) {
 		t.Errorf("expected _agent_hints.summary to be non-empty")
 	}
 }
+
+// =============================================================================
+// --robot-metrics tests (ntm-z7ks: E2E test for metrics and replay commands)
+// =============================================================================
+
+func TestRobotMetricsWithValidSession(t *testing.T) {
+	testutil.RequireNTMBinary(t)
+	testutil.RequireTmux(t)
+
+	// Create a test session
+	sessionName := fmt.Sprintf("ntm-test-metrics-%d", time.Now().UnixNano())
+	createCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName)
+	if err := createCmd.Run(); err != nil {
+		t.Skipf("Could not create test session: %v", err)
+	}
+	defer func() {
+		exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	}()
+
+	logger := testutil.NewTestLoggerStdout(t)
+	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-metrics="+sessionName)
+
+	var payload struct {
+		Success      bool   `json:"success"`
+		Session      string `json:"session"`
+		Period       string `json:"period"`
+		TokenUsage   struct {
+			ByAgent map[string]int64 `json:"by_agent"`
+			ByModel map[string]int64 `json:"by_model"`
+		} `json:"token_usage"`
+		AgentStats   map[string]interface{} `json:"agent_stats"`
+		SessionStats struct {
+			TotalAgents  int `json:"total_agents"`
+			ActiveAgents int `json:"active_agents"`
+			FilesChanged int `json:"files_changed"`
+		} `json:"session_stats"`
+	}
+
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("invalid JSON: %v\nOutput: %s", err, string(out))
+	}
+
+	if !payload.Success {
+		t.Errorf("expected success=true for valid session")
+	}
+	if payload.Session != sessionName {
+		t.Errorf("expected session=%q, got %q", sessionName, payload.Session)
+	}
+	if payload.Period == "" {
+		t.Errorf("expected period to be set")
+	}
+}
+
+func TestRobotMetricsPeriodFlag(t *testing.T) {
+	testutil.RequireNTMBinary(t)
+	testutil.RequireTmux(t)
+
+	sessionName := fmt.Sprintf("ntm-test-metrics-%d", time.Now().UnixNano())
+	createCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName)
+	if err := createCmd.Run(); err != nil {
+		t.Skipf("Could not create test session: %v", err)
+	}
+	defer func() {
+		exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	}()
+
+	testCases := []struct {
+		name           string
+		period         string
+		expectedPeriod string
+	}{
+		{"default period", "", "24h"},
+		{"1h period", "1h", "1h"},
+		{"7d period", "7d", "7d"},
+		{"all period", "all", "all"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			logger := testutil.NewTestLoggerStdout(t)
+			args := []string{"--robot-metrics=" + sessionName}
+			if tc.period != "" {
+				args = append(args, "--metrics-period="+tc.period)
+			}
+			out := testutil.AssertCommandSuccess(t, logger, "ntm", args...)
+
+			var payload struct {
+				Period string `json:"period"`
+			}
+
+			if err := json.Unmarshal(out, &payload); err != nil {
+				t.Fatalf("invalid JSON: %v", err)
+			}
+
+			if payload.Period != tc.expectedPeriod {
+				t.Errorf("expected period=%q, got %q", tc.expectedPeriod, payload.Period)
+			}
+		})
+	}
+}
+
+func TestRobotMetricsNonExistentSession(t *testing.T) {
+	testutil.RequireNTMBinary(t)
+	testutil.RequireTmux(t)
+
+	// Non-existent session should return error
+	cmd := exec.Command("ntm", "--robot-metrics=nonexistent-session-xyz")
+	out, err := cmd.CombinedOutput()
+
+	if err == nil {
+		t.Fatalf("expected command to fail for nonexistent session")
+	}
+
+	// Find JSON in output
+	jsonStart := strings.Index(string(out), "{")
+	jsonEnd := strings.LastIndex(string(out), "}") + 1
+	if jsonStart == -1 || jsonEnd <= jsonStart {
+		t.Fatalf("no valid JSON found in output: %s", string(out))
+	}
+	jsonBytes := out[jsonStart:jsonEnd]
+
+	var payload struct {
+		Success   bool   `json:"success"`
+		ErrorCode string `json:"error_code"`
+	}
+
+	if err := json.Unmarshal(jsonBytes, &payload); err != nil {
+		t.Fatalf("invalid JSON: %v\nOutput: %s", err, string(out))
+	}
+
+	if payload.Success {
+		t.Errorf("expected success=false for nonexistent session")
+	}
+	if payload.ErrorCode != "SESSION_NOT_FOUND" {
+		t.Errorf("expected error_code='SESSION_NOT_FOUND', got %q", payload.ErrorCode)
+	}
+}
+
+func TestRobotMetricsAgentHints(t *testing.T) {
+	testutil.RequireNTMBinary(t)
+	testutil.RequireTmux(t)
+
+	sessionName := fmt.Sprintf("ntm-test-metrics-%d", time.Now().UnixNano())
+	createCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName)
+	if err := createCmd.Run(); err != nil {
+		t.Skipf("Could not create test session: %v", err)
+	}
+	defer func() {
+		exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	}()
+
+	logger := testutil.NewTestLoggerStdout(t)
+	out := testutil.AssertCommandSuccess(t, logger, "ntm", "--robot-metrics="+sessionName)
+
+	var payload struct {
+		AgentHints *struct {
+			Summary string   `json:"summary"`
+			Notes   []string `json:"notes,omitempty"`
+		} `json:"_agent_hints,omitempty"`
+	}
+
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	if payload.AgentHints == nil {
+		t.Errorf("expected _agent_hints to be present")
+	} else if payload.AgentHints.Summary == "" {
+		t.Errorf("expected _agent_hints.summary to be non-empty")
+	}
+}
+
+// =============================================================================
+// --robot-replay tests (ntm-z7ks)
+// =============================================================================
+
+func TestRobotReplayMissingHistoryID(t *testing.T) {
+	testutil.RequireNTMBinary(t)
+	testutil.RequireTmux(t)
+
+	sessionName := fmt.Sprintf("ntm-test-replay-%d", time.Now().UnixNano())
+	createCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName)
+	if err := createCmd.Run(); err != nil {
+		t.Skipf("Could not create test session: %v", err)
+	}
+	defer func() {
+		exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	}()
+
+	// Replay without --replay-id should fail or return error
+	// (depends on implementation - might return history not found)
+	cmd := exec.Command("ntm", "--robot-replay="+sessionName)
+	out, err := cmd.CombinedOutput()
+
+	if err == nil {
+		// If it succeeds, check if it's an error response
+		var payload struct {
+			Success   bool   `json:"success"`
+			ErrorCode string `json:"error_code,omitempty"`
+		}
+		jsonStart := strings.Index(string(out), "{")
+		if jsonStart != -1 {
+			if jsonErr := json.Unmarshal(out[jsonStart:], &payload); jsonErr == nil {
+				// Should either fail or return error in JSON
+				if payload.Success && payload.ErrorCode == "" {
+					// This is unexpected - replay without ID shouldn't fully succeed
+					t.Logf("Warning: replay without --replay-id returned success")
+				}
+			}
+		}
+		return
+	}
+
+	// Find JSON in output
+	jsonStart := strings.Index(string(out), "{")
+	jsonEnd := strings.LastIndex(string(out), "}") + 1
+	if jsonStart == -1 || jsonEnd <= jsonStart {
+		t.Fatalf("no valid JSON found in error output: %s", string(out))
+	}
+	jsonBytes := out[jsonStart:jsonEnd]
+
+	var payload struct {
+		Success   bool   `json:"success"`
+		ErrorCode string `json:"error_code"`
+	}
+
+	if err := json.Unmarshal(jsonBytes, &payload); err != nil {
+		t.Fatalf("invalid JSON: %v\nOutput: %s", err, string(out))
+	}
+
+	if payload.Success {
+		t.Errorf("expected success=false without --replay-id")
+	}
+}
+
+func TestRobotReplayNonExistentHistoryID(t *testing.T) {
+	testutil.RequireNTMBinary(t)
+	testutil.RequireTmux(t)
+
+	sessionName := fmt.Sprintf("ntm-test-replay-%d", time.Now().UnixNano())
+	createCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName)
+	if err := createCmd.Run(); err != nil {
+		t.Skipf("Could not create test session: %v", err)
+	}
+	defer func() {
+		exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	}()
+
+	// Replay with non-existent history ID should fail
+	cmd := exec.Command("ntm", "--robot-replay="+sessionName, "--replay-id=nonexistent-id-xyz")
+	out, err := cmd.CombinedOutput()
+
+	if err == nil {
+		t.Fatalf("expected command to fail for nonexistent history ID")
+	}
+
+	// Find JSON in output
+	jsonStart := strings.Index(string(out), "{")
+	jsonEnd := strings.LastIndex(string(out), "}") + 1
+	if jsonStart == -1 || jsonEnd <= jsonStart {
+		t.Fatalf("no valid JSON found in output: %s", string(out))
+	}
+	jsonBytes := out[jsonStart:jsonEnd]
+
+	var payload struct {
+		Success   bool   `json:"success"`
+		ErrorCode string `json:"error_code"`
+		Error     string `json:"error"`
+	}
+
+	if err := json.Unmarshal(jsonBytes, &payload); err != nil {
+		t.Fatalf("invalid JSON: %v\nOutput: %s", err, string(out))
+	}
+
+	if payload.Success {
+		t.Errorf("expected success=false for nonexistent history ID")
+	}
+	// Error code might be INVALID_FLAG or DEPENDENCY_MISSING depending on history availability
+}
+
+func TestRobotReplayDryRunFlag(t *testing.T) {
+	testutil.RequireNTMBinary(t)
+	testutil.RequireTmux(t)
+
+	sessionName := fmt.Sprintf("ntm-test-replay-%d", time.Now().UnixNano())
+	createCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName)
+	if err := createCmd.Run(); err != nil {
+		t.Skipf("Could not create test session: %v", err)
+	}
+	defer func() {
+		exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	}()
+
+	// Dry run with non-existent ID should still fail
+	cmd := exec.Command("ntm", "--robot-replay="+sessionName, "--replay-id=nonexistent-id", "--replay-dry-run")
+	out, err := cmd.CombinedOutput()
+
+	if err == nil {
+		// If it succeeds, check the response structure
+		var payload struct {
+			Success   bool `json:"success"`
+			DryRun    bool `json:"dry_run,omitempty"`
+			Replayed  bool `json:"replayed"`
+		}
+		jsonStart := strings.Index(string(out), "{")
+		if jsonStart != -1 {
+			if jsonErr := json.Unmarshal(out[jsonStart:], &payload); jsonErr == nil {
+				// In dry run, replayed should be false
+				if payload.Replayed {
+					t.Errorf("expected replayed=false in dry run mode")
+				}
+			}
+		}
+		return
+	}
+
+	// Find JSON in output - error case
+	jsonStart := strings.Index(string(out), "{")
+	jsonEnd := strings.LastIndex(string(out), "}") + 1
+	if jsonStart == -1 || jsonEnd <= jsonStart {
+		t.Fatalf("no valid JSON found in output: %s", string(out))
+	}
+	jsonBytes := out[jsonStart:jsonEnd]
+
+	var payload struct {
+		Success bool `json:"success"`
+	}
+
+	if err := json.Unmarshal(jsonBytes, &payload); err != nil {
+		t.Fatalf("invalid JSON: %v\nOutput: %s", err, string(out))
+	}
+
+	// Even dry run should fail for nonexistent ID
+	if payload.Success {
+		t.Errorf("expected success=false for nonexistent history ID even in dry run")
+	}
+}
