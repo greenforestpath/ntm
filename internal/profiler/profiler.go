@@ -74,6 +74,9 @@ func Start(name string) *Span {
 	return StartWithPhase(name, "")
 }
 
+// MaxSpans is the maximum number of spans to retain in memory
+const MaxSpans = 10000
+
 // StartWithPhase begins a new span with name and phase
 func StartWithPhase(name, phase string) *Span {
 	global.mu.Lock()
@@ -81,6 +84,10 @@ func StartWithPhase(name, phase string) *Span {
 
 	if !global.enabled {
 		return &Span{Name: name, Phase: phase} // No-op span
+	}
+
+	if len(global.spans) >= MaxSpans {
+		return &Span{Name: name, Phase: phase} // Untracked due to limit
 	}
 
 	span := &Span{
@@ -101,6 +108,10 @@ func StartChild(parent *Span, name string) *Span {
 
 	if !global.enabled || parent == nil {
 		return &Span{Name: name}
+	}
+
+	if len(global.spans) >= MaxSpans {
+		return &Span{Name: name} // Untracked due to limit
 	}
 
 	span := &Span{
