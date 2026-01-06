@@ -45,6 +45,42 @@ func TestTruncateCassText(t *testing.T) {
 			maxLen:   20,
 			expected: "first second thir...",
 		},
+		{
+			name:     "maxLen zero returns empty",
+			input:    "hello",
+			maxLen:   0,
+			expected: "",
+		},
+		{
+			name:     "maxLen negative returns empty",
+			input:    "hello",
+			maxLen:   -5,
+			expected: "",
+		},
+		{
+			name:     "maxLen 1 truncates without ellipsis",
+			input:    "hello",
+			maxLen:   1,
+			expected: "h",
+		},
+		{
+			name:     "maxLen 3 truncates without ellipsis",
+			input:    "hello",
+			maxLen:   3,
+			expected: "hel",
+		},
+		{
+			name:     "maxLen 3 with short string unchanged",
+			input:    "hi",
+			maxLen:   3,
+			expected: "hi",
+		},
+		{
+			name:     "maxLen 4 uses ellipsis",
+			input:    "hello world",
+			maxLen:   4,
+			expected: "h...",
+		},
 	}
 
 	for _, tt := range tests {
@@ -103,6 +139,16 @@ func TestExtractSessionNameFromPath(t *testing.T) {
 			name:     "windows-style path",
 			path:     "C:/Users/test/sessions/session.jsonl",
 			expected: "session",
+		},
+		{
+			name:     "filename is just extension jsonl",
+			path:     "/path/to/.jsonl",
+			expected: "unknown",
+		},
+		{
+			name:     "filename is just extension json",
+			path:     "/path/to/.json",
+			expected: "unknown",
 		},
 	}
 

@@ -318,7 +318,6 @@ This is useful for:
 }
 
 func runCassPreview(prompt string, maxResults, maxAgeDays int, format string, maxTokens int) error {
-	// Import robot package functions
 	queryConfig := robot.CASSConfig{
 		Enabled:           true,
 		MaxResults:        maxResults,
@@ -442,6 +441,18 @@ func truncateCassText(s string, maxLen int) string {
 	// Replace newlines with spaces for single-line display
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.TrimSpace(s)
+
+	// Handle edge cases where maxLen is too small
+	if maxLen <= 0 {
+		return ""
+	}
+	if maxLen <= 3 {
+		if len(s) <= maxLen {
+			return s
+		}
+		return s[:maxLen]
+	}
+
 	if len(s) > maxLen {
 		return s[:maxLen-3] + "..."
 	}
@@ -463,6 +474,11 @@ func extractSessionNameFromPath(path string) string {
 
 	filename = strings.TrimSuffix(filename, ".jsonl")
 	filename = strings.TrimSuffix(filename, ".json")
+
+	// Handle case where filename was only the extension
+	if filename == "" {
+		return "unknown"
+	}
 
 	if len(filename) > 40 {
 		filename = filename[:37] + "..."
