@@ -28,7 +28,7 @@ func NewMockPaneSpawner() *MockPaneSpawner {
 	}
 }
 
-func (m *MockPaneSpawner) SpawnAgent(session, agentType string, index int, workDir string) (string, error) {
+func (m *MockPaneSpawner) SpawnAgent(session, agentType string, index int, variant string, workDir string) (string, error) {
 	if m.spawnError != nil {
 		return "", m.spawnError
 	}

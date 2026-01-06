@@ -67,7 +67,7 @@ type RotationEvent struct {
 // PaneSpawner abstracts pane creation for testing.
 type PaneSpawner interface {
 	// SpawnAgent creates a new agent pane and returns its ID.
-	SpawnAgent(session, agentType string, index int, workDir string) (paneID string, err error)
+	SpawnAgent(session, agentType string, index int, variant string, workDir string) (paneID string, err error)
 	// KillPane terminates a pane.
 	KillPane(paneID string) error
 	// SendKeys sends text to a pane.
@@ -87,7 +87,7 @@ func NewDefaultPaneSpawner(cfg *config.Config) *DefaultPaneSpawner {
 }
 
 // SpawnAgent creates a new agent pane.
-func (s *DefaultPaneSpawner) SpawnAgent(session, agentType string, index int, workDir string) (string, error) {
+func (s *DefaultPaneSpawner) SpawnAgent(session, agentType string, index int, variant string, workDir string) (string, error) {
 	// Create a new pane
 	paneID, err := tmux.SplitWindow(session, workDir)
 	if err != nil {
@@ -96,7 +96,7 @@ func (s *DefaultPaneSpawner) SpawnAgent(session, agentType string, index int, wo
 
 	// Set the pane title
 	shortType := agentTypeShort(agentType)
-	title := tmux.FormatPaneName(session, shortType, index, "")
+	title := tmux.FormatPaneName(session, shortType, index, variant)
 	if err := tmux.SetPaneTitle(paneID, title); err != nil {
 		return paneID, fmt.Errorf("setting pane title: %w", err)
 	}
@@ -390,7 +390,7 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string) RotationResult {
 	// Spawn replacement agent with same type
 	agentType := agentTypeLong(string(oldPane.Type))
 	newIndex := extractAgentIndex(agentID)
-	newPaneID, err := r.spawner.SpawnAgent(session, agentType, newIndex, workDir)
+	newPaneID, err := r.spawner.SpawnAgent(session, agentType, newIndex, oldPane.Variant, workDir)
 	if err != nil {
 		result.Success = false
 		result.State = RotationStateFailed
@@ -404,7 +404,7 @@ func (r *Rotator) rotateAgent(session, agentID, workDir string) RotationResult {
 		return result
 	}
 	result.NewPaneID = newPaneID
-	result.NewAgentID = tmux.FormatPaneName(session, agentTypeShort(agentType), newIndex, "")
+	result.NewAgentID = tmux.FormatPaneName(session, agentTypeShort(agentType), newIndex, oldPane.Variant)
 
 	// Wait for new agent to be ready
 	time.Sleep(3 * time.Second)

@@ -101,43 +101,76 @@ func extractNewOutput(before, after string) string {
 		return ""
 	}
 
-	// Simple suffix check: if 'after' ends with 'before' (unlikely as new text is appended),
-	// or 'after' starts with 'before' (likely).
+	// Fast path: if 'after' starts with 'before', it's a simple append
 	if len(after) >= len(before) && after[:len(before)] == before {
 		return after[len(before):]
 	}
 
-	// If history scrolled (before is not a strict prefix), try to overlap.
-	// Find the longest suffix of 'before' that matches a prefix of 'after'.
-	const overlapSize = 100
-	var tail string
-	if len(before) > overlapSize {
-		tail = before[len(before)-overlapSize:]
+	// Handle scrolled output (before is not a prefix of after)
+	// We look for the longest suffix of 'before' that matches a prefix of 'after'.
+
+	// Try to match using a chunk from the start of 'after'
+	const chunkSize = 40
+	var searchChunk string
+	if len(after) >= chunkSize {
+		searchChunk = after[:chunkSize]
 	} else {
-		tail = before
+		// After is short, use all of it
+		searchChunk = after
 	}
 
-	// Search for tail in after and verify it matches the end of 'before'
-	start := 0
+	// We only need to search the end of 'before' that could possibly contain 'after'
+	// The overlap cannot be longer than 'after'.
+	scanStart := len(before) - len(after)
+	if scanStart < 0 {
+		scanStart = 0
+	}
+
+	searchRegion := before[scanStart:]
+
+	// Find all occurrences of chunk in searchRegion
+	// We want the *first* valid match in searchRegion because that gives the *longest* suffix of before.
+	// (Earliest start index = longest suffix)
+
+	remaining := searchRegion
+	offset := 0
+
 	for {
-		idx := strings.Index(after[start:], tail)
+		idx := strings.Index(remaining, searchChunk)
 		if idx == -1 {
 			break
 		}
-		actualIdx := start + idx
-		matchEnd := actualIdx + len(tail)
 
-		// Verify: is the prefix of 'after' up to this match a suffix of 'before'?
-		candidate := after[:matchEnd]
-		if strings.HasSuffix(before, candidate) {
-			return after[matchEnd:]
+		// Absolute index in 'before'
+		absIdx := scanStart + offset + idx
+
+		// Check if this starts a valid suffix match
+		// Suffix of before: before[absIdx:]
+		// Prefix of after: after[:len(suffix)]
+		// We know before[absIdx:] starts with searchChunk.
+		// We need to check if the rest matches.
+
+		suffixLen := len(before) - absIdx
+		if len(after) >= suffixLen && after[:suffixLen] == before[absIdx:] {
+			return after[suffixLen:]
 		}
 
-		// Continue searching
-		start = actualIdx + 1
+		// Move past this match
+		step := idx + 1
+		remaining = remaining[step:]
+		offset += step
 	}
 
-	// Fallback: return everything if we can't match (better than nothing)
+	// Fallback for overlaps smaller than chunkSize (only needed if we capped chunk size)
+	if len(after) > chunkSize {
+		for k := chunkSize - 1; k > 0; k-- {
+			if before[len(before)-k:] == after[:k] {
+				return after[k:]
+			}
+		}
+	}
+
+	// No overlap found - return everything
 	return after
 }
 
