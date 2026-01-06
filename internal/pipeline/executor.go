@@ -54,6 +54,7 @@ type Executor struct {
 	router   *robot.Router
 	scorer   *robot.AgentScorer
 	notifier *Notifier
+	loopExec *LoopExecutor
 
 	// Runtime state (reset per execution)
 	state    *ExecutionState
@@ -66,12 +67,14 @@ type Executor struct {
 
 // NewExecutor creates a new workflow executor
 func NewExecutor(config ExecutorConfig) *Executor {
-	return &Executor{
+	e := &Executor{
 		config:   config,
 		detector: status.NewDetector(),
 		router:   robot.NewRouter(),
 		scorer:   robot.NewAgentScorer(robot.DefaultRoutingConfig()),
 	}
+	e.loopExec = NewLoopExecutor(e)
+	return e
 }
 
 // SetNotifier sets the notifier for sending notifications on workflow events.
@@ -439,6 +442,11 @@ func (e *Executor) executeStep(ctx context.Context, step *Step, workflow *Workfl
 	// Handle parallel steps
 	if len(step.Parallel) > 0 {
 		return e.executeParallel(ctx, step, workflow)
+	}
+
+	// Handle loop steps
+	if step.Loop != nil {
+		return e.executeLoop(ctx, step, workflow)
 	}
 
 	// Calculate retry parameters
@@ -813,6 +821,39 @@ func (e *Executor) executeParallel(ctx context.Context, step *Step, workflow *Wo
 	} else {
 		result.Status = StatusCompleted
 		result.Output = fmt.Sprintf("All %d parallel steps completed", len(results))
+	}
+
+	return result
+}
+
+// executeLoop executes a loop step and returns the result.
+// Delegates to LoopExecutor for for-each, while, and times loop execution.
+func (e *Executor) executeLoop(ctx context.Context, step *Step, workflow *Workflow) StepResult {
+	result := StepResult{
+		StepID:    step.ID,
+		Status:    StatusRunning,
+		StartedAt: time.Now(),
+	}
+
+	// Execute the loop
+	loopResult := e.loopExec.ExecuteLoop(ctx, step, workflow)
+
+	// Convert loop result to step result
+	result.Status = loopResult.Status
+	result.FinishedAt = loopResult.FinishedAt
+	result.Error = loopResult.Error
+
+	// Build output summary
+	if loopResult.Status == StatusCompleted {
+		result.Output = fmt.Sprintf("Loop completed: %d iterations", loopResult.Iterations)
+		if loopResult.BreakReason != "" {
+			result.Output += fmt.Sprintf(" (exited via %s)", loopResult.BreakReason)
+		}
+	}
+
+	// Store collected data as parsed data
+	if len(loopResult.Collected) > 0 {
+		result.ParsedData = loopResult.Collected
 	}
 
 	return result
@@ -1286,6 +1327,9 @@ func (e *Executor) calculateRetryDelay(base time.Duration, attempt int, backoff 
 
 // calculateProgress returns overall workflow progress (0.0 to 1.0)
 func (e *Executor) calculateProgress() float64 {
+	if e.graph == nil {
+		return 0.0
+	}
 	total := e.graph.Size()
 	if total == 0 {
 		return 1.0

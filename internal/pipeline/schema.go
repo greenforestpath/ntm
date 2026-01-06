@@ -120,8 +120,11 @@ type Step struct {
 	// Parallel execution (mutually exclusive with Prompt)
 	Parallel []Step `yaml:"parallel,omitempty" toml:"parallel,omitempty" json:"parallel,omitempty"`
 
-	// Loop execution (Phase 2)
+	// Loop execution
 	Loop *LoopConfig `yaml:"loop,omitempty" toml:"loop,omitempty" json:"loop,omitempty"`
+
+	// Loop control: break or continue (only valid inside loops)
+	LoopControl LoopControl `yaml:"loop_control,omitempty" toml:"loop_control,omitempty" json:"loop_control,omitempty"`
 }
 
 // RoutingStrategy defines how to select an agent for a step
@@ -155,13 +158,50 @@ func (o *OutputParse) UnmarshalText(text []byte) error {
 	return nil
 }
 
-// LoopConfig defines loop iteration settings (Phase 2)
+// LoopConfig defines loop iteration settings for for-each, while, and times loops
 type LoopConfig struct {
-	Items         string `yaml:"items" toml:"items" json:"items"`                                                          // Variable reference for array
-	As            string `yaml:"as,omitempty" toml:"as,omitempty" json:"as,omitempty"`                                     // Loop variable name
-	Steps         []Step `yaml:"steps,omitempty" toml:"steps,omitempty" json:"steps,omitempty"`                            // Steps to execute per iteration
-	MaxIterations int    `yaml:"max_iterations,omitempty" toml:"max_iterations,omitempty" json:"max_iterations,omitempty"` // Safety limit
+	// For-each loop: iterate over array
+	Items string `yaml:"items,omitempty" toml:"items,omitempty" json:"items,omitempty"` // Expression for array (e.g., ${vars.files})
+	As    string `yaml:"as,omitempty" toml:"as,omitempty" json:"as,omitempty"`          // Loop variable name (default: "item")
+
+	// While loop: repeat until condition is false
+	While string `yaml:"while,omitempty" toml:"while,omitempty" json:"while,omitempty"` // Condition expression
+
+	// Times loop: repeat N times
+	Times int `yaml:"times,omitempty" toml:"times,omitempty" json:"times,omitempty"` // Number of iterations
+
+	// Safety and timing
+	MaxIterations int      `yaml:"max_iterations,omitempty" toml:"max_iterations,omitempty" json:"max_iterations,omitempty"` // Safety limit (default: 100, required for while loops)
+	Delay         Duration `yaml:"delay,omitempty" toml:"delay,omitempty" json:"delay,omitempty"`                            // Delay between iterations
+
+	// Result collection
+	Collect string `yaml:"collect,omitempty" toml:"collect,omitempty" json:"collect,omitempty"` // Variable name to store array of results
+
+	// Steps to execute per iteration
+	Steps []Step `yaml:"steps,omitempty" toml:"steps,omitempty" json:"steps,omitempty"`
 }
+
+// LoopControl defines special control flow within loops
+type LoopControl string
+
+const (
+	LoopControlNone     LoopControl = ""         // Normal execution
+	LoopControlBreak    LoopControl = "break"    // Exit loop early
+	LoopControlContinue LoopControl = "continue" // Skip to next iteration
+)
+
+// LoopContext holds the current state of loop iteration
+type LoopContext struct {
+	VarName string      // The "as" variable name
+	Item    interface{} // Current item value
+	Index   int         // 0-based iteration index
+	Count   int         // Total number of items
+	First   bool        // True if first iteration
+	Last    bool        // True if last iteration
+}
+
+// DefaultMaxIterations is the default safety limit for loops
+const DefaultMaxIterations = 100
 
 // ExecutionStatus represents the current state of workflow execution
 type ExecutionStatus string
