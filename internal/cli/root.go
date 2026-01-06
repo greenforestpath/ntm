@@ -1289,7 +1289,8 @@ func init() {
 		newLockCmd(),
 		newUnlockCmd(),
 		newLocksCmd(),
-		newMessageCmd(), // Unified messaging
+		newMessageCmd(),    // Unified messaging
+		newCoordinatorCmd(), // Multi-agent coordination
 
 		// Git coordination
 		newGitCmd(),
