@@ -30,6 +30,19 @@ func TestNewNotifier(t *testing.T) {
 	}
 }
 
+func TestNewNotifierIgnoresUnknownChannels(t *testing.T) {
+	cfg := NotifierConfig{
+		Channels: []string{"desktop", "slack", "unknown", "webhook"},
+	}
+
+	n := NewNotifier(cfg)
+
+	// Only desktop and webhook should be recognized
+	if len(n.channels) != 2 {
+		t.Errorf("expected 2 valid channels (unknown ignored), got %d", len(n.channels))
+	}
+}
+
 func TestNewNotifierFromSettings(t *testing.T) {
 	settings := WorkflowSettings{
 		NotifyOnComplete: true,
