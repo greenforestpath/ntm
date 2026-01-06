@@ -131,16 +131,35 @@ func (m *UnifiedMessenger) Read(ctx context.Context, id string) (*UnifiedMessage
 			if err != nil {
 				return nil, fmt.Errorf("invalid agent mail message ID: %w", err)
 			}
-			// Agent Mail mark as read
-			err = m.amClient.MarkMessageRead(ctx, m.projectKey, m.agentName, msgID)
-			if err != nil {
-				return nil, fmt.Errorf("mark message read: %w", err)
+
+			// Fetch inbox to get message content (Agent Mail MCP doesn't have get-single-message)
+			opts := FetchInboxOptions{
+				ProjectKey:    m.projectKey,
+				AgentName:     m.agentName,
+				Limit:         100, // Reasonable limit to find the message
+				IncludeBodies: true,
 			}
-			// Return a placeholder - we'd need to fetch the full message
-			return &UnifiedMessage{
-				ID:      id,
-				Channel: "agentmail",
-			}, nil
+			inbox, err := m.amClient.FetchInbox(ctx, opts)
+			if err != nil {
+				return nil, fmt.Errorf("fetch inbox: %w", err)
+			}
+
+			// Find the message by ID
+			for _, msg := range inbox {
+				if msg.ID == msgID {
+					// Mark as read
+					_ = m.amClient.MarkMessageRead(ctx, m.projectKey, m.agentName, msgID)
+					return &UnifiedMessage{
+						ID:        id,
+						Channel:   "agentmail",
+						From:      msg.From,
+						Subject:   msg.Subject,
+						Body:      msg.BodyMD,
+						Timestamp: msg.CreatedTS,
+					}, nil
+				}
+			}
+			return nil, fmt.Errorf("message not found: %s", id)
 		}
 		return nil, fmt.Errorf("agent mail not available")
 

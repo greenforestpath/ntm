@@ -66,6 +66,12 @@ type BuildOptions struct {
 	SessionID     string // For CM client connection
 }
 
+// Package-level cache shared across all builders
+var (
+	globalCacheMu sync.RWMutex
+	globalCache   = make(map[string]*ContextPackFull)
+)
+
 // ContextPackBuilder builds context packs from multiple sources
 type ContextPackBuilder struct {
 	bvAdapter   *tools.BVAdapter
@@ -74,9 +80,6 @@ type ContextPackBuilder struct {
 	s2pAdapter  *tools.S2PAdapter
 	store       *state.Store
 	allocation  BudgetAllocation
-
-	cacheMu sync.RWMutex
-	cache   map[string]*ContextPackFull
 }
 
 // NewContextPackBuilder creates a new context pack builder
@@ -88,7 +91,6 @@ func NewContextPackBuilder(store *state.Store) *ContextPackBuilder {
 		s2pAdapter:  tools.NewS2PAdapter(),
 		store:       store,
 		allocation:  DefaultBudgetAllocation(),
-		cache:       make(map[string]*ContextPackFull),
 	}
 }
 
@@ -110,12 +112,12 @@ func cacheKey(opts BuildOptions) string {
 func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*ContextPackFull, error) {
 	// Check cache
 	key := cacheKey(opts)
-	b.cacheMu.RLock()
-	if cached, ok := b.cache[key]; ok {
-		b.cacheMu.RUnlock()
+	globalCacheMu.RLock()
+	if cached, ok := globalCache[key]; ok {
+		globalCacheMu.RUnlock()
 		return cached, nil
 	}
-	b.cacheMu.RUnlock()
+	globalCacheMu.RUnlock()
 
 	// Determine budget
 	budget := TokenBudgets[opts.AgentType]
@@ -192,9 +194,9 @@ func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*Con
 	}
 
 	// Cache
-	b.cacheMu.Lock()
-	b.cache[key] = pack
-	b.cacheMu.Unlock()
+	globalCacheMu.Lock()
+	globalCache[key] = pack
+	globalCacheMu.Unlock()
 
 	// Store in database if store is available
 	if b.store != nil {
@@ -333,7 +335,13 @@ func (b *ContextPackBuilder) renderXML(pack *ContextPackFull) string {
 	sb.WriteString(fmt.Sprintf("  <bead_id>%s</bead_id>\n", pack.BeadID))
 	sb.WriteString(fmt.Sprintf("  <repo_rev>%s</repo_rev>\n", pack.RepoRev))
 
-	for name, comp := range pack.Components {
+	// Use consistent ordering (same as renderMarkdown)
+	order := []string{"triage", "cm", "cass", "s2p"}
+	for _, name := range order {
+		comp, ok := pack.Components[name]
+		if !ok {
+			continue
+		}
 		if comp.Error != "" {
 			sb.WriteString(fmt.Sprintf("  <%s unavailable=\"true\">%s</%s>\n", name, comp.Error, name))
 			continue
@@ -407,7 +415,11 @@ func componentTitle(name string) string {
 	case "s2p":
 		return "File Context"
 	default:
-		return strings.Title(name)
+		// Title case the first letter (replacement for deprecated strings.Title)
+		if len(name) == 0 {
+			return name
+		}
+		return strings.ToUpper(name[:1]) + name[1:]
 	}
 }
 
@@ -427,18 +439,18 @@ func (b *ContextPackBuilder) truncateOverflow(pack *ContextPackFull, budget int)
 
 // ClearCache clears the context pack cache
 func (b *ContextPackBuilder) ClearCache() {
-	b.cacheMu.Lock()
-	b.cache = make(map[string]*ContextPackFull)
-	b.cacheMu.Unlock()
+	globalCacheMu.Lock()
+	globalCache = make(map[string]*ContextPackFull)
+	globalCacheMu.Unlock()
 }
 
 // CacheStats returns cache statistics
 func (b *ContextPackBuilder) CacheStats() (size int, keys []string) {
-	b.cacheMu.RLock()
-	defer b.cacheMu.RUnlock()
+	globalCacheMu.RLock()
+	defer globalCacheMu.RUnlock()
 
-	size = len(b.cache)
-	for k := range b.cache {
+	size = len(globalCache)
+	for k := range globalCache {
 		keys = append(keys, k)
 	}
 	return
@@ -456,14 +468,63 @@ func estimateTokens(s string) int {
 	return len(s) / 4
 }
 
-// truncateJSON truncates JSON to fit within token budget
+// truncateJSON truncates JSON to fit within token budget while keeping it valid
 func truncateJSON(data json.RawMessage, tokenBudget int) json.RawMessage {
 	charBudget := tokenBudget * 4 // rough conversion
 	if len(data) <= charBudget {
 		return data
 	}
-	// Simple truncation - just cut and close
-	return data[:charBudget]
+
+	// Try to parse as array and truncate elements
+	var arr []json.RawMessage
+	if err := json.Unmarshal(data, &arr); err == nil {
+		// Binary search for max elements that fit
+		lo, hi := 0, len(arr)
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			truncated := arr[:mid]
+			result, _ := json.Marshal(truncated)
+			if len(result) <= charBudget {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		if lo > 0 {
+			result, _ := json.Marshal(arr[:lo])
+			return result
+		}
+	}
+
+	// Try to parse as object and include a truncation indicator
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err == nil {
+		// Create truncated version with indicator
+		truncated := map[string]interface{}{
+			"_truncated": true,
+			"_original_size": len(data),
+		}
+		// Add fields until we hit budget
+		for k, v := range obj {
+			truncated[k] = v
+			result, _ := json.Marshal(truncated)
+			if len(result) > charBudget {
+				delete(truncated, k)
+				break
+			}
+		}
+		result, _ := json.Marshal(truncated)
+		return result
+	}
+
+	// Fallback: wrap raw bytes in a truncation indicator object
+	// This ensures we return valid JSON even for edge cases
+	fallback := map[string]interface{}{
+		"_truncated": true,
+		"_message": "data too large to include",
+	}
+	result, _ := json.Marshal(fallback)
+	return result
 }
 
 // truncateText truncates text to fit within token budget

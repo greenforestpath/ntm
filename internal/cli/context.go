@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -226,13 +227,17 @@ func getRepoRev(dir string) string {
 		return "unknown"
 	}
 
-	head := string(data)
-	if len(head) > 5 && head[:5] == "ref: " {
+	head := strings.TrimSpace(string(data))
+	if strings.HasPrefix(head, "ref: ") {
 		// Symbolic ref - read the actual ref
-		refPath := filepath.Join(dir, ".git", head[5:len(head)-1])
+		refPath := filepath.Join(dir, ".git", head[5:])
 		refData, err := os.ReadFile(refPath)
 		if err == nil {
-			return string(refData)[:min(40, len(refData))]
+			rev := strings.TrimSpace(string(refData))
+			if len(rev) > 40 {
+				rev = rev[:40]
+			}
+			return rev
 		}
 	}
 
@@ -242,11 +247,4 @@ func getRepoRev(dir string) string {
 	}
 
 	return "unknown"
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
