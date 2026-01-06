@@ -209,14 +209,20 @@ func (e *Executor) executeWorkflow(ctx context.Context, workflow *Workflow) erro
 
 			// Execute the step
 			result := e.executeStep(ctx, step, workflow)
+
+			e.stateMu.Lock()
 			e.state.Steps[stepID] = result
+			e.stateMu.Unlock()
 
 			// Store output in variables if configured
 			if step.OutputVar != "" && result.Status == StatusCompleted {
-				e.state.Variables["steps."+stepID+".output"] = result.Output
+				e.varMu.Lock()
+				e.state.Variables[step.OutputVar] = result.Output
 				if result.ParsedData != nil {
-					e.state.Variables["steps."+stepID+".data"] = result.ParsedData
+					e.state.Variables[step.OutputVar+"_parsed"] = result.ParsedData
 				}
+				StoreStepOutput(e.state, stepID, result.Output, result.ParsedData)
+				e.varMu.Unlock()
 			}
 
 			// Mark as executed

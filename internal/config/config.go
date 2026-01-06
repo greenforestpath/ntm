@@ -12,6 +12,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/Dicklesworthstone/ntm/internal/notify"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // Config represents the main configuration
@@ -978,13 +979,12 @@ func CreateDefault() (string, error) {
 	}
 
 	// Write default config
-	f, err := os.Create(path)
-	if err != nil {
+	var buffer strings.Builder
+	if err := Print(Default(), &buffer); err != nil {
 		return "", err
 	}
-	defer f.Close()
 
-	if err := Print(Default(), f); err != nil {
+	if err := util.AtomicWriteFile(path, []byte(buffer.String()), 0644); err != nil {
 		return "", err
 	}
 
@@ -1010,7 +1010,7 @@ func UpsertPaletteState(path string, state PaletteState) error {
 		mode = info.Mode().Perm()
 	}
 
-	return os.WriteFile(path, []byte(updated), mode)
+	return util.AtomicWriteFile(path, []byte(updated), mode)
 }
 
 func upsertTOMLTable(contents, tableName, tableBody string) string {
@@ -1502,7 +1502,7 @@ func SetProjectsBase(path string) error {
 	fileContents = upsertTOMLKey(fileContents, "projects_base", path)
 
 	// Write back
-	if err := os.WriteFile(configPath, []byte(fileContents), 0644); err != nil {
+	if err := util.AtomicWriteFile(configPath, []byte(fileContents), 0644); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
 

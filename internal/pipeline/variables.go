@@ -624,6 +624,7 @@ func ClearLoopVars(state *ExecutionState, varName string) {
 }
 
 // StoreStepOutput stores a step's output in the execution state for variable access.
+// Note: Caller must hold any necessary locks on state.Variables if used concurrently.
 func StoreStepOutput(state *ExecutionState, stepID string, output string, parsedData interface{}) {
 	if state.Variables == nil {
 		state.Variables = make(map[string]interface{})

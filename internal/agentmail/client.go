@@ -264,8 +264,8 @@ func (c *Client) callTool(ctx context.Context, toolName string, args map[string]
 	}
 	defer resp.Body.Close()
 
-	// Read response body
-	respBody, err := io.ReadAll(resp.Body)
+	// Read response body (limit to 10MB to prevent DoS/OOM)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		return nil, NewAPIError(toolName, 0, err)
 	}

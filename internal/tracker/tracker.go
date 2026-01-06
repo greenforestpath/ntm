@@ -5,7 +5,9 @@ package tracker
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -337,8 +339,9 @@ func (t *StateTracker) RecordSessionCreated(session string) {
 
 // FileState captures minimal file metadata for change detection.
 type FileState struct {
-	ModTime time.Time `json:"mod_time"`
-	Size    int64     `json:"size"`
+	ModTime   time.Time `json:"mod_time"`
+	Size      int64     `json:"size"`
+	GitStatus string    `json:"git_status,omitempty"` // ??, M, A, etc.
 }
 
 // FileChangeType indicates what happened to a file.
@@ -394,6 +397,15 @@ func DefaultSnapshotOptions(root string) SnapshotOptions {
 // SnapshotDirectory walks a directory and captures file modtime/size.
 // Returns a map keyed by absolute path.
 func SnapshotDirectory(root string, opts SnapshotOptions) (map[string]FileState, error) {
+	// Optimization: If this is a git repo, use git status for fast scanning
+	// This avoids walking the entire directory tree (stat storm).
+	if _, err := os.Stat(filepath.Join(root, ".git")); err == nil {
+		if snap, err := SnapshotGit(root, opts); err == nil {
+			return snap, nil
+		}
+		// If git status fails (e.g., corrupt repo, no git binary), fall back to standard walk
+	}
+
 	entries := make([]fileEntry, 0)
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -464,6 +476,71 @@ func SnapshotDirectory(root string, opts SnapshotOptions) (map[string]FileState,
 			continue
 		}
 		snap[entry.path] = entry.state
+	}
+
+	return snap, nil
+}
+
+// SnapshotGit uses 'git status' to efficiently find changed/untracked files.
+// This is O(1) git operation + O(N) stat calls for *dirty files only*,
+// compared to O(M) stat calls for *all files* with WalkDir.
+func SnapshotGit(root string, opts SnapshotOptions) (map[string]FileState, error) {
+	// git status --porcelain -uall (shows modified and untracked)
+	cmd := exec.Command("git", "-C", root, "status", "--porcelain", "-uall")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git status failed: %w", err)
+	}
+
+	snap := make(map[string]FileState)
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) < 4 {
+			continue
+		}
+
+		// Format: XY PATH
+		// XY are status codes (e.g. "M ", "??", " A")
+		status := line[:2]
+		relPath := line[3:]
+
+		// Handle quoted paths from git (e.g. "file with spaces.txt")
+		if len(relPath) >= 2 && strings.HasPrefix(relPath, "\"") && strings.HasSuffix(relPath, "\"") {
+			relPath = relPath[1 : len(relPath)-1]
+			// TODO: Handle escaped characters inside quotes if necessary
+		}
+
+		fullPath := filepath.Join(root, relPath)
+
+		// Check ignore paths (though git usually handles this, opts might add extras)
+		ignored := false
+		for _, p := range opts.IgnorePaths {
+			if fullPath == p || strings.HasPrefix(fullPath, p+string(filepath.Separator)) {
+				ignored = true
+				break
+			}
+		}
+		if ignored {
+			continue
+		}
+
+		// Stat the file to get metadata
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			// File might have been deleted or moved
+			continue
+		}
+		if info.IsDir() {
+			continue
+		}
+
+		snap[fullPath] = FileState{
+			ModTime:   info.ModTime(),
+			Size:      info.Size(),
+			GitStatus: strings.TrimSpace(status),
+		}
 	}
 
 	return snap, nil
@@ -542,9 +619,20 @@ func DetectFileChanges(before, after map[string]FileState) []FileChange {
 	for path, afterState := range after {
 		beforeState, existed := before[path]
 		if !existed {
+			// If missing from 'before', it's a candidate for Added.
+			// However, if we used GitSnapshot, 'before' might only contain dirty files.
+			// If 'after' has GitStatus "M", it means it existed before but was clean.
+			// We treat this as Modified.
+			changeType := FileAdded
+			
+			// Heuristic: If git says it's Modified ("M"), treat as Modified even if missing from Before.
+			if afterState.GitStatus == "M" || afterState.GitStatus == "MM" {
+				changeType = FileModified
+			}
+
 			changes = append(changes, FileChange{
 				Path:  path,
-				Type:  FileAdded,
+				Type:  changeType,
 				After: &afterState,
 			})
 			continue
