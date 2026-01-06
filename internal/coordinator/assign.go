@@ -10,6 +10,44 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 )
 
+// ScoreConfig controls how work assignments are scored.
+type ScoreConfig struct {
+	PreferCriticalPath  bool    // Weight critical path items higher
+	PenalizeFileOverlap bool    // Avoid assigning overlapping files
+	UseAgentProfiles    bool    // Match work to agent capabilities
+	BudgetAware         bool    // Consider token budgets
+	ContextThreshold    float64 // Max context usage before penalizing (0.0-1.0, default 0.8)
+}
+
+// DefaultScoreConfig returns a reasonable default configuration.
+func DefaultScoreConfig() ScoreConfig {
+	return ScoreConfig{
+		PreferCriticalPath:  true,
+		PenalizeFileOverlap: true,
+		UseAgentProfiles:    true,
+		BudgetAware:         true,
+		ContextThreshold:    0.8,
+	}
+}
+
+// ScoredAssignment pairs an assignment with its computed score breakdown.
+type ScoredAssignment struct {
+	Assignment      *WorkAssignment
+	Recommendation  *bv.TriageRecommendation
+	Agent           *AgentState
+	TotalScore      float64
+	ScoreBreakdown  AssignmentScoreBreakdown
+}
+
+// AssignmentScoreBreakdown shows how the score was computed.
+type AssignmentScoreBreakdown struct {
+	BaseScore         float64 `json:"base_score"`          // From bv triage score
+	AgentTypeBonus    float64 `json:"agent_type_bonus"`    // Bonus for agent-task match
+	CriticalPathBonus float64 `json:"critical_path_bonus"` // Bonus for critical path items
+	FileOverlapPenalty float64 `json:"file_overlap_penalty"` // Penalty for file conflicts
+	ContextPenalty    float64 `json:"context_penalty"`     // Penalty for high context usage
+}
+
 // WorkAssignment represents a work assignment to an agent.
 type WorkAssignment struct {
 	BeadID         string    `json:"bead_id"`

@@ -35,10 +35,10 @@ Examples:
   ntm coordinator conflicts myproject     # List current file conflicts
   ntm coordinator assign myproject        # Trigger work assignment
 
-  # Enable/disable features
-  ntm coordinator enable auto-assign myproject
-  ntm coordinator enable digest --interval=30m myproject
-  ntm coordinator disable conflict-negotiate myproject`,
+  # Enable/disable features (global config)
+  ntm coordinator enable auto-assign
+  ntm coordinator enable digest --interval=30m
+  ntm coordinator disable conflict-negotiate`,
 	}
 
 	cmd.AddCommand(newCoordinatorStatusCmd())
