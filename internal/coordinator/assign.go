@@ -387,7 +387,8 @@ func scoreAssignment(
 	}
 
 	// File overlap penalty
-	if config.PenalizeFileOverlap && existingReservations != nil {
+	// Note: computeFileOverlapPenalty falls back to agent.Reservations if map is nil
+	if config.PenalizeFileOverlap {
 		breakdown.FileOverlapPenalty = computeFileOverlapPenalty(agent, existingReservations)
 	}
 

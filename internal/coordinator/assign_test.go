@@ -412,6 +412,41 @@ func TestComputeFileOverlapPenalty(t *testing.T) {
 	}
 }
 
+func TestScoreAndSelectAssignmentsWithAgentReservations(t *testing.T) {
+	// Test that agent.Reservations are used when existingReservations map is nil
+	agents := []*AgentState{
+		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
+		{PaneID: "%2", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting, Reservations: []string{"a.go", "b.go", "c.go"}},
+	}
+
+	triage := &bv.TriageResponse{
+		Triage: bv.TriageData{
+			Recommendations: []bv.TriageRecommendation{
+				{ID: "ntm-001", Title: "Task", Type: "task", Status: "open", Priority: 2, Score: 0.5},
+			},
+		},
+	}
+
+	config := DefaultScoreConfig()
+	results := ScoreAndSelectAssignments(agents, triage, config, nil) // nil reservations map
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(results))
+	}
+
+	// Agent %1 should get the task because %2 has reservations (penalty)
+	if results[0].Agent.PaneID != "%1" {
+		t.Errorf("expected agent %%1 (no reservations) to get task, got %s", results[0].Agent.PaneID)
+	}
+
+	// Verify the penalty was applied to agent %2
+	// Score for %1: 0.5 base (no penalty)
+	// Score for %2: 0.5 - 0.05 = 0.45 (with reservation penalty for 3 files)
+	if results[0].ScoreBreakdown.FileOverlapPenalty != 0 {
+		t.Errorf("expected no file overlap penalty for agent %%1, got %f", results[0].ScoreBreakdown.FileOverlapPenalty)
+	}
+}
+
 func TestScoreAndSelectAssignments(t *testing.T) {
 	agents := []*AgentState{
 		{PaneID: "%1", AgentType: "cc", ContextUsage: 30, Status: robot.StateWaiting},
