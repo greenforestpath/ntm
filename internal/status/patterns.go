@@ -53,11 +53,12 @@ var promptPatterns = []PromptPattern{
 	// Avoid matching sentences like "cost is $" by disallowing spaces in the prefix
 	// Allow no space between prefix and prompt char (e.g. user@host:~)
 	{AgentType: "user", Regex: regexp.MustCompile(`^(?:[\w@:.~\-/\[\]()]+\s*)?[$%>]\s*$`), Description: "Standard shell prompt"},
-	{AgentType: "user", Regex: regexp.MustCompile(`^❯\s*$`), Description: "Fancy shell prompt (starship, etc)"},
+	{AgentType: "user", Regex: regexp.MustCompile(`(?:^|[\w@:.~\-/\[\]()]+\s*)❯\s*$`), Description: "Fancy shell prompt (starship, etc)"},
 	{AgentType: "user", Regex: regexp.MustCompile(`^\$\s*$`), Description: "Dollar prompt"},
 
 	// Generic patterns (apply to all types as fallback)
-	{AgentType: "", Regex: regexp.MustCompile(`^>\s*$`), Description: "Generic > prompt"},
+	// Allow word>$ pattern for agent prompts like windsurf>, aider>, cursor>
+	{AgentType: "", Regex: regexp.MustCompile(`(?:^|\w+)>\s*$`), Description: "Generic > prompt"},
 	{AgentType: "", Regex: regexp.MustCompile(`^(?:[\w@:.~\-/\[\]()]+\s*)?[$%]\s*$`), Description: "Generic shell prompt"},
 }
 
@@ -94,6 +95,15 @@ func IsPromptLine(line string, agentType string) bool {
 			continue
 		}
 
+		// Skip generic > prompt pattern when the line looks like a known agent's prompt
+		// and no specific agentType was provided. Agent-specific prompts (claude>, codex>, etc.)
+		// require the correct agentType to match - they shouldn't match via generic fallback.
+		if p.AgentType == "" && p.Description == "Generic > prompt" && agentType == "" {
+			if knownAgentPromptPrefixes.MatchString(line) {
+				continue
+			}
+		}
+
 		if p.Regex != nil && p.Regex.MatchString(line) {
 			return true
 		}
@@ -115,6 +125,10 @@ var knownAgentTypes = map[string]bool{
 	"windsurf": true,
 	"aider":    true,
 }
+
+// knownAgentPromptPrefixes matches prompts that belong to specific agent types.
+// When agentType is empty, the generic ">" pattern should not match these.
+var knownAgentPromptPrefixes = regexp.MustCompile(`(?i)^(claude|codex|gemini|cursor|windsurf|aider)>\s*$`)
 
 // DetectIdleFromOutput analyzes output to determine if agent is idle.
 // It checks up to 3 non-empty lines from the end for prompt patterns.
