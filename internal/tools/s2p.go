@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -117,7 +118,19 @@ func (a *S2PAdapter) GenerateContext(ctx context.Context, dir string, patterns [
 	return a.runCommand(ctx, dir, args...)
 }
 
-// runCommand executes an s2p command
+// LimitedBuffer is a bytes.Buffer that errors on overflow
+type LimitedBuffer struct {
+	bytes.Buffer
+	Limit int
+}
+
+func (b *LimitedBuffer) Write(p []byte) (n int, err error) {
+	if b.Len()+len(p) > b.Limit {
+		return 0, fmt.Errorf("output limit exceeded")
+	}
+	return b.Buffer.Write(p)
+}
+
 func (a *S2PAdapter) runCommand(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
@@ -127,13 +140,19 @@ func (a *S2PAdapter) runCommand(ctx context.Context, dir string, args ...string)
 		cmd.Dir = dir
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	// Limit output to 10MB
+	stdout := &LimitedBuffer{Limit: 10 * 1024 * 1024}
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, ErrTimeout
+		}
+		// Check if it was our limit error
+		if strings.Contains(err.Error(), "output limit exceeded") {
+			return nil, fmt.Errorf("s2p output exceeded 10MB limit")
 		}
 		return nil, fmt.Errorf("s2p failed: %w: %s", err, stderr.String())
 	}

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -142,6 +143,7 @@ func (s *RotationHistoryStore) readAllLocked() ([]RotationRecord, error) {
 
 	var records []RotationRecord
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 5*1024*1024)
 
 	for scanner.Scan() {
 		var record RotationRecord
@@ -161,16 +163,94 @@ func (s *RotationHistoryStore) readAllLocked() ([]RotationRecord, error) {
 
 // ReadRecent reads the last n rotation records.
 func (s *RotationHistoryStore) ReadRecent(n int) ([]RotationRecord, error) {
-	records, err := s.ReadAll()
+	historyMu.Lock()
+	defer historyMu.Unlock()
+
+	if n <= 0 {
+		return []RotationRecord{}, nil
+	}
+
+	f, err := os.Open(s.storagePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []RotationRecord{}, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
+	fileSize := stat.Size()
 
-	if len(records) <= n {
-		return records, nil
+	if fileSize == 0 {
+		return []RotationRecord{}, nil
 	}
 
-	return records[len(records)-n:], nil
+	// Scan backwards for newlines
+	const bufferSize = 4096
+	buf := make([]byte, bufferSize)
+	offset := fileSize
+	newlinesFound := 0
+
+	for offset > 0 {
+		readSize := int64(bufferSize)
+		if offset < readSize {
+			readSize = offset
+		}
+		offset -= readSize
+
+		_, err := f.ReadAt(buf[:readSize], offset)
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+
+		for i := int(readSize) - 1; i >= 0; i-- {
+			if buf[i] == '\n' {
+				// Ignore newline at the very end of file
+				if offset+int64(i) == fileSize-1 {
+					continue
+				}
+				newlinesFound++
+				if newlinesFound >= n {
+					// Found start of the Nth line (from end)
+					offset += int64(i) + 1
+					goto ReadEntries
+				}
+			}
+		}
+	}
+	// If we got here, we didn't find enough newlines, so we read from start
+	offset = 0
+
+ReadEntries:
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+
+	var records []RotationRecord
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 5*1024*1024)
+
+	for scanner.Scan() {
+		var record RotationRecord
+		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+			continue
+		}
+		records = append(records, record)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(records) > n {
+		records = records[len(records)-n:]
+	}
+
+	return records, nil
 }
 
 // ReadForSession reads rotation records for a specific session.
