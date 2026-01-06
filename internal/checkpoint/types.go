@@ -11,6 +11,8 @@ import (
 
 // Checkpoint represents a saved session state.
 type Checkpoint struct {
+	// Version is the checkpoint format version (for compatibility)
+	Version int `json:"version"`
 	// ID is the unique identifier (timestamp-based)
 	ID string `json:"id"`
 	// Name is the user-provided checkpoint name

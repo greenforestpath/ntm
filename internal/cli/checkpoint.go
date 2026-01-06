@@ -40,6 +40,7 @@ Examples:
 	cmd.AddCommand(newCheckpointListCmd())
 	cmd.AddCommand(newCheckpointShowCmd())
 	cmd.AddCommand(newCheckpointDeleteCmd())
+	cmd.AddCommand(newCheckpointVerifyCmd())
 	// TODO: newCheckpointRestoreCmd() not yet implemented
 
 	return cmd
@@ -413,6 +414,174 @@ Examples:
 	return cmd
 }
 
+func newCheckpointVerifyCmd() *cobra.Command {
+	var all bool
+
+	cmd := &cobra.Command{
+		Use:   "verify <session> [id]",
+		Short: "Verify checkpoint integrity",
+		Long: `Verify the integrity of one or all checkpoints.
+
+Performs the following checks:
+- Schema validation (version, required fields)
+- File existence (metadata.json, session.json, scrollback files)
+- Consistency checks (pane count, valid indices)
+
+Examples:
+  ntm checkpoint verify myproject 20251210-143052  # Verify single checkpoint
+  ntm checkpoint verify myproject --all            # Verify all checkpoints for session`,
+		Args: cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session := args[0]
+			storage := checkpoint.NewStorage()
+
+			if all {
+				return verifyAllCheckpoints(storage, session)
+			}
+
+			if len(args) < 2 {
+				return fmt.Errorf("checkpoint ID required (or use --all)")
+			}
+
+			id := args[1]
+			return verifySingleCheckpoint(storage, session, id)
+		},
+	}
+
+	cmd.Flags().BoolVarP(&all, "all", "a", false, "verify all checkpoints for session")
+
+	return cmd
+}
+
+func verifySingleCheckpoint(storage *checkpoint.Storage, session, id string) error {
+	cp, err := storage.Load(session, id)
+	if err != nil {
+		return fmt.Errorf("loading checkpoint: %w", err)
+	}
+
+	result := cp.Verify(storage)
+
+	if jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+			"session":    session,
+			"id":         id,
+			"valid":      result.Valid,
+			"checks":     result,
+		})
+	}
+
+	t := theme.Current()
+	fmt.Printf("%sVerifying: %s%s\n", "\033[1m", id, "\033[0m")
+	fmt.Printf("%s%s%s\n\n", "\033[2m", strings.Repeat("\u2500", 50), "\033[0m")
+
+	// Schema
+	if result.SchemaValid {
+		fmt.Printf("  %s\u2713%s Schema valid\n", colorize(t.Success), "\033[0m")
+	} else {
+		fmt.Printf("  %s\u2717%s Schema invalid\n", colorize(t.Error), "\033[0m")
+	}
+
+	// Files
+	if result.FilesPresent {
+		fmt.Printf("  %s\u2713%s All files present\n", colorize(t.Success), "\033[0m")
+	} else {
+		fmt.Printf("  %s\u2717%s Missing files\n", colorize(t.Error), "\033[0m")
+	}
+
+	// Consistency
+	if result.ConsistencyValid {
+		fmt.Printf("  %s\u2713%s Consistency checks passed\n", colorize(t.Success), "\033[0m")
+	} else {
+		fmt.Printf("  %s\u2717%s Consistency issues\n", colorize(t.Error), "\033[0m")
+	}
+
+	// Errors
+	if len(result.Errors) > 0 {
+		fmt.Printf("\n  %sErrors:%s\n", colorize(t.Error), "\033[0m")
+		for _, e := range result.Errors {
+			fmt.Printf("    • %s\n", e)
+		}
+	}
+
+	// Warnings
+	if len(result.Warnings) > 0 {
+		fmt.Printf("\n  %sWarnings:%s\n", colorize(t.Warning), "\033[0m")
+		for _, w := range result.Warnings {
+			fmt.Printf("    • %s\n", w)
+		}
+	}
+
+	fmt.Println()
+	if result.Valid {
+		fmt.Printf("%s\u2713 Checkpoint verified successfully%s\n", colorize(t.Success), "\033[0m")
+	} else {
+		fmt.Printf("%s\u2717 Checkpoint verification failed%s\n", colorize(t.Error), "\033[0m")
+		return fmt.Errorf("verification failed with %d error(s)", len(result.Errors))
+	}
+
+	return nil
+}
+
+func verifyAllCheckpoints(storage *checkpoint.Storage, session string) error {
+	results, err := checkpoint.VerifyAll(storage, session)
+	if err != nil {
+		return fmt.Errorf("verifying checkpoints: %w", err)
+	}
+
+	if len(results) == 0 {
+		if jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+				"session":     session,
+				"checkpoints": []interface{}{},
+				"valid_count": 0,
+				"total_count": 0,
+			})
+		}
+		fmt.Printf("No checkpoints found for session %q.\n", session)
+		return nil
+	}
+
+	validCount := 0
+	for _, r := range results {
+		if r.Valid {
+			validCount++
+		}
+	}
+
+	if jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+			"session":     session,
+			"checkpoints": results,
+			"valid_count": validCount,
+			"total_count": len(results),
+		})
+	}
+
+	t := theme.Current()
+	fmt.Printf("%sVerifying checkpoints for %s%s\n", "\033[1m", session, "\033[0m")
+	fmt.Printf("%s%s%s\n\n", "\033[2m", strings.Repeat("\u2500", 50), "\033[0m")
+
+	for id, result := range results {
+		status := colorize(t.Success) + "\u2713" + "\033[0m"
+		if !result.Valid {
+			status = colorize(t.Error) + "\u2717" + "\033[0m"
+		}
+		errorInfo := ""
+		if len(result.Errors) > 0 {
+			errorInfo = fmt.Sprintf(" (%d error(s))", len(result.Errors))
+		}
+		fmt.Printf("  %s %s%s\n", status, id, errorInfo)
+	}
+
+	fmt.Println()
+	fmt.Printf("Verified: %d/%d valid\n", validCount, len(results))
+
+	if validCount < len(results) {
+		return fmt.Errorf("%d checkpoint(s) failed verification", len(results)-validCount)
+	}
+
+	return nil
+}
 
 // formatAge returns a human-readable age string.
 func formatAge(t time.Time) string {

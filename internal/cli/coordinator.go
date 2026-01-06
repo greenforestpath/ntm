@@ -13,6 +13,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/coordinator"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
@@ -37,7 +38,7 @@ Examples:
   # Enable/disable features
   ntm coordinator enable auto-assign myproject
   ntm coordinator enable digest --interval=30m myproject
-  ntm coordinator disable conflict-resolution myproject`,
+  ntm coordinator disable conflict-negotiate myproject`,
 	}
 
 	cmd.AddCommand(newCoordinatorStatusCmd())
@@ -93,6 +94,9 @@ func runCoordinatorStatus(cmd *cobra.Command, args []string) error {
 
 	// Get working directory for project key
 	projectKey, _ := os.Getwd()
+	if cfg != nil {
+		projectKey = cfg.GetProjectDir(session)
+	}
 
 	// Create coordinator to get status
 	mailClient := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
@@ -166,14 +170,14 @@ func renderCoordinatorStatus(session string, agents map[string]*coordinator.Agen
 		for _, agent := range agents {
 			statusColor := "\033[32m" // green
 			switch agent.Status {
-			case "error":
+			case robot.StateError:
 				statusColor = "\033[31m" // red
-			case "generating", "thinking":
+			case robot.StateGenerating, robot.StateThinking:
 				statusColor = "\033[33m" // yellow
 			}
 
 			idleFor := "-"
-			if !agent.LastActivity.IsZero() && agent.Status == "waiting" {
+			if !agent.LastActivity.IsZero() && agent.Status == robot.StateWaiting {
 				idleFor = formatIdleDuration(time.Since(agent.LastActivity))
 			}
 
@@ -270,6 +274,9 @@ func runCoordinatorDigest(cmd *cobra.Command, args []string, sendMail bool) erro
 	session = res.Session
 
 	projectKey, _ := os.Getwd()
+	if cfg != nil {
+		projectKey = cfg.GetProjectDir(session)
+	}
 
 	mailClient := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
 	coord := coordinator.New(session, projectKey, mailClient, "NTM-Coordinator")
@@ -393,6 +400,9 @@ func runCoordinatorConflicts(cmd *cobra.Command, args []string) error {
 	session = res.Session
 
 	projectKey, _ := os.Getwd()
+	if cfg != nil {
+		projectKey = cfg.GetProjectDir(session)
+	}
 
 	mailClient := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
 
@@ -490,14 +500,17 @@ func runCoordinatorAssign(cmd *cobra.Command, args []string, dryRun bool) error 
 	session = res.Session
 
 	projectKey, _ := os.Getwd()
+	if cfg != nil {
+		projectKey = cfg.GetProjectDir(session)
+	}
 
 	mailClient := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
 	coord := coordinator.New(session, projectKey, mailClient, "NTM-Coordinator")
 
 	// Enable auto-assign for this call
-	cfg := coordinator.DefaultCoordinatorConfig()
-	cfg.AutoAssign = true
-	coord.WithConfig(cfg)
+	coordCfg := coordinator.DefaultCoordinatorConfig()
+	coordCfg.AutoAssign = true
+	coord.WithConfig(coordCfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -608,21 +621,23 @@ func newCoordinatorEnableCmd() *cobra.Command {
 	var interval string
 
 	cmd := &cobra.Command{
-		Use:   "enable <feature> [session]",
+		Use:   "enable <feature>",
 		Short: "Enable a coordinator feature",
-		Long: `Enable a coordinator feature for a session.
+		Long: `Enable a coordinator feature globally.
 
 Available features:
-  auto-assign    - Automatically assign work to idle agents
-  digest         - Send periodic digest summaries
+  auto-assign         - Automatically assign work to idle agents
+  digest              - Send periodic digest summaries
   conflict-notify     - Notify when conflicts are detected
   conflict-negotiate  - Attempt automatic conflict resolution
 
+Note: These settings are configured globally in ~/.config/ntm/config.toml.
+
 Examples:
-  ntm coordinator enable auto-assign myproject
-  ntm coordinator enable digest --interval=30m myproject
-  ntm coordinator enable conflict-notify myproject`,
-		Args: cobra.RangeArgs(1, 2),
+  ntm coordinator enable auto-assign
+  ntm coordinator enable digest --interval=30m
+  ntm coordinator enable conflict-notify`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCoordinatorToggle(cmd, args, true, interval)
 		},
@@ -636,9 +651,9 @@ Examples:
 // newCoordinatorDisableCmd disables coordinator features
 func newCoordinatorDisableCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "disable <feature> [session]",
+		Use:   "disable <feature>",
 		Short: "Disable a coordinator feature",
-		Long: `Disable a coordinator feature for a session.
+		Long: `Disable a coordinator feature globally.
 
 Available features:
   auto-assign         - Automatic work assignment
@@ -646,10 +661,12 @@ Available features:
   conflict-notify     - Conflict notifications
   conflict-negotiate  - Automatic conflict resolution
 
+Note: These settings are configured globally in ~/.config/ntm/config.toml.
+
 Examples:
-  ntm coordinator disable auto-assign myproject
-  ntm coordinator disable digest myproject`,
-		Args: cobra.RangeArgs(1, 2),
+  ntm coordinator disable auto-assign
+  ntm coordinator disable digest`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCoordinatorToggle(cmd, args, false, "")
 		},
@@ -660,7 +677,6 @@ Examples:
 
 func runCoordinatorToggle(cmd *cobra.Command, args []string, enable bool, interval string) error {
 	feature := args[0]
-	_ = args // session not used for config-based settings
 
 	// Validate feature name
 	validFeatures := []string{"auto-assign", "digest", "conflict-notify", "conflict-negotiate"}

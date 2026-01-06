@@ -62,6 +62,7 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 
 	// Create checkpoint structure
 	cp := &Checkpoint{
+		Version:     CurrentVersion,
 		ID:          checkpointID,
 		Name:        name,
 		Description: options.description,
