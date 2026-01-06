@@ -414,8 +414,18 @@ func (s *Storage) importTarGz(archivePath string, opts ImportOptions) (*Checkpoi
 		sessionName = opts.TargetSession
 		cp.SessionName = opts.TargetSession
 	}
+
+	// Apply TargetDir override or expand ${WORKING_DIR} placeholder
 	if opts.TargetDir != "" {
 		cp.WorkingDir = opts.TargetDir
+	} else if cp.WorkingDir == "${WORKING_DIR}" {
+		// No explicit target dir and checkpoint was exported with path rewriting
+		// Use current working directory as default
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get current directory for path expansion: %w", err)
+		}
+		cp.WorkingDir = cwd
 	}
 
 	// Check for existing checkpoint
@@ -433,6 +443,11 @@ func (s *Storage) importTarGz(archivePath string, opts ImportOptions) (*Checkpoi
 	for name, data := range fileContents {
 		if name == "MANIFEST.json" {
 			continue
+		}
+
+		// Validate path doesn't escape checkpoint directory (path traversal protection)
+		if !isPathWithinDir(cpDir, name) {
+			return nil, fmt.Errorf("invalid path in archive (path traversal attempt): %s", name)
 		}
 
 		destPath := filepath.Join(cpDir, name)
@@ -515,8 +530,18 @@ func (s *Storage) importZip(archivePath string, opts ImportOptions) (*Checkpoint
 		sessionName = opts.TargetSession
 		cp.SessionName = opts.TargetSession
 	}
+
+	// Apply TargetDir override or expand ${WORKING_DIR} placeholder
 	if opts.TargetDir != "" {
 		cp.WorkingDir = opts.TargetDir
+	} else if cp.WorkingDir == "${WORKING_DIR}" {
+		// No explicit target dir and checkpoint was exported with path rewriting
+		// Use current working directory as default
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get current directory for path expansion: %w", err)
+		}
+		cp.WorkingDir = cwd
 	}
 
 	// Check for existing
@@ -530,9 +555,15 @@ func (s *Storage) importZip(archivePath string, opts ImportOptions) (*Checkpoint
 		return nil, fmt.Errorf("failed to create checkpoint directory: %w", err)
 	}
 
+	// Write all files
 	for name, data := range fileContents {
 		if name == "MANIFEST.json" {
 			continue
+		}
+
+		// Validate path doesn't escape checkpoint directory (path traversal protection)
+		if !isPathWithinDir(cpDir, name) {
+			return nil, fmt.Errorf("invalid path in archive (path traversal attempt): %s", name)
 		}
 
 		destPath := filepath.Join(cpDir, name)
@@ -595,4 +626,23 @@ func rewriteCheckpointPaths(cp *Checkpoint) *Checkpoint {
 		result.WorkingDir = "${WORKING_DIR}"
 	}
 	return &result
+}
+
+// isPathWithinDir checks if a path (after cleaning) stays within the base directory.
+// This prevents path traversal attacks like "../../../etc/passwd".
+func isPathWithinDir(baseDir, targetPath string) bool {
+	// Clean and make absolute
+	cleanBase := filepath.Clean(baseDir)
+	fullPath := filepath.Join(cleanBase, targetPath)
+	cleanPath := filepath.Clean(fullPath)
+
+	// The clean path must be within or equal to the base directory
+	// Use filepath.Rel to check - if it requires ".." then it's outside
+	rel, err := filepath.Rel(cleanBase, cleanPath)
+	if err != nil {
+		return false
+	}
+
+	// If the relative path starts with "..", it's outside the base
+	return !strings.HasPrefix(rel, "..")
 }
