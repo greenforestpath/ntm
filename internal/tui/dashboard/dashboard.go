@@ -1318,7 +1318,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.renderedOutputCache = make(map[string]string)
 			}
 
-			// Process compaction checks and context tracking on the main thread using fetched outputs
+			// Process compaction checks, context tracking, AND live status updates
 			for _, data := range msg.Outputs {
 				if data.PaneID != "" {
 					m.paneOutputCache[data.PaneID] = data.Output
@@ -1372,6 +1372,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				// Get or create pane status
 				ps := m.paneStatus[data.PaneIndex]
+
+				// Update LIVE STATUS using local analysis (avoid waiting for slow full fetch)
+				st := m.detector.Analyze(data.PaneID, currentPane.Title, agentType, data.Output, data.LastActivity)
+				
+				state := string(st.State)
+				// Rate limit check
+				if st.State == status.StateError && st.ErrorType == status.ErrorRateLimit {
+					state = "rate_limited"
+				} else if ps.LastCompaction != nil && state != string(status.StateError) {
+					state = "compacted"
+				}
+				ps.State = state
+				ps.TokenVelocity = tokenVelocityFromStatus(st)
+				m.agentStatuses[st.PaneID] = st
 
 				// Calculate context usage
 				if data.Output != "" && modelName != "" {

@@ -33,6 +33,59 @@ func (d *UnifiedDetector) Config() DetectorConfig {
 	return d.config
 }
 
+// Analyze determines status from provided output and metadata without calling tmux.
+// This allows reusing output captured for other purposes (e.g. live view).
+func (d *UnifiedDetector) Analyze(paneID, paneName, agentType string, output string, lastActivity time.Time) AgentStatus {
+	status := AgentStatus{
+		PaneID:     paneID,
+		PaneName:   paneName,
+		AgentType:  agentType,
+		LastActive: lastActivity,
+		UpdatedAt:  time.Now(),
+		State:      StateUnknown,
+		LastOutput: truncateOutput(output, d.config.OutputPreviewLength),
+	}
+
+	state, errType := d.determineState(output, agentType, lastActivity)
+	status.State = state
+	status.ErrorType = errType
+
+	return status
+}
+
+// determineState calculates state based on output and activity
+func (d *UnifiedDetector) determineState(output, agentType string, lastActivity time.Time) (AgentState, ErrorType) {
+	// Detection priority:
+	// 1. Check for errors first (most important)
+	// 2. Check for idle (at prompt)
+	// 3. Check activity recency (working vs unknown)
+
+	// Check for errors
+	if errType := DetectErrorInOutput(output); errType != ErrorNone {
+		return StateError, errType
+	}
+
+	// Check if at prompt (idle)
+	if DetectIdleFromOutput(output, agentType) {
+		return StateIdle, ErrorNone
+	}
+	// Heuristic: for user panes with empty output, treat as idle
+	if agentType == "" || agentType == "user" {
+		if strings.TrimSpace(output) == "" {
+			return StateIdle, ErrorNone
+		}
+	}
+
+	// Check recent activity
+	threshold := time.Duration(d.config.ActivityThreshold) * time.Second
+	if time.Since(lastActivity) < threshold {
+		return StateWorking, ErrorNone
+	}
+
+	// Default to unknown
+	return StateUnknown, ErrorNone
+}
+
 // Detect returns the current status of a single pane.
 // Detection priority: error > idle > working > unknown
 func (d *UnifiedDetector) Detect(paneID string) (AgentStatus, error) {
@@ -75,43 +128,11 @@ func (d *UnifiedDetector) Detect(paneID string) (AgentStatus, error) {
 		}
 	}
 
-	// Detection priority:
-	// 1. Check for errors first (most important)
-	// 2. Check for idle (at prompt)
-	// 3. Check activity recency (working vs unknown)
+	// Use shared logic
+	state, errType := d.determineState(output, status.AgentType, status.LastActive)
+	status.State = state
+	status.ErrorType = errType
 
-	// Check for errors
-	if errType := DetectErrorInOutput(output); errType != ErrorNone {
-		status.State = StateError
-		status.ErrorType = errType
-		return status, nil
-	}
-
-	// Check if at prompt (idle)
-	if DetectIdleFromOutput(output, status.AgentType) {
-		status.State = StateIdle
-		return status, nil
-	}
-	// Heuristic: for user panes with empty output, treat as idle
-	// Note: We removed the strings.Contains(output, "$") check because it was too broad -
-	// it would match any $ in the output (like $i in shell scripts), not just prompts.
-	// The DetectIdleFromOutput function already handles prompt detection properly.
-	if status.AgentType == "" || status.AgentType == "user" {
-		if strings.TrimSpace(output) == "" {
-			status.State = StateIdle
-			return status, nil
-		}
-	}
-
-	// Check recent activity
-	threshold := time.Duration(d.config.ActivityThreshold) * time.Second
-	if time.Since(status.LastActive) < threshold {
-		status.State = StateWorking
-		return status, nil
-	}
-
-	// Default to unknown if can't determine
-	status.State = StateUnknown
 	return status, nil
 }
 
@@ -160,43 +181,11 @@ func (d *UnifiedDetector) DetectAllContext(ctx context.Context, session string) 
 		}
 		status.LastOutput = truncateOutput(output, d.config.OutputPreviewLength)
 
-		// Detection priority: error > idle > working > unknown
+		// Use shared logic
+		state, errType := d.determineState(output, status.AgentType, status.LastActive)
+		status.State = state
+		status.ErrorType = errType
 
-		// Check for errors
-		if errType := DetectErrorInOutput(output); errType != ErrorNone {
-			status.State = StateError
-			status.ErrorType = errType
-			statuses = append(statuses, status)
-			continue
-		}
-
-		// Check if at prompt (idle)
-		if DetectIdleFromOutput(output, status.AgentType) {
-			status.State = StateIdle
-			statuses = append(statuses, status)
-			continue
-		}
-		// Heuristic: for user panes with empty output, treat as idle
-		// Note: We removed the strings.Contains(output, "$") check because it was too broad -
-		// it would match any $ in the output (like $i in shell scripts), not just prompts.
-		// The DetectIdleFromOutput function already handles prompt detection properly.
-		if status.AgentType == "" || status.AgentType == "user" {
-			if strings.TrimSpace(output) == "" {
-				status.State = StateIdle
-				statuses = append(statuses, status)
-				continue
-			}
-		}
-
-		// Check recent activity
-		threshold := time.Duration(d.config.ActivityThreshold) * time.Second
-		if time.Since(status.LastActive) < threshold {
-			status.State = StateWorking
-			statuses = append(statuses, status)
-			continue
-		}
-
-		// Default to unknown
 		statuses = append(statuses, status)
 	}
 
