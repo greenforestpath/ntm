@@ -1311,21 +1311,21 @@ func getBlockersForIssue(issueID string) []string {
 
 func detectAgentType(title string) string {
 	// Try to detect from pane title
-	titleLower := toLower(title)
+	titleLower := strings.ToLower(title)
 
 	// Check canonical forms
 	switch {
-	case contains(titleLower, "claude"):
+	case strings.Contains(titleLower, "claude"):
 		return "claude"
-	case contains(titleLower, "codex"):
+	case strings.Contains(titleLower, "codex"):
 		return "codex"
-	case contains(titleLower, "gemini"):
+	case strings.Contains(titleLower, "gemini"):
 		return "gemini"
-	case contains(titleLower, "cursor"):
+	case strings.Contains(titleLower, "cursor"):
 		return "cursor"
-	case contains(titleLower, "windsurf"):
+	case strings.Contains(titleLower, "windsurf"):
 		return "windsurf"
-	case contains(titleLower, "aider"):
+	case strings.Contains(titleLower, "aider"):
 		return "aider"
 	}
 
@@ -1350,22 +1350,16 @@ func containsShortForm(title, short string) bool {
 	// Check for "__<short>_" or "__<short>__"
 	pattern1 := "__" + short + "_"
 	pattern2 := "__" + short + "__"
-	return containsLower(title, pattern1) || containsLower(title, pattern2)
+	return strings.Contains(title, pattern1) || strings.Contains(title, pattern2)
 }
 
 // ResolveAgentType maps agent type aliases to canonical names.
 // For example: "cc" -> "claude", "cod" -> "codex"
 func ResolveAgentType(t string) string {
 	// Trim whitespace
-	trimmed := t
-	for len(trimmed) > 0 && (trimmed[0] == ' ' || trimmed[0] == '\t') {
-		trimmed = trimmed[1:]
-	}
-	for len(trimmed) > 0 && (trimmed[len(trimmed)-1] == ' ' || trimmed[len(trimmed)-1] == '\t') {
-		trimmed = trimmed[:len(trimmed)-1]
-	}
+	trimmed := strings.TrimSpace(t)
 
-	lower := toLower(trimmed)
+	lower := strings.ToLower(trimmed)
 	switch lower {
 	case "cc", "claude-code", "claude_code", "claude":
 		return "claude"
@@ -1388,28 +1382,28 @@ func ResolveAgentType(t string) string {
 
 // detectModel attempts to detect the model from agent type and pane title.
 func detectModel(agentType, title string) string {
-	titleLower := toLower(title)
+	titleLower := strings.ToLower(title)
 	// Check for specific model mentions in title
 	switch {
-	case contains(titleLower, "opus"):
+	case strings.Contains(titleLower, "opus"):
 		return "opus"
-	case contains(titleLower, "sonnet"):
+	case strings.Contains(titleLower, "sonnet"):
 		return "sonnet"
-	case contains(titleLower, "haiku"):
+	case strings.Contains(titleLower, "haiku"):
 		return "haiku"
-	case contains(titleLower, "gpt4") || contains(titleLower, "gpt-4"):
+	case strings.Contains(titleLower, "gpt4") || strings.Contains(titleLower, "gpt-4"):
 		return "gpt4"
-	case contains(titleLower, "o1"):
+	case strings.Contains(titleLower, "o1"):
 		return "o1"
-	case contains(titleLower, "o3"):
+	case strings.Contains(titleLower, "o3"):
 		return "o3"
-	case contains(titleLower, "o4-mini"):
+	case strings.Contains(titleLower, "o4-mini"):
 		return "o4-mini"
-	case contains(titleLower, "flash"):
+	case strings.Contains(titleLower, "flash"):
 		return "flash"
-	case contains(titleLower, "pro"):
+	case strings.Contains(titleLower, "pro"):
 		return "pro"
-	case contains(titleLower, "gemini"):
+	case strings.Contains(titleLower, "gemini"):
 		return "gemini"
 	}
 	// Default models by agent type
@@ -1423,34 +1417,6 @@ func detectModel(agentType, title string) string {
 	default:
 		return "unknown"
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr ||
-		len(s) > 0 && containsLower(s, substr))
-}
-
-func containsLower(s, substr string) bool {
-	s = toLower(s)
-	substr = toLower(substr)
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
-func toLower(s string) string {
-	b := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		b[i] = c
-	}
-	return string(b)
 }
 
 func encodeJSON(v interface{}) error {
