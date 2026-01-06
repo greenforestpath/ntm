@@ -51,6 +51,9 @@ type CheckpointsConfig struct {
 	ScrollbackLines       int  `toml:"scrollback_lines"`         // Lines of scrollback to capture
 	IncludeGit            bool `toml:"include_git"`              // Capture git state in auto-checkpoints
 	AutoCheckpointOnSpawn bool `toml:"auto_checkpoint_on_spawn"` // Auto-checkpoint when spawning session
+	IntervalMinutes       int  `toml:"interval_minutes"`         // Periodic checkpoint interval (0 = disabled)
+	OnRotation            bool `toml:"on_rotation"`              // Checkpoint before context rotation
+	OnError               bool `toml:"on_error"`                 // Checkpoint when agent error detected
 }
 
 // DefaultCheckpointsConfig returns sensible checkpoint defaults
@@ -63,6 +66,9 @@ func DefaultCheckpointsConfig() CheckpointsConfig {
 		ScrollbackLines:       500,
 		IncludeGit:            true,
 		AutoCheckpointOnSpawn: false, // Don't checkpoint empty sessions by default
+		IntervalMinutes:       0,     // Disabled by default (no periodic checkpoints)
+		OnRotation:            true,  // Checkpoint before rotation by default
+		OnError:               true,  // Checkpoint on error by default
 	}
 }
 
@@ -1237,6 +1243,9 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "scrollback_lines = %d           # Lines of scrollback to capture\n", cfg.Checkpoints.ScrollbackLines)
 	fmt.Fprintf(w, "include_git = %t               # Capture git state in auto-checkpoints\n", cfg.Checkpoints.IncludeGit)
 	fmt.Fprintf(w, "auto_checkpoint_on_spawn = %t   # Auto-checkpoint when spawning session\n", cfg.Checkpoints.AutoCheckpointOnSpawn)
+	fmt.Fprintf(w, "interval_minutes = %d           # Periodic checkpoint interval (0 = disabled)\n", cfg.Checkpoints.IntervalMinutes)
+	fmt.Fprintf(w, "on_rotation = %t               # Checkpoint before context rotation\n", cfg.Checkpoints.OnRotation)
+	fmt.Fprintf(w, "on_error = %t                  # Checkpoint when agent error detected\n", cfg.Checkpoints.OnError)
 	fmt.Fprintln(w)
 
 	// Write notifications configuration
@@ -1891,6 +1900,9 @@ func Validate(cfg *Config) []error {
 	}
 	if cfg.Checkpoints.ScrollbackLines < 0 {
 		errs = append(errs, fmt.Errorf("checkpoints.scrollback_lines: must be non-negative, got %d", cfg.Checkpoints.ScrollbackLines))
+	}
+	if cfg.Checkpoints.IntervalMinutes < 0 {
+		errs = append(errs, fmt.Errorf("checkpoints.interval_minutes: must be non-negative, got %d", cfg.Checkpoints.IntervalMinutes))
 	}
 
 	// Validate resilience

@@ -1,9 +1,11 @@
 package checkpoint
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,7 +22,37 @@ const (
 	ReasonAddAgents AutoCheckpointReason = "add_agents" // Before adding many agents
 	ReasonSpawn     AutoCheckpointReason = "spawn"      // After spawning session
 	ReasonRiskyOp   AutoCheckpointReason = "risky_op"   // Before other risky operation
+	ReasonInterval  AutoCheckpointReason = "interval"   // Periodic interval checkpoint
+	ReasonRotation  AutoCheckpointReason = "rotation"   // Before context rotation
+	ReasonError     AutoCheckpointReason = "error"      // On agent error
 )
+
+// AutoEventType describes the type of event that triggered an auto-checkpoint
+type AutoEventType int
+
+const (
+	EventRotation AutoEventType = iota // Context rotation is about to happen
+	EventError                         // Agent error detected
+)
+
+// AutoEvent represents an event that can trigger an auto-checkpoint
+type AutoEvent struct {
+	Type        AutoEventType
+	SessionName string
+	AgentID     string // Which agent triggered the event
+	Description string // Additional context
+}
+
+// AutoCheckpointConfig configures the background auto-checkpoint worker
+type AutoCheckpointConfig struct {
+	Enabled         bool // Master toggle
+	IntervalMinutes int  // Periodic checkpoint interval (0 = disabled)
+	MaxCheckpoints  int  // Max auto-checkpoints per session
+	OnRotation      bool // Checkpoint before rotation
+	OnError         bool // Checkpoint on error
+	ScrollbackLines int  // Lines of scrollback to capture
+	IncludeGit      bool // Capture git state
+}
 
 // AutoCheckpointOptions configures auto-checkpoint creation
 type AutoCheckpointOptions struct {
@@ -172,4 +204,254 @@ func (a *AutoCheckpointer) TimeSinceLastAutoCheckpoint(sessionName string) time.
 		return 0
 	}
 	return time.Since(cp.CreatedAt)
+}
+
+// BackgroundWorker runs automatic checkpoints in the background based on
+// interval and event triggers.
+type BackgroundWorker struct {
+	checkpointer *AutoCheckpointer
+	config       AutoCheckpointConfig
+	sessionName  string
+
+	events chan AutoEvent
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	mu     sync.Mutex
+
+	// Statistics
+	checkpointCount int
+	lastCheckpoint  time.Time
+	lastError       error
+}
+
+// NewBackgroundWorker creates a new background checkpoint worker.
+func NewBackgroundWorker(sessionName string, config AutoCheckpointConfig) *BackgroundWorker {
+	return &BackgroundWorker{
+		checkpointer: NewAutoCheckpointer(),
+		config:       config,
+		sessionName:  sessionName,
+		events:       make(chan AutoEvent, 10), // Buffered to prevent blocking
+	}
+}
+
+// Start begins the background checkpoint worker.
+// It will run until Stop is called or the context is cancelled.
+func (w *BackgroundWorker) Start(ctx context.Context) {
+	if !w.config.Enabled {
+		log.Printf("Auto-checkpoint disabled for session %s", w.sessionName)
+		return
+	}
+
+	ctx, w.cancel = context.WithCancel(ctx)
+
+	w.wg.Add(1)
+	go w.run(ctx)
+
+	log.Printf("Started auto-checkpoint worker for session %s (interval: %dm)",
+		w.sessionName, w.config.IntervalMinutes)
+}
+
+// Stop stops the background checkpoint worker gracefully.
+func (w *BackgroundWorker) Stop() {
+	w.mu.Lock()
+	if w.cancel != nil {
+		w.cancel()
+	}
+	w.mu.Unlock()
+
+	w.wg.Wait()
+	log.Printf("Stopped auto-checkpoint worker for session %s", w.sessionName)
+}
+
+// SendEvent sends an event to the worker to potentially trigger a checkpoint.
+func (w *BackgroundWorker) SendEvent(event AutoEvent) {
+	select {
+	case w.events <- event:
+	default:
+		// Channel full, log and drop
+		log.Printf("Warning: auto-checkpoint event channel full, dropping event: %v", event.Type)
+	}
+}
+
+// Stats returns statistics about the worker.
+func (w *BackgroundWorker) Stats() (checkpointCount int, lastCheckpoint time.Time, lastError error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.checkpointCount, w.lastCheckpoint, w.lastError
+}
+
+// run is the main worker loop.
+func (w *BackgroundWorker) run(ctx context.Context) {
+	defer w.wg.Done()
+
+	// Set up interval ticker (nil if disabled)
+	var ticker *time.Ticker
+	var tickerC <-chan time.Time
+
+	if w.config.IntervalMinutes > 0 {
+		interval := time.Duration(w.config.IntervalMinutes) * time.Minute
+		ticker = time.NewTicker(interval)
+		tickerC = ticker.C
+		defer ticker.Stop()
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-tickerC:
+			w.handleIntervalCheckpoint()
+
+		case event := <-w.events:
+			w.handleEvent(event)
+		}
+	}
+}
+
+// handleIntervalCheckpoint creates a periodic interval checkpoint.
+func (w *BackgroundWorker) handleIntervalCheckpoint() {
+	log.Printf("Creating interval checkpoint for session %s", w.sessionName)
+
+	opts := AutoCheckpointOptions{
+		SessionName:     w.sessionName,
+		Reason:          ReasonInterval,
+		Description:     "periodic interval checkpoint",
+		ScrollbackLines: w.config.ScrollbackLines,
+		IncludeGit:      w.config.IncludeGit,
+		MaxCheckpoints:  w.config.MaxCheckpoints,
+	}
+
+	w.createCheckpoint(opts)
+}
+
+// handleEvent processes an incoming event and creates a checkpoint if configured.
+func (w *BackgroundWorker) handleEvent(event AutoEvent) {
+	var reason AutoCheckpointReason
+	var shouldCheckpoint bool
+
+	switch event.Type {
+	case EventRotation:
+		if w.config.OnRotation {
+			reason = ReasonRotation
+			shouldCheckpoint = true
+		}
+	case EventError:
+		if w.config.OnError {
+			reason = ReasonError
+			shouldCheckpoint = true
+		}
+	}
+
+	if !shouldCheckpoint {
+		return
+	}
+
+	log.Printf("Creating %s checkpoint for session %s (agent: %s)",
+		reason, w.sessionName, event.AgentID)
+
+	desc := event.Description
+	if event.AgentID != "" {
+		desc = fmt.Sprintf("agent %s: %s", event.AgentID, desc)
+	}
+
+	opts := AutoCheckpointOptions{
+		SessionName:     w.sessionName,
+		Reason:          reason,
+		Description:     desc,
+		ScrollbackLines: w.config.ScrollbackLines,
+		IncludeGit:      w.config.IncludeGit,
+		MaxCheckpoints:  w.config.MaxCheckpoints,
+	}
+
+	w.createCheckpoint(opts)
+}
+
+// createCheckpoint creates a checkpoint and updates statistics.
+func (w *BackgroundWorker) createCheckpoint(opts AutoCheckpointOptions) {
+	cp, err := w.checkpointer.Create(opts)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if err != nil {
+		w.lastError = err
+		log.Printf("Error creating auto-checkpoint: %v", err)
+		return
+	}
+
+	w.checkpointCount++
+	w.lastCheckpoint = cp.CreatedAt
+	w.lastError = nil
+}
+
+// WorkerRegistry manages background workers for multiple sessions.
+type WorkerRegistry struct {
+	workers map[string]*BackgroundWorker
+	mu      sync.RWMutex
+}
+
+// NewWorkerRegistry creates a new worker registry.
+func NewWorkerRegistry() *WorkerRegistry {
+	return &WorkerRegistry{
+		workers: make(map[string]*BackgroundWorker),
+	}
+}
+
+// StartWorker starts a background worker for a session.
+// If a worker already exists for the session, it is stopped first.
+func (r *WorkerRegistry) StartWorker(ctx context.Context, sessionName string, config AutoCheckpointConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Stop existing worker if any
+	if existing, ok := r.workers[sessionName]; ok {
+		existing.Stop()
+	}
+
+	worker := NewBackgroundWorker(sessionName, config)
+	worker.Start(ctx)
+	r.workers[sessionName] = worker
+}
+
+// StopWorker stops the background worker for a session.
+func (r *WorkerRegistry) StopWorker(sessionName string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if worker, ok := r.workers[sessionName]; ok {
+		worker.Stop()
+		delete(r.workers, sessionName)
+	}
+}
+
+// StopAll stops all background workers.
+func (r *WorkerRegistry) StopAll() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for name, worker := range r.workers {
+		worker.Stop()
+		delete(r.workers, name)
+	}
+}
+
+// GetWorker returns the worker for a session, or nil if not found.
+func (r *WorkerRegistry) GetWorker(sessionName string) *BackgroundWorker {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.workers[sessionName]
+}
+
+// SendEvent sends an event to the worker for a specific session.
+// Does nothing if no worker exists for the session.
+func (r *WorkerRegistry) SendEvent(sessionName string, event AutoEvent) {
+	r.mu.RLock()
+	worker := r.workers[sessionName]
+	r.mu.RUnlock()
+
+	if worker != nil {
+		event.SessionName = sessionName
+		worker.SendEvent(event)
+	}
 }
