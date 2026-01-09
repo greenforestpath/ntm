@@ -35,3 +35,4 @@ internal/cli/outputs/
 # bv (beads viewer) local config and caches
 .bv/
 *.out
+.ntm/
