@@ -49,6 +49,10 @@ func applyDashboardEnvOverrides(m *Model) {
 	if budget, ok := envNonNegativeInt("NTM_DASH_CAPTURE_BUDGET"); ok {
 		m.paneOutputCaptureBudget = budget
 	}
+	// NTM_DASH_SPAWN_REFRESH_MS: spawn polling interval in milliseconds (default 500ms when active, 2000ms when idle)
+	if ms, ok := envPositiveInt("NTM_DASH_SPAWN_REFRESH_MS"); ok {
+		m.spawnRefreshInterval = time.Duration(ms) * time.Millisecond
+	}
 }
 
 func envPositiveInt(name string) (int, bool) {

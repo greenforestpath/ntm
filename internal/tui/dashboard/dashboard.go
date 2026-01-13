@@ -243,6 +243,8 @@ type Model struct {
 	fetchingFileChanges bool
 	fetchingScan        bool
 	scanDisabled        bool // User toggled UBS scanning off
+	fetchingSpawn       bool
+	spawnActive         bool // Whether a spawn is currently active (for adaptive polling)
 
 	// Coalescing/cancellation for user-triggered refreshes
 	sessionFetchPending bool
@@ -262,6 +264,7 @@ type Model struct {
 	cassContextRefreshInterval time.Duration
 	scanRefreshInterval        time.Duration
 	checkpointRefreshInterval  time.Duration
+	spawnRefreshInterval       time.Duration // How often to poll spawn state (faster when active)
 
 	// Pane output capture budgeting/caching
 	paneOutputLines         int
@@ -334,6 +337,7 @@ type Model struct {
 	lastCheckpointFetch time.Time
 	fetchingCheckpoint  bool
 	checkpointError     error
+	lastSpawnFetch      time.Time
 
 	// UBS bug scanner status
 	bugsCritical int  // Critical bugs from last scan
@@ -425,6 +429,8 @@ const (
 	CassContextRefreshInterval = 15 * time.Minute
 	ScanRefreshInterval        = 1 * time.Minute
 	CheckpointRefreshInterval  = 30 * time.Second
+	SpawnActiveRefreshInterval = 500 * time.Millisecond // Poll frequently when spawn is active
+	SpawnIdleRefreshInterval   = 2 * time.Second        // Poll slowly when no spawn is active
 )
 
 func (m *Model) initRenderer(width int) {
@@ -492,6 +498,7 @@ func New(session, projectDir string) Model {
 		cassContextRefreshInterval: CassContextRefreshInterval,
 		scanRefreshInterval:        ScanRefreshInterval,
 		checkpointRefreshInterval:  CheckpointRefreshInterval,
+		spawnRefreshInterval:       SpawnIdleRefreshInterval,
 		paneOutputLines:            50,
 		paneOutputCaptureBudget:    20,
 		paneOutputCache:            make(map[string]string),
@@ -536,6 +543,7 @@ func New(session, projectDir string) Model {
 	m.lastCassContextFetch = now
 	m.lastScanFetch = now
 	m.lastCheckpointFetch = now
+	m.lastSpawnFetch = now
 
 	applyDashboardEnvOverrides(&m)
 
@@ -1224,7 +1232,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case SpawnUpdateMsg:
+		m.fetchingSpawn = false
 		m.spawnPanel.SetData(msg.Data)
+
+		// Adaptive polling: faster when spawn is active for smooth countdown display,
+		// slower when idle to reduce CPU/render churn
+		wasActive := m.spawnActive
+		m.spawnActive = msg.Data.Active && !msg.Data.IsComplete()
+
+		// Only adjust interval if not overridden by env var (check if it's one of the defaults)
+		if m.spawnRefreshInterval == SpawnIdleRefreshInterval || m.spawnRefreshInterval == SpawnActiveRefreshInterval {
+			if m.spawnActive {
+				m.spawnRefreshInterval = SpawnActiveRefreshInterval
+			} else if wasActive && !m.spawnActive {
+				// Spawn just completed - switch back to idle rate
+				m.spawnRefreshInterval = SpawnIdleRefreshInterval
+			}
+		}
 		return m, nil
 
 	case MetricsUpdateMsg:
@@ -1369,8 +1393,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Poll spawn state on every tick for real-time countdown display
-		cmds = append(cmds, m.fetchSpawnStateCmd())
+		// Poll spawn state at adaptive rate (faster when active, slower when idle)
+		// This prevents jitter from polling 10x/sec when no spawn is happening
+		if now.Sub(m.lastSpawnFetch) >= m.spawnRefreshInterval && !m.fetchingSpawn {
+			m.fetchingSpawn = true
+			m.lastSpawnFetch = now
+			cmds = append(cmds, m.fetchSpawnStateCmd())
+		}
 
 		cmds = append(cmds, m.tick())
 		return m, tea.Batch(cmds...)
