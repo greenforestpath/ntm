@@ -1215,6 +1215,11 @@ func (e *Executor) selectPaneExcluding(step *Step, usedPanes map[string]bool, pa
 
 // selectPane finds the appropriate pane for a step
 func (e *Executor) selectPane(step *Step) (paneID string, agentType string, err error) {
+	// In dry run mode, return dummy pane info
+	if e.config.DryRun {
+		return "dry-run-pane", "dry-run-agent", nil
+	}
+
 	// Explicit pane selection
 	if step.Pane > 0 {
 		panes, err := tmux.GetPanes(e.config.Session)

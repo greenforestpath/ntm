@@ -1274,3 +1274,316 @@ func TestExecutor_ApplyResumeState(t *testing.T) {
 		})
 	}
 }
+
+// TestExecutor_Run_DryRun tests full workflow execution in dry run mode
+func TestExecutor_Run_DryRun(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultExecutorConfig("test-session")
+	cfg.DryRun = true
+	e := NewExecutor(cfg)
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "test-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{
+			{ID: "step1", Prompt: "Do task 1"},
+			{ID: "step2", Prompt: "Do task 2", DependsOn: []string{"step1"}},
+		},
+	}
+
+	ctx := context.Background()
+	state, err := e.Run(ctx, workflow, nil, nil)
+
+	if err != nil {
+		t.Fatalf("Run() returned error in dry run mode: %v", err)
+	}
+	if state.Status != StatusCompleted {
+		t.Errorf("state.Status = %v, want Completed", state.Status)
+	}
+	if len(state.Steps) != 2 {
+		t.Errorf("expected 2 step results, got %d", len(state.Steps))
+	}
+	for _, stepID := range []string{"step1", "step2"} {
+		result, ok := state.Steps[stepID]
+		if !ok {
+			t.Errorf("missing step result for %s", stepID)
+			continue
+		}
+		if result.Status != StatusCompleted {
+			t.Errorf("step %s status = %v, want Completed", stepID, result.Status)
+		}
+		if !strings.Contains(result.Output, "[DRY RUN]") {
+			t.Errorf("step %s output should contain [DRY RUN], got %q", stepID, result.Output)
+		}
+	}
+}
+
+// TestExecutor_Run_DryRun_WithVariables tests variable substitution in dry run mode
+func TestExecutor_Run_DryRun_WithVariables(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultExecutorConfig("test-session")
+	cfg.DryRun = true
+	e := NewExecutor(cfg)
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "test-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Vars: map[string]VarDef{
+			"target": {Default: "default-target"},
+		},
+		Steps: []Step{
+			{ID: "step1", Prompt: "Process ${vars.target}"},
+		},
+	}
+
+	ctx := context.Background()
+	vars := map[string]interface{}{"target": "custom-target"}
+	state, err := e.Run(ctx, workflow, vars, nil)
+
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+	if state.Status != StatusCompleted {
+		t.Errorf("state.Status = %v, want Completed", state.Status)
+	}
+	// Variable should be substituted
+	if state.Variables["target"] != "custom-target" {
+		t.Errorf("variable target = %v, want custom-target", state.Variables["target"])
+	}
+}
+
+// TestExecutor_Run_DryRun_WithConditional tests conditional steps in dry run mode
+func TestExecutor_Run_DryRun_WithConditional(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultExecutorConfig("test-session")
+	cfg.DryRun = true
+	e := NewExecutor(cfg)
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "test-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Vars: map[string]VarDef{
+			"enabled": {Default: false},
+		},
+		Steps: []Step{
+			{ID: "always", Prompt: "Always run"},
+			{ID: "conditional", Prompt: "Maybe run", When: "${vars.enabled}"},
+		},
+	}
+
+	ctx := context.Background()
+	state, err := e.Run(ctx, workflow, nil, nil)
+
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+	if state.Status != StatusCompleted {
+		t.Errorf("state.Status = %v, want Completed", state.Status)
+	}
+	// "always" should complete
+	if result := state.Steps["always"]; result.Status != StatusCompleted {
+		t.Errorf("always step status = %v, want Completed", result.Status)
+	}
+	// "conditional" should be skipped (vars.enabled is false)
+	if result := state.Steps["conditional"]; result.Status != StatusSkipped {
+		t.Errorf("conditional step status = %v, want Skipped", result.Status)
+	}
+}
+
+// TestExecutor_Resume_DryRun tests resume functionality in dry run mode
+func TestExecutor_Resume_DryRun(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultExecutorConfig("test-session")
+	cfg.DryRun = true
+	e := NewExecutor(cfg)
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "test-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{
+			{ID: "step1", Prompt: "Do task 1"},
+			{ID: "step2", Prompt: "Do task 2", DependsOn: []string{"step1"}},
+			{ID: "step3", Prompt: "Do task 3", DependsOn: []string{"step2"}},
+		},
+	}
+
+	// Create prior state with step1 already completed
+	prior := &ExecutionState{
+		RunID:      "resume-test",
+		WorkflowID: "test-workflow",
+		Status:     StatusRunning,
+		StartedAt:  time.Now().Add(-time.Minute),
+		Steps: map[string]StepResult{
+			"step1": {
+				StepID:     "step1",
+				Status:     StatusCompleted,
+				Output:     "step1 output",
+				StartedAt:  time.Now().Add(-time.Minute),
+				FinishedAt: time.Now().Add(-30 * time.Second),
+			},
+		},
+		Variables: make(map[string]interface{}),
+	}
+
+	ctx := context.Background()
+	state, err := e.Resume(ctx, workflow, prior, nil)
+
+	if err != nil {
+		t.Fatalf("Resume() returned error: %v", err)
+	}
+	if state.Status != StatusCompleted {
+		t.Errorf("state.Status = %v, want Completed", state.Status)
+	}
+	// step1 should still be completed (from prior)
+	if state.Steps["step1"].Status != StatusCompleted {
+		t.Errorf("step1 status = %v, want Completed (from prior)", state.Steps["step1"].Status)
+	}
+	// step2 and step3 should be newly completed
+	for _, stepID := range []string{"step2", "step3"} {
+		if result := state.Steps[stepID]; result.Status != StatusCompleted {
+			t.Errorf("step %s status = %v, want Completed", stepID, result.Status)
+		}
+	}
+}
+
+// TestExecutor_Resume_NilState tests resume with nil state
+func TestExecutor_Resume_NilState(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultExecutorConfig("test-session")
+	cfg.DryRun = true
+	e := NewExecutor(cfg)
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "test-workflow",
+		Steps:         []Step{{ID: "step1", Prompt: "task"}},
+	}
+
+	ctx := context.Background()
+	_, err := e.Resume(ctx, workflow, nil, nil)
+
+	if err == nil {
+		t.Error("Resume() should return error for nil state")
+	}
+}
+
+// TestExecutor_sendNotification tests notification sending
+func TestExecutor_sendNotification(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultExecutorConfig("test-session")
+	e := NewExecutor(cfg)
+
+	// Set up state for notification
+	e.state = &ExecutionState{
+		RunID:      "notify-test",
+		WorkflowID: "test-workflow",
+		Status:     StatusCompleted,
+		StartedAt:  time.Now(),
+		FinishedAt: time.Now(),
+		Steps:      make(map[string]StepResult),
+	}
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "test-workflow",
+		Settings: WorkflowSettings{
+			NotifyOnComplete: true,
+		},
+	}
+
+	// Test with nil notifier (should not panic)
+	e.sendNotification(context.Background(), workflow, NotifyCompleted)
+
+	// Test with notifier set
+	notifier := NewNotifier(NotifierConfig{
+		Channels: []string{"desktop"},
+	})
+	e.SetNotifier(notifier)
+
+	// This should call the notifier (won't actually send since no real desktop)
+	e.sendNotification(context.Background(), workflow, NotifyCompleted)
+
+	// Test with event that shouldn't notify
+	workflow.Settings.NotifyOnComplete = false
+	e.sendNotification(context.Background(), workflow, NotifyCompleted)
+}
+
+// TestExecutor_selectPane_DryRun tests selectPane returns dummy values in dry run mode
+func TestExecutor_selectPane_DryRun(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultExecutorConfig("test-session")
+	cfg.DryRun = true
+	e := NewExecutor(cfg)
+
+	step := &Step{ID: "step1", Prompt: "test prompt"}
+	paneID, agentType, err := e.selectPane(step)
+
+	if err != nil {
+		t.Fatalf("selectPane() returned error: %v", err)
+	}
+	if paneID != "dry-run-pane" {
+		t.Errorf("paneID = %q, want %q", paneID, "dry-run-pane")
+	}
+	if agentType != "dry-run-agent" {
+		t.Errorf("agentType = %q, want %q", agentType, "dry-run-agent")
+	}
+}
+
+// TestExecutor_Run_DryRun_ProgressEvents tests progress events are emitted in dry run mode
+func TestExecutor_Run_DryRun_ProgressEvents(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultExecutorConfig("test-session")
+	cfg.DryRun = true
+	e := NewExecutor(cfg)
+
+	workflow := &Workflow{
+		SchemaVersion: SchemaVersion,
+		Name:          "test-workflow",
+		Settings:      DefaultWorkflowSettings(),
+		Steps: []Step{
+			{ID: "step1", Prompt: "Task 1"},
+		},
+	}
+
+	progress := make(chan ProgressEvent, 100)
+	ctx := context.Background()
+	_, err := e.Run(ctx, workflow, nil, progress)
+
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	// Collect progress events
+	close(progress)
+	events := make([]ProgressEvent, 0)
+	for event := range progress {
+		events = append(events, event)
+	}
+
+	// Should have at least workflow_start, step_start, step_complete, workflow_complete
+	if len(events) < 4 {
+		t.Errorf("expected at least 4 progress events, got %d", len(events))
+	}
+
+	// First event should be workflow_start
+	if len(events) > 0 && events[0].Type != "workflow_start" {
+		t.Errorf("first event type = %q, want workflow_start", events[0].Type)
+	}
+
+	// Last event should be workflow_complete
+	if len(events) > 0 && events[len(events)-1].Type != "workflow_complete" {
+		t.Errorf("last event type = %q, want workflow_complete", events[len(events)-1].Type)
+	}
+}
