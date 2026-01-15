@@ -33,32 +33,6 @@ func TestIsValidWaitCondition(t *testing.T) {
 	}
 }
 
-func TestDetectAgentTypeFromTitle(t *testing.T) {
-	tests := []struct {
-		name  string
-		title string
-		want  string
-	}{
-		{"claude agent", "myproject__cc_1", "cc"},
-		{"codex agent", "myproject__cod_2", "cod"},
-		{"gemini agent", "myproject__gmi_3", "gmi"},
-		{"user pane", "myproject", ""},
-		{"empty title", "", ""},
-		{"no double underscore", "myproject_cc_1", ""},
-		{"with variant", "myproject__cc_1_opus", "cc"},
-		{"complex session name", "my-project-2025__cc_1", "cc"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := detectAgentTypeFromTitle(tt.title)
-			if got != tt.want {
-				t.Errorf("detectAgentTypeFromTitle(%q) = %q, want %q", tt.title, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestMeetsSingleWaitCondition(t *testing.T) {
 	tests := []struct {
 		name      string
