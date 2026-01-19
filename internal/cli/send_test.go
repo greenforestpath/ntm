@@ -409,6 +409,150 @@ func TestSendFlagNoOptDefVal(t *testing.T) {
 	_ = cmd // silence unused warning
 }
 
+// TestParseBatchFile tests the batch file parser
+func TestParseBatchFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name      string
+		content   string
+		want      []string
+		wantError bool
+	}{
+		{
+			name:    "simple one per line",
+			content: "prompt one\nprompt two\nprompt three",
+			want:    []string{"prompt one", "prompt two", "prompt three"},
+		},
+		{
+			name:    "with comments",
+			content: "# This is a comment\nprompt one\n# Another comment\nprompt two",
+			want:    []string{"prompt one", "prompt two"},
+		},
+		{
+			name:    "with empty lines",
+			content: "prompt one\n\n\nprompt two\n\n",
+			want:    []string{"prompt one", "prompt two"},
+		},
+		{
+			name:    "separator format",
+			content: "First prompt\nwith multiple lines\n---\nSecond prompt",
+			want:    []string{"First prompt\nwith multiple lines", "Second prompt"},
+		},
+		{
+			name:    "separator with comments",
+			content: "# Header comment\nFirst prompt\n---\n# Comment in second\nSecond prompt",
+			want:    []string{"First prompt", "Second prompt"},
+		},
+		{
+			name:    "leading separator",
+			content: "---\nFirst prompt\n---\nSecond prompt",
+			want:    []string{"First prompt", "Second prompt"},
+		},
+		{
+			name:      "empty file",
+			content:   "",
+			wantError: true,
+		},
+		{
+			name:      "only whitespace",
+			content:   "   \n\n   ",
+			wantError: true,
+		},
+		{
+			name:      "only comments",
+			content:   "# comment 1\n# comment 2",
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temp file with content
+			testFile := filepath.Join(tmpDir, fmt.Sprintf("batch_%s.txt", tt.name))
+			if err := os.WriteFile(testFile, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("Failed to write test file: %v", err)
+			}
+
+			got, err := parseBatchFile(testFile)
+			if tt.wantError {
+				if err == nil {
+					t.Error("Expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d prompts, want %d: %v", len(got), len(tt.want), got)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("prompt %d: got %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+
+	// Test nonexistent file
+	t.Run("nonexistent file", func(t *testing.T) {
+		_, err := parseBatchFile("/nonexistent/path/file.txt")
+		if err == nil {
+			t.Error("Expected error for nonexistent file")
+		}
+	})
+}
+
+// TestRemoveComments tests the comment removal helper
+func TestRemoveComments(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"no comments", "no comments"},
+		{"# full line comment", ""},
+		{"text\n# comment\nmore text", "text\nmore text"},
+		{"  # indented comment", ""},
+		{"text # not a comment", "text # not a comment"},
+		{"line1\nline2\nline3", "line1\nline2\nline3"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := removeComments(tt.input)
+			if got != tt.want {
+				t.Errorf("removeComments(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTruncateForPreview tests the preview truncation helper
+func TestTruncateForPreview(t *testing.T) {
+	tests := []struct {
+		input  string
+		maxLen int
+		want   string
+	}{
+		{"short", 10, "short"},
+		{"exactly ten", 11, "exactly ten"},
+		{"this is a longer string", 10, "this is..."},
+		{"", 10, ""},
+		{"multi\nline\ntext", 20, "multi line text"},
+		{"  whitespace  ", 15, "whitespace"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := truncateForPreview(tt.input, tt.maxLen)
+			if got != tt.want {
+				t.Errorf("truncateForPreview(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestBuildTargetDescription tests the target description builder
 func TestBuildTargetDescription(t *testing.T) {
 	tests := []struct {
