@@ -375,25 +375,29 @@ type AgentConfig struct {
 
 // ContextRotationConfig holds configuration for automatic context window rotation
 type ContextRotationConfig struct {
-	Enabled          bool    `toml:"enabled"`             // Master toggle for context rotation
-	WarningThreshold float64 `toml:"warning_threshold"`   // 0.0-1.0, warn when context usage exceeds this
-	RotateThreshold  float64 `toml:"rotate_threshold"`    // 0.0-1.0, rotate agent when usage exceeds this
-	SummaryMaxTokens int     `toml:"summary_max_tokens"`  // Max tokens for handoff summary
-	MinSessionAgeSec int     `toml:"min_session_age_sec"` // Don't rotate agents younger than this
-	TryCompactFirst  bool    `toml:"try_compact_first"`   // Try to compact before rotating
-	RequireConfirm   bool    `toml:"require_confirm"`     // Require user confirmation before rotating
+	Enabled              bool    `toml:"enabled"`                // Master toggle for context rotation
+	WarningThreshold     float64 `toml:"warning_threshold"`      // 0.0-1.0, warn when context usage exceeds this
+	RotateThreshold      float64 `toml:"rotate_threshold"`       // 0.0-1.0, rotate agent when usage exceeds this
+	SummaryMaxTokens     int     `toml:"summary_max_tokens"`     // Max tokens for handoff summary
+	MinSessionAgeSec     int     `toml:"min_session_age_sec"`    // Don't rotate agents younger than this
+	TryCompactFirst      bool    `toml:"try_compact_first"`      // Try to compact before rotating
+	RequireConfirm       bool    `toml:"require_confirm"`        // Require user confirmation before rotating
+	ConfirmTimeoutSec    int     `toml:"confirm_timeout_sec"`    // Seconds to wait for confirmation (0 = no auto-rotate)
+	DefaultConfirmAction string  `toml:"default_confirm_action"` // Action if timeout expires: "rotate", "ignore", "compact"
 }
 
 // DefaultContextRotationConfig returns sensible defaults for context rotation
 func DefaultContextRotationConfig() ContextRotationConfig {
 	return ContextRotationConfig{
-		Enabled:          true,
-		WarningThreshold: 0.80,  // Warn at 80%
-		RotateThreshold:  0.95,  // Rotate at 95%
-		SummaryMaxTokens: 2000,  // 2000 tokens for handoff summary
-		MinSessionAgeSec: 300,   // 5 minutes minimum session age
-		TryCompactFirst:  true,  // Try compaction before rotation
-		RequireConfirm:   false, // Don't require confirmation by default
+		Enabled:              true,
+		WarningThreshold:     0.80,     // Warn at 80%
+		RotateThreshold:      0.95,     // Rotate at 95%
+		SummaryMaxTokens:     2000,     // 2000 tokens for handoff summary
+		MinSessionAgeSec:     300,      // 5 minutes minimum session age
+		TryCompactFirst:      true,     // Try compaction before rotation
+		RequireConfirm:       false,    // Don't require confirmation by default
+		ConfirmTimeoutSec:    60,       // 60 seconds timeout for confirmation
+		DefaultConfirmAction: "rotate", // Auto-rotate on timeout
 	}
 }
 
@@ -414,6 +418,13 @@ func ValidateContextRotationConfig(cfg *ContextRotationConfig) error {
 	}
 	if cfg.MinSessionAgeSec < 0 {
 		return fmt.Errorf("min_session_age_sec must be non-negative, got %d", cfg.MinSessionAgeSec)
+	}
+	if cfg.ConfirmTimeoutSec < 0 {
+		return fmt.Errorf("confirm_timeout_sec must be non-negative, got %d", cfg.ConfirmTimeoutSec)
+	}
+	validActions := map[string]bool{"rotate": true, "ignore": true, "compact": true, "": true}
+	if !validActions[cfg.DefaultConfirmAction] {
+		return fmt.Errorf("default_confirm_action must be 'rotate', 'ignore', or 'compact', got %q", cfg.DefaultConfirmAction)
 	}
 	return nil
 }

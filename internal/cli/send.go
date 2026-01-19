@@ -13,6 +13,9 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/events"
@@ -23,6 +26,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/templates"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
 // SendResult is the JSON output for the send command.
@@ -218,6 +222,10 @@ func newSendCmd() *cobra.Command {
 	var noHooks bool
 	var smartRoute bool
 	var routeStrategy string
+	var distribute bool
+	var distributeStrategy string
+	var distributeLimit int
+	var distributeAuto bool
 
 	cmd := &cobra.Command{
 		Use:   "send <session> [prompt]",
@@ -277,6 +285,11 @@ func newSendCmd() *cobra.Command {
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session := args[0]
+
+			// Handle --distribute mode: auto-distribute work from bv triage
+			if distribute {
+				return runDistributeMode(session, distributeStrategy, distributeLimit, distributeAuto)
+			}
 
 			opts := SendOptions{
 				Session:        session,
@@ -348,6 +361,12 @@ func newSendCmd() *cobra.Command {
 	// Smart routing flags
 	cmd.Flags().BoolVar(&smartRoute, "smart", false, "Use smart routing to select best agent")
 	cmd.Flags().StringVar(&routeStrategy, "route", "", "Routing strategy: least-loaded, round-robin, affinity, sticky, random")
+
+	// Distribute mode flags - auto-distribute work from bv triage to agents
+	cmd.Flags().BoolVar(&distribute, "distribute", false, "Auto-distribute prioritized work from bv triage to idle agents")
+	cmd.Flags().StringVar(&distributeStrategy, "dist-strategy", "balanced", "Distribution strategy: balanced, speed, quality, dependency")
+	cmd.Flags().IntVar(&distributeLimit, "dist-limit", 0, "Max tasks to distribute (0 = one per idle agent)")
+	cmd.Flags().BoolVar(&distributeAuto, "dist-auto", false, "Execute distribution without confirmation")
 
 	// CASS check flags
 	cmd.Flags().BoolVar(&cassCheck, "cass-check", true, "Check for duplicate work in CASS")
@@ -1250,6 +1269,146 @@ func checkCassDuplicates(session, prompt string, threshold float64, days int) er
 		if !confirm("Continue anyway?") {
 			return fmt.Errorf("aborted by user")
 		}
+	}
+
+	return nil
+}
+
+// runDistributeMode implements the --distribute flag behavior.
+// It gets prioritized work from bv triage and distributes tasks to idle agents.
+func runDistributeMode(session, strategy string, limit int, autoExecute bool) error {
+	th := theme.Current()
+
+	// Check if bv is installed
+	if !bv.IsInstalled() {
+		return fmt.Errorf("bv (beads graph triage) is not installed; cannot use --distribute")
+	}
+
+	// Verify session exists
+	if err := tmux.EnsureInstalled(); err != nil {
+		return err
+	}
+	if !tmux.SessionExists(session) {
+		return fmt.Errorf("session '%s' not found", session)
+	}
+
+	// Get assignment recommendations using robot module
+	opts := robot.AssignOptions{
+		Session:  session,
+		Strategy: strategy,
+	}
+
+	recs, err := robot.GetAssignRecommendations(opts)
+	if err != nil {
+		return fmt.Errorf("getting assignment recommendations: %w", err)
+	}
+
+	if len(recs) == 0 {
+		if jsonOutput {
+			result := map[string]interface{}{
+				"success":     true,
+				"session":     session,
+				"distributed": 0,
+				"message":     "no work to distribute or no idle agents available",
+			}
+			return json.NewEncoder(os.Stdout).Encode(result)
+		}
+		fmt.Println("No work to distribute or no idle agents available.")
+		return nil
+	}
+
+	// Apply limit if specified
+	if limit > 0 && len(recs) > limit {
+		recs = recs[:limit]
+	}
+
+	// Style helpers
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.Primary))
+	beadStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.Secondary))
+	agentStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.Success))
+
+	// Show preview
+	if !jsonOutput {
+		fmt.Println()
+		fmt.Println(titleStyle.Render("📤 Work Distribution Plan"))
+		fmt.Println()
+		fmt.Printf("Session: %s | Strategy: %s | Tasks: %d\n\n", session, strategy, len(recs))
+
+		for i, rec := range recs {
+			fmt.Printf("  %d. %s → %s\n",
+				i+1,
+				beadStyle.Render(fmt.Sprintf("[%s] %s", rec.BeadID, rec.Title)),
+				agentStyle.Render(fmt.Sprintf("Pane %d (%s)", rec.PaneIndex, rec.AgentType)))
+			if rec.Reason != "" {
+				fmt.Printf("     Reason: %s\n", rec.Reason)
+			}
+		}
+		fmt.Println()
+	}
+
+	// JSON output mode - just return the plan
+	if jsonOutput {
+		result := map[string]interface{}{
+			"success":         true,
+			"session":         session,
+			"strategy":        strategy,
+			"recommendations": recs,
+			"count":           len(recs),
+		}
+		if !autoExecute {
+			result["preview"] = true
+			result["message"] = "use --dist-auto to execute"
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
+
+	// If not auto mode, ask for confirmation
+	if !autoExecute {
+		if !confirm("Distribute these tasks?") {
+			fmt.Println("Aborted.")
+			return nil
+		}
+	}
+
+	// Execute distribution - send each task to its assigned agent
+	var delivered, failed int
+	for _, rec := range recs {
+		// Build the prompt for this task
+		taskPrompt := fmt.Sprintf("Please work on this task:\n\n**[%s] %s**\n\nClaim it with: br update %s --status in_progress",
+			rec.BeadID, rec.Title, rec.BeadID)
+
+		// Send to the specific pane
+		paneID := fmt.Sprintf("%s:%d", session, rec.PaneIndex)
+		if err := tmux.SendKeys(paneID, taskPrompt, true); err != nil {
+			if !jsonOutput {
+				fmt.Printf("  ✗ Failed to send to pane %d: %v\n", rec.PaneIndex, err)
+			}
+			failed++
+			continue
+		}
+
+		if !jsonOutput {
+			fmt.Printf("  ✓ Sent [%s] to pane %d (%s)\n", rec.BeadID, rec.PaneIndex, rec.AgentType)
+		}
+		delivered++
+	}
+
+	// Summary
+	if jsonOutput {
+		result := map[string]interface{}{
+			"success":   failed == 0,
+			"session":   session,
+			"delivered": delivered,
+			"failed":    failed,
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
+
+	fmt.Println()
+	if failed == 0 {
+		fmt.Printf("✓ Successfully distributed %d tasks\n", delivered)
+	} else {
+		fmt.Printf("Distributed %d tasks (%d failed)\n", delivered, failed)
 	}
 
 	return nil

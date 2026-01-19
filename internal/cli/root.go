@@ -152,6 +152,13 @@ Shell Integration:
 			}
 			return
 		}
+		if robotTriage {
+			if err := robot.PrintTriage(robot.TriageOptions{Limit: robotTriageLimit}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if robotDashboard {
 			if err := robot.PrintDashboard(jsonOutput); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -772,7 +779,7 @@ Shell Integration:
 				BeadID: robotBeadShow,
 			}
 			if err := robot.PrintBeadShow(opts); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				// RobotError already outputs JSON-formatted error to stdout
 				os.Exit(1)
 			}
 			return
@@ -1033,6 +1040,10 @@ var (
 	// Robot-summary flags for session summary
 	robotSummary      string // session name for summary
 	robotSummarySince string // duration like "30m", "1h"
+
+	// Robot-triage flag for direct bv triage integration
+	robotTriage      bool // bv triage output
+	robotTriageLimit int  // max recommendations to return
 )
 
 func init() {
@@ -1056,6 +1067,8 @@ func init() {
 	rootCmd.Flags().IntVar(&robotLines, "lines", 20, "Lines to capture per pane. Optional with --robot-tail. Example: --lines=100")
 	rootCmd.Flags().StringVar(&robotPanes, "panes", "", "Filter to specific pane indices. Optional with --robot-tail, --robot-send, --robot-ack, --robot-interrupt. Example: --panes=1,2")
 	rootCmd.Flags().BoolVar(&robotGraph, "robot-graph", false, "Get bv dependency graph insights: PageRank, critical path, cycles (JSON)")
+	rootCmd.Flags().BoolVar(&robotTriage, "robot-triage", false, "Get bv triage analysis with recommendations, quick wins, blockers (JSON). Example: ntm --robot-triage --triage-limit=20")
+	rootCmd.Flags().IntVar(&robotTriageLimit, "triage-limit", 10, "Max recommendations per category. Optional with --robot-triage. Example: --triage-limit=20")
 	rootCmd.Flags().BoolVar(&robotDashboard, "robot-dashboard", false, "Get dashboard summary as markdown (or JSON with --json). Token-efficient overview")
 	rootCmd.Flags().StringVar(&robotContext, "robot-context", "", "Get context window usage for all agents in a session. Required: SESSION. Example: ntm --robot-context=myproject")
 	rootCmd.Flags().IntVar(&robotBeadLimit, "bead-limit", 5, "Max beads per category in snapshot. Optional with --robot-snapshot, --robot-status. Example: --bead-limit=10")
