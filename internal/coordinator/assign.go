@@ -26,6 +26,9 @@ const (
 	StrategyQuality AssignmentStrategy = "quality"
 	// StrategyDependency prioritizes blockers and critical path items.
 	StrategyDependency AssignmentStrategy = "dependency"
+	// StrategyRoundRobin distributes tasks evenly in deterministic order.
+	// All assignments get score 1.0. First agents get +1 if counts are uneven.
+	StrategyRoundRobin AssignmentStrategy = "round-robin"
 )
 
 // Assignment represents an agent-task pairing with reasoning.
@@ -1234,6 +1237,8 @@ func ParseStrategy(s string) AssignmentStrategy {
 		return StrategyQuality
 	case "dependency", "deps", "blockers":
 		return StrategyDependency
+	case "round-robin", "roundrobin", "rr":
+		return StrategyRoundRobin
 	default:
 		return StrategyBalanced // Default to balanced
 	}

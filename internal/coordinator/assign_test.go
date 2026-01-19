@@ -1172,6 +1172,10 @@ func TestParseStrategy(t *testing.T) {
 		{"dependency", StrategyDependency},
 		{"deps", StrategyDependency},
 		{"blockers", StrategyDependency},
+		{"round-robin", StrategyRoundRobin},
+		{"roundrobin", StrategyRoundRobin},
+		{"rr", StrategyRoundRobin},
+		{"ROUND-ROBIN", StrategyRoundRobin},
 		{"unknown", StrategyBalanced}, // Default
 		{"", StrategyBalanced},        // Default
 	}
