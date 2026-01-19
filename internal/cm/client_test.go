@@ -214,3 +214,544 @@ func TestTruncate(t *testing.T) {
 		}
 	}
 }
+
+// =============================================================================
+// Error Handling Tests for CM Integration (bd-kb0u)
+// =============================================================================
+
+// TestNewClient_MissingPIDFile verifies graceful handling when PID file doesn't exist
+func TestNewClient_MissingPIDFile(t *testing.T) {
+	start := time.Now()
+	tmpDir := t.TempDir()
+
+	_, err := NewClient(tmpDir, "nonexistent-session")
+	if err == nil {
+		t.Error("[CM-ERROR] NewClient: expected error for missing PID file, got nil")
+	}
+	if !strings.Contains(err.Error(), "reading cm pid file") {
+		t.Errorf("[CM-ERROR] NewClient: unexpected error message: %v", err)
+	}
+
+	t.Logf("[CM-ERROR] Operation=NewClient_MissingPID | Input=%s | Error=%v | Duration=%v",
+		tmpDir, err, time.Since(start))
+}
+
+// TestNewClient_InvalidJSONPIDFile verifies handling of corrupted PID file
+func TestNewClient_InvalidJSONPIDFile(t *testing.T) {
+	start := time.Now()
+	tmpDir := t.TempDir()
+	pidsDir := filepath.Join(tmpDir, ".ntm", "pids")
+	os.MkdirAll(pidsDir, 0755)
+
+	sessionID := "corrupt-session"
+	pidFile := filepath.Join(pidsDir, fmt.Sprintf("cm-%s.pid", sessionID))
+	os.WriteFile(pidFile, []byte("this is not valid json{{{"), 0644)
+
+	_, err := NewClient(tmpDir, sessionID)
+	if err == nil {
+		t.Error("[CM-ERROR] NewClient: expected error for invalid JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "parsing cm pid file") {
+		t.Errorf("[CM-ERROR] NewClient: unexpected error message: %v", err)
+	}
+
+	t.Logf("[CM-ERROR] Operation=NewClient_InvalidJSON | Input=%s | Error=%v | Duration=%v",
+		pidFile, err, time.Since(start))
+}
+
+// TestNewClient_EmptyPIDFile verifies handling of empty PID file
+func TestNewClient_EmptyPIDFile(t *testing.T) {
+	start := time.Now()
+	tmpDir := t.TempDir()
+	pidsDir := filepath.Join(tmpDir, ".ntm", "pids")
+	os.MkdirAll(pidsDir, 0755)
+
+	sessionID := "empty-session"
+	pidFile := filepath.Join(pidsDir, fmt.Sprintf("cm-%s.pid", sessionID))
+	os.WriteFile(pidFile, []byte(""), 0644)
+
+	_, err := NewClient(tmpDir, sessionID)
+	if err == nil {
+		t.Error("[CM-ERROR] NewClient: expected error for empty PID file, got nil")
+	}
+
+	t.Logf("[CM-ERROR] Operation=NewClient_EmptyPID | Input=%s | Error=%v | Duration=%v",
+		pidFile, err, time.Since(start))
+}
+
+// TestGetContext_ServerError500 verifies handling of server errors
+func TestGetContext_ServerError500(t *testing.T) {
+	start := time.Now()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("Internal Server Error"))
+	}))
+	defer ts.Close()
+
+	client := &Client{
+		baseURL: ts.URL,
+		client:  ts.Client(),
+	}
+
+	_, err := client.GetContext(context.Background(), "test task")
+	if err == nil {
+		t.Error("[CM-ERROR] GetContext: expected error for 500 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("[CM-ERROR] GetContext: expected 500 in error, got: %v", err)
+	}
+
+	t.Logf("[CM-ERROR] Operation=GetContext_Server500 | Input=test_task | Error=%v | Duration=%v",
+		err, time.Since(start))
+}
+
+// TestGetContext_ServerError503 verifies handling of service unavailable
+func TestGetContext_ServerError503(t *testing.T) {
+	start := time.Now()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("Service Unavailable"))
+	}))
+	defer ts.Close()
+
+	client := &Client{
+		baseURL: ts.URL,
+		client:  ts.Client(),
+	}
+
+	_, err := client.GetContext(context.Background(), "test task")
+	if err == nil {
+		t.Error("[CM-ERROR] GetContext: expected error for 503 response, got nil")
+	}
+
+	t.Logf("[CM-ERROR] Operation=GetContext_Server503 | Input=test_task | Error=%v | Duration=%v",
+		err, time.Since(start))
+}
+
+// TestGetContext_InvalidJSONResponse verifies handling of malformed JSON responses
+func TestGetContext_InvalidJSONResponse(t *testing.T) {
+	start := time.Now()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"relevantBullets": [{"id": "broken`))
+	}))
+	defer ts.Close()
+
+	client := &Client{
+		baseURL: ts.URL,
+		client:  ts.Client(),
+	}
+
+	_, err := client.GetContext(context.Background(), "test task")
+	if err == nil {
+		t.Error("[CM-ERROR] GetContext: expected error for invalid JSON response, got nil")
+	}
+
+	t.Logf("[CM-ERROR] Operation=GetContext_InvalidJSON | Input=test_task | Error=%v | Duration=%v",
+		err, time.Since(start))
+}
+
+// TestGetContext_EmptyResponse verifies handling of empty response body
+func TestGetContext_EmptyResponse(t *testing.T) {
+	start := time.Now()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Empty body
+	}))
+	defer ts.Close()
+
+	client := &Client{
+		baseURL: ts.URL,
+		client:  ts.Client(),
+	}
+
+	_, err := client.GetContext(context.Background(), "test task")
+	if err == nil {
+		t.Error("[CM-ERROR] GetContext: expected error for empty response, got nil")
+	}
+
+	t.Logf("[CM-ERROR] Operation=GetContext_EmptyResponse | Input=test_task | Error=%v | Duration=%v",
+		err, time.Since(start))
+}
+
+// TestGetContext_ContextCancellation verifies handling of cancelled context
+func TestGetContext_ContextCancellation(t *testing.T) {
+	start := time.Now()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond) // Slow response
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ContextResult{})
+	}))
+	defer ts.Close()
+
+	client := &Client{
+		baseURL: ts.URL,
+		client:  ts.Client(),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := client.GetContext(ctx, "test task")
+	if err == nil {
+		t.Error("[CM-ERROR] GetContext: expected error for cancelled context, got nil")
+	}
+
+	t.Logf("[CM-ERROR] Operation=GetContext_Cancelled | Input=test_task | Error=%v | Duration=%v",
+		err, time.Since(start))
+}
+
+// TestRecordOutcome_ServerErrors verifies handling of various server errors
+func TestRecordOutcome_ServerErrors(t *testing.T) {
+	testCases := []struct {
+		name       string
+		statusCode int
+	}{
+		{"BadRequest", http.StatusBadRequest},
+		{"Unauthorized", http.StatusUnauthorized},
+		{"Forbidden", http.StatusForbidden},
+		{"NotFound", http.StatusNotFound},
+		{"InternalServerError", http.StatusInternalServerError},
+		{"ServiceUnavailable", http.StatusServiceUnavailable},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now()
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.statusCode)
+			}))
+			defer ts.Close()
+
+			client := &Client{
+				baseURL: ts.URL,
+				client:  ts.Client(),
+			}
+
+			err := client.RecordOutcome(context.Background(), OutcomeReport{
+				Status:  OutcomeFailure,
+				RuleIDs: []string{"test-rule"},
+			})
+			if err == nil {
+				t.Errorf("[CM-ERROR] RecordOutcome: expected error for %d response, got nil", tc.statusCode)
+			}
+
+			t.Logf("[CM-ERROR] Operation=RecordOutcome_%s | Status=%d | Error=%v | Duration=%v",
+				tc.name, tc.statusCode, err, time.Since(start))
+		})
+	}
+}
+
+// TestCLIClient_GracefulDegradation verifies spawn works without CM
+func TestCLIClient_GracefulDegradation(t *testing.T) {
+	start := time.Now()
+
+	// Create client with nonexistent binary
+	client := NewCLIClient(WithCLIBinaryPath("/nonexistent/path/to/cm"))
+
+	// Verify not installed
+	if client.IsInstalled() {
+		t.Error("[CM-DEGRADE] IsInstalled: expected false for nonexistent binary")
+	}
+
+	// Verify GetContext returns nil, nil (graceful degradation)
+	result, err := client.GetContext(context.Background(), "test task")
+	if err != nil {
+		t.Errorf("[CM-DEGRADE] GetContext: expected nil error for graceful degradation, got: %v", err)
+	}
+	if result != nil {
+		t.Errorf("[CM-DEGRADE] GetContext: expected nil result for graceful degradation, got: %v", result)
+	}
+
+	// Verify GetRecoveryContext also degrades gracefully
+	result, err = client.GetRecoveryContext(context.Background(), "test-project", 5, 3)
+	if err != nil {
+		t.Errorf("[CM-DEGRADE] GetRecoveryContext: expected nil error, got: %v", err)
+	}
+	if result != nil {
+		t.Errorf("[CM-DEGRADE] GetRecoveryContext: expected nil result, got: %v", result)
+	}
+
+	t.Logf("[CM-DEGRADE] Operation=GracefulDegradation | CMInstalled=false | Result=nil | Duration=%v",
+		time.Since(start))
+}
+
+// TestCLIClient_TimeoutHandling verifies timeout configuration is respected
+func TestCLIClient_TimeoutHandling(t *testing.T) {
+	start := time.Now()
+
+	// Create client with very short timeout
+	client := NewCLIClient(WithCLITimeout(1 * time.Millisecond))
+
+	if client.timeout != 1*time.Millisecond {
+		t.Errorf("[CM-ERROR] Timeout: expected 1ms, got %v", client.timeout)
+	}
+
+	t.Logf("[CM-ERROR] Operation=TimeoutConfig | Timeout=%v | Duration=%v",
+		client.timeout, time.Since(start))
+}
+
+// TestCLIClientOptions_Defaults verifies default options are set correctly
+func TestCLIClientOptions_Defaults(t *testing.T) {
+	start := time.Now()
+
+	client := NewCLIClient()
+
+	if client.binaryPath != "cm" {
+		t.Errorf("[CM-ERROR] Default binaryPath: expected 'cm', got '%s'", client.binaryPath)
+	}
+	if client.timeout != 30*time.Second {
+		t.Errorf("[CM-ERROR] Default timeout: expected 30s, got %v", client.timeout)
+	}
+
+	t.Logf("[CM-ERROR] Operation=DefaultOptions | BinaryPath=%s | Timeout=%v | Duration=%v",
+		client.binaryPath, client.timeout, time.Since(start))
+}
+
+// TestCLIClientOptions_Custom verifies custom options override defaults
+func TestCLIClientOptions_Custom(t *testing.T) {
+	start := time.Now()
+
+	client := NewCLIClient(
+		WithCLIBinaryPath("/custom/path/cm"),
+		WithCLITimeout(60*time.Second),
+	)
+
+	if client.binaryPath != "/custom/path/cm" {
+		t.Errorf("[CM-ERROR] Custom binaryPath: expected '/custom/path/cm', got '%s'", client.binaryPath)
+	}
+	if client.timeout != 60*time.Second {
+		t.Errorf("[CM-ERROR] Custom timeout: expected 60s, got %v", client.timeout)
+	}
+
+	t.Logf("[CM-ERROR] Operation=CustomOptions | BinaryPath=%s | Timeout=%v | Duration=%v",
+		client.binaryPath, client.timeout, time.Since(start))
+}
+
+// TestCLIClientOptions_EmptyPath verifies empty path doesn't override default
+func TestCLIClientOptions_EmptyPath(t *testing.T) {
+	start := time.Now()
+
+	client := NewCLIClient(WithCLIBinaryPath(""))
+
+	if client.binaryPath != "cm" {
+		t.Errorf("[CM-ERROR] Empty path option: expected default 'cm', got '%s'", client.binaryPath)
+	}
+
+	t.Logf("[CM-ERROR] Operation=EmptyPathOption | BinaryPath=%s | Duration=%v",
+		client.binaryPath, time.Since(start))
+}
+
+// TestFormatForRecovery_NilHandling verifies nil context is handled safely
+func TestFormatForRecovery_NilHandling(t *testing.T) {
+	start := time.Now()
+	client := NewCLIClient()
+
+	result := client.FormatForRecovery(nil)
+	if result != "" {
+		t.Errorf("[CM-FALLBACK] FormatForRecovery: expected empty string for nil, got: %q", result)
+	}
+
+	t.Logf("[CM-FALLBACK] Operation=FormatNil | Result=%q | Duration=%v",
+		result, time.Since(start))
+}
+
+// TestFormatForRecovery_EmptyContext verifies empty context is handled
+func TestFormatForRecovery_EmptyContext(t *testing.T) {
+	start := time.Now()
+	client := NewCLIClient()
+
+	emptyCtx := &CLIContextResponse{
+		RelevantBullets: []CLIRule{},
+		AntiPatterns:    []CLIRule{},
+		HistorySnippets: []CLIHistorySnip{},
+	}
+
+	result := client.FormatForRecovery(emptyCtx)
+	if result != "" {
+		t.Errorf("[CM-FALLBACK] FormatForRecovery: expected empty string for empty context, got: %q", result)
+	}
+
+	t.Logf("[CM-FALLBACK] Operation=FormatEmpty | Result=%q | Duration=%v",
+		result, time.Since(start))
+}
+
+// TestGetRecoveryContext_LimitsApplied verifies result limits are enforced
+func TestGetRecoveryContext_LimitsApplied(t *testing.T) {
+	start := time.Now()
+	client := NewCLIClient(WithCLIBinaryPath("/nonexistent/cm"))
+
+	// Test with gracefully degraded client - should return nil
+	result, err := client.GetRecoveryContext(context.Background(), "test", 2, 1)
+	if err != nil {
+		t.Errorf("[CM-ERROR] GetRecoveryContext: unexpected error: %v", err)
+	}
+	if result != nil {
+		t.Errorf("[CM-FALLBACK] GetRecoveryContext: expected nil for unavailable CM")
+	}
+
+	t.Logf("[CM-FALLBACK] Operation=RecoveryLimits | MaxRules=2 | MaxSnippets=1 | Result=nil | Duration=%v",
+		time.Since(start))
+}
+
+// TestGetContext_RequestBodyValidation verifies correct request body is sent
+func TestGetContext_RequestBodyValidation(t *testing.T) {
+	start := time.Now()
+	var receivedBody map[string]string
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ContextResult{})
+	}))
+	defer ts.Close()
+
+	client := &Client{
+		baseURL: ts.URL,
+		client:  ts.Client(),
+	}
+
+	testTask := "Test task with special chars: <>&\""
+	_, err := client.GetContext(context.Background(), testTask)
+	if err != nil {
+		t.Fatalf("[CM-ERROR] GetContext: unexpected error: %v", err)
+	}
+
+	if receivedBody["task"] != testTask {
+		t.Errorf("[CM-ERROR] GetContext: task mismatch, sent=%q, received=%q", testTask, receivedBody["task"])
+	}
+
+	t.Logf("[CM-ERROR] Operation=RequestValidation | Task=%q | Received=%q | Duration=%v",
+		testTask, receivedBody["task"], time.Since(start))
+}
+
+// TestRecordOutcome_RequestBodyValidation verifies correct outcome is sent
+func TestRecordOutcome_RequestBodyValidation(t *testing.T) {
+	start := time.Now()
+	var receivedBody OutcomeReport
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &receivedBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	client := &Client{
+		baseURL: ts.URL,
+		client:  ts.Client(),
+	}
+
+	report := OutcomeReport{
+		Status:    OutcomePartial,
+		RuleIDs:   []string{"rule-1", "rule-2"},
+		Sentiment: "positive",
+		Notes:     "Test notes",
+	}
+
+	err := client.RecordOutcome(context.Background(), report)
+	if err != nil {
+		t.Fatalf("[CM-ERROR] RecordOutcome: unexpected error: %v", err)
+	}
+
+	if receivedBody.Status != report.Status {
+		t.Errorf("[CM-ERROR] Status mismatch: sent=%v, received=%v", report.Status, receivedBody.Status)
+	}
+	if len(receivedBody.RuleIDs) != len(report.RuleIDs) {
+		t.Errorf("[CM-ERROR] RuleIDs mismatch: sent=%v, received=%v", report.RuleIDs, receivedBody.RuleIDs)
+	}
+
+	t.Logf("[CM-ERROR] Operation=OutcomeValidation | Status=%s | RuleCount=%d | Duration=%v",
+		report.Status, len(report.RuleIDs), time.Since(start))
+}
+
+// TestErrNotInstalled verifies error variable is defined correctly
+func TestErrNotInstalled(t *testing.T) {
+	start := time.Now()
+
+	if ErrNotInstalled == nil {
+		t.Error("[CM-ERROR] ErrNotInstalled: expected non-nil error")
+	}
+	if !strings.Contains(ErrNotInstalled.Error(), "not installed") {
+		t.Errorf("[CM-ERROR] ErrNotInstalled: expected 'not installed' in message, got: %v", ErrNotInstalled)
+	}
+
+	t.Logf("[CM-ERROR] Operation=ErrNotInstalled | Error=%v | Duration=%v",
+		ErrNotInstalled, time.Since(start))
+}
+
+// TestOutcomeStatus_Values verifies all status constants are defined
+func TestOutcomeStatus_Values(t *testing.T) {
+	start := time.Now()
+
+	statuses := []OutcomeStatus{OutcomeSuccess, OutcomeFailure, OutcomePartial}
+	expected := []string{"success", "failure", "partial"}
+
+	for i, status := range statuses {
+		if string(status) != expected[i] {
+			t.Errorf("[CM-ERROR] OutcomeStatus: expected %q, got %q", expected[i], status)
+		}
+	}
+
+	t.Logf("[CM-ERROR] Operation=OutcomeStatusValues | Statuses=%v | Duration=%v",
+		statuses, time.Since(start))
+}
+
+// TestPIDFileInfo_Serialization verifies PID file struct serializes correctly
+func TestPIDFileInfo_Serialization(t *testing.T) {
+	start := time.Now()
+
+	info := PIDFileInfo{
+		PID:       12345,
+		Port:      8080,
+		OwnerID:   "test-owner",
+		Command:   "cm serve",
+		StartedAt: time.Date(2026, 1, 19, 10, 0, 0, 0, time.UTC),
+	}
+
+	data, err := json.Marshal(info)
+	if err != nil {
+		t.Fatalf("[CM-ERROR] PIDFileInfo Marshal: %v", err)
+	}
+
+	var parsed PIDFileInfo
+	err = json.Unmarshal(data, &parsed)
+	if err != nil {
+		t.Fatalf("[CM-ERROR] PIDFileInfo Unmarshal: %v", err)
+	}
+
+	if parsed.PID != info.PID {
+		t.Errorf("[CM-ERROR] PID mismatch: expected %d, got %d", info.PID, parsed.PID)
+	}
+	if parsed.Port != info.Port {
+		t.Errorf("[CM-ERROR] Port mismatch: expected %d, got %d", info.Port, parsed.Port)
+	}
+	if parsed.OwnerID != info.OwnerID {
+		t.Errorf("[CM-ERROR] OwnerID mismatch: expected %s, got %s", info.OwnerID, parsed.OwnerID)
+	}
+
+	t.Logf("[CM-ERROR] Operation=PIDFileSerialization | PID=%d | Port=%d | Duration=%v",
+		info.PID, info.Port, time.Since(start))
+}
+
+// TestGetContext_ConnectionRefused verifies handling when server is down
+func TestGetContext_ConnectionRefused(t *testing.T) {
+	start := time.Now()
+
+	// Use a port that's likely not in use
+	client := &Client{
+		baseURL: "http://127.0.0.1:59999",
+		client:  &http.Client{Timeout: 1 * time.Second},
+	}
+
+	_, err := client.GetContext(context.Background(), "test task")
+	if err == nil {
+		t.Error("[CM-ERROR] GetContext: expected error for connection refused, got nil")
+	}
+
+	t.Logf("[CM-ERROR] Operation=GetContext_ConnRefused | Error=%v | Duration=%v",
+		err, time.Since(start))
+}
