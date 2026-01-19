@@ -1,0 +1,549 @@
+package state
+
+import (
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestNewTimelineTracker(t *testing.T) {
+	t.Run("default config", func(t *testing.T) {
+		tracker := NewTimelineTracker(nil)
+		defer tracker.Stop()
+
+		if tracker.config.MaxEventsPerAgent != 1000 {
+			t.Errorf("expected MaxEventsPerAgent=1000, got %d", tracker.config.MaxEventsPerAgent)
+		}
+		if tracker.config.RetentionDuration != 24*time.Hour {
+			t.Errorf("expected RetentionDuration=24h, got %v", tracker.config.RetentionDuration)
+		}
+	})
+
+	t.Run("custom config", func(t *testing.T) {
+		cfg := &TimelineConfig{
+			MaxEventsPerAgent: 500,
+			RetentionDuration: 12 * time.Hour,
+			PruneInterval:     0, // disable background pruning
+		}
+		tracker := NewTimelineTracker(cfg)
+		defer tracker.Stop()
+
+		if tracker.config.MaxEventsPerAgent != 500 {
+			t.Errorf("expected MaxEventsPerAgent=500, got %d", tracker.config.MaxEventsPerAgent)
+		}
+		if tracker.config.RetentionDuration != 12*time.Hour {
+			t.Errorf("expected RetentionDuration=12h, got %v", tracker.config.RetentionDuration)
+		}
+	})
+}
+
+func TestRecordEvent(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	t.Run("first event", func(t *testing.T) {
+		event := tracker.RecordEvent(AgentEvent{
+			AgentID:   "cc_1",
+			AgentType: AgentTypeClaude,
+			SessionID: "test-session",
+			State:     TimelineWorking,
+			Details:   map[string]string{"task": "review code"},
+		})
+
+		if event.PreviousState != "" {
+			t.Errorf("expected empty PreviousState for first event, got %s", event.PreviousState)
+		}
+		if event.Duration != 0 {
+			t.Errorf("expected zero Duration for first event, got %v", event.Duration)
+		}
+		if event.Timestamp.IsZero() {
+			t.Error("expected Timestamp to be set")
+		}
+	})
+
+	t.Run("subsequent event computes previous state and duration", func(t *testing.T) {
+		time.Sleep(10 * time.Millisecond)
+
+		event := tracker.RecordEvent(AgentEvent{
+			AgentID:   "cc_1",
+			AgentType: AgentTypeClaude,
+			SessionID: "test-session",
+			State:     TimelineIdle,
+		})
+
+		if event.PreviousState != TimelineWorking {
+			t.Errorf("expected PreviousState=working, got %s", event.PreviousState)
+		}
+		if event.Duration <= 0 {
+			t.Errorf("expected positive Duration, got %v", event.Duration)
+		}
+	})
+}
+
+func TestGetEvents(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	// Record some events
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		tracker.RecordEvent(AgentEvent{
+			AgentID:   "cc_1",
+			AgentType: AgentTypeClaude,
+			SessionID: "test-session",
+			State:     TimelineState([]string{"idle", "working", "waiting", "working", "idle"}[i]),
+			Timestamp: now.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	t.Run("get all events", func(t *testing.T) {
+		events := tracker.GetEvents(time.Time{})
+		if len(events) != 5 {
+			t.Errorf("expected 5 events, got %d", len(events))
+		}
+	})
+
+	t.Run("get events since timestamp", func(t *testing.T) {
+		events := tracker.GetEvents(now.Add(2 * time.Minute))
+		if len(events) != 3 {
+			t.Errorf("expected 3 events since t+2m, got %d", len(events))
+		}
+	})
+}
+
+func TestGetEventsForAgent(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	// Record events for multiple agents
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWorking})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_2", State: TimelineWorking})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineIdle})
+
+	events := tracker.GetEventsForAgent("cc_1", time.Time{})
+	if len(events) != 2 {
+		t.Errorf("expected 2 events for cc_1, got %d", len(events))
+	}
+
+	events = tracker.GetEventsForAgent("cc_2", time.Time{})
+	if len(events) != 1 {
+		t.Errorf("expected 1 event for cc_2, got %d", len(events))
+	}
+
+	events = tracker.GetEventsForAgent("nonexistent", time.Time{})
+	if events != nil {
+		t.Errorf("expected nil for nonexistent agent, got %v", events)
+	}
+}
+
+func TestGetEventsForSession(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", SessionID: "session-1", State: TimelineWorking})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_2", SessionID: "session-1", State: TimelineWorking})
+	tracker.RecordEvent(AgentEvent{AgentID: "cod_1", SessionID: "session-2", State: TimelineWorking})
+
+	events := tracker.GetEventsForSession("session-1", time.Time{})
+	if len(events) != 2 {
+		t.Errorf("expected 2 events for session-1, got %d", len(events))
+	}
+
+	events = tracker.GetEventsForSession("session-2", time.Time{})
+	if len(events) != 1 {
+		t.Errorf("expected 1 event for session-2, got %d", len(events))
+	}
+}
+
+func TestGetCurrentState(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWorking})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWaiting})
+
+	state := tracker.GetCurrentState("cc_1")
+	if state != TimelineWaiting {
+		t.Errorf("expected current state=waiting, got %s", state)
+	}
+
+	state = tracker.GetCurrentState("nonexistent")
+	if state != "" {
+		t.Errorf("expected empty state for nonexistent agent, got %s", state)
+	}
+}
+
+func TestGetAgentStates(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWorking})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_2", State: TimelineIdle})
+	tracker.RecordEvent(AgentEvent{AgentID: "cod_1", State: TimelineError})
+
+	states := tracker.GetAgentStates()
+	if len(states) != 3 {
+		t.Errorf("expected 3 agents, got %d", len(states))
+	}
+	if states["cc_1"] != TimelineWorking {
+		t.Errorf("expected cc_1=working, got %s", states["cc_1"])
+	}
+	if states["cc_2"] != TimelineIdle {
+		t.Errorf("expected cc_2=idle, got %s", states["cc_2"])
+	}
+	if states["cod_1"] != TimelineError {
+		t.Errorf("expected cod_1=error, got %s", states["cod_1"])
+	}
+}
+
+func TestGetLastSeen(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	now := time.Now()
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWorking, Timestamp: now})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineIdle, Timestamp: now.Add(time.Minute)})
+
+	lastSeen := tracker.GetLastSeen("cc_1")
+	if !lastSeen.Equal(now.Add(time.Minute)) {
+		t.Errorf("expected lastSeen=%v, got %v", now.Add(time.Minute), lastSeen)
+	}
+
+	lastSeen = tracker.GetLastSeen("nonexistent")
+	if !lastSeen.IsZero() {
+		t.Errorf("expected zero time for nonexistent agent, got %v", lastSeen)
+	}
+}
+
+func TestOnStateChange(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	var callbackEvents []AgentEvent
+	var mu sync.Mutex
+
+	tracker.OnStateChange(func(event AgentEvent) {
+		mu.Lock()
+		callbackEvents = append(callbackEvents, event)
+		mu.Unlock()
+	})
+
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWorking})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineIdle})
+
+	mu.Lock()
+	count := len(callbackEvents)
+	mu.Unlock()
+
+	if count != 2 {
+		t.Errorf("expected 2 callback invocations, got %d", count)
+	}
+}
+
+func TestStats(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWorking})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineIdle})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_2", State: TimelineWorking})
+
+	stats := tracker.Stats()
+	if stats.TotalAgents != 2 {
+		t.Errorf("expected TotalAgents=2, got %d", stats.TotalAgents)
+	}
+	if stats.TotalEvents != 3 {
+		t.Errorf("expected TotalEvents=3, got %d", stats.TotalEvents)
+	}
+	if stats.EventsByAgent["cc_1"] != 2 {
+		t.Errorf("expected cc_1 events=2, got %d", stats.EventsByAgent["cc_1"])
+	}
+	if stats.EventsByState["working"] != 2 {
+		t.Errorf("expected working events=2, got %d", stats.EventsByState["working"])
+	}
+	if stats.EventsByState["idle"] != 1 {
+		t.Errorf("expected idle events=1, got %d", stats.EventsByState["idle"])
+	}
+}
+
+func TestMaxEventsPerAgentPruning(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{
+		MaxEventsPerAgent: 5,
+		PruneInterval:     0,
+	})
+	defer tracker.Stop()
+
+	// Record 10 events
+	for i := 0; i < 10; i++ {
+		tracker.RecordEvent(AgentEvent{
+			AgentID: "cc_1",
+			State:   TimelineState([]string{"idle", "working"}[i%2]),
+			Details: map[string]string{"index": string(rune('0' + i))},
+		})
+	}
+
+	events := tracker.GetEventsForAgent("cc_1", time.Time{})
+	if len(events) != 5 {
+		t.Errorf("expected 5 events after pruning, got %d", len(events))
+	}
+
+	// Verify we kept the most recent events (indices 5-9)
+	// The first event should have index '5'
+	if events[0].Details["index"] != "5" {
+		t.Errorf("expected first event index=5, got %s", events[0].Details["index"])
+	}
+}
+
+func TestTimePrune(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{
+		RetentionDuration: 100 * time.Millisecond,
+		PruneInterval:     0,
+	})
+	defer tracker.Stop()
+
+	// Record an old event
+	oldTime := time.Now().Add(-200 * time.Millisecond)
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWorking, Timestamp: oldTime})
+
+	// Record a recent event
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineIdle})
+
+	// Prune
+	pruned := tracker.Prune()
+	if pruned != 1 {
+		t.Errorf("expected 1 event pruned, got %d", pruned)
+	}
+
+	events := tracker.GetEventsForAgent("cc_1", time.Time{})
+	if len(events) != 1 {
+		t.Errorf("expected 1 event after pruning, got %d", len(events))
+	}
+	if events[0].State != TimelineIdle {
+		t.Errorf("expected remaining event state=idle, got %s", events[0].State)
+	}
+}
+
+func TestClear(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWorking})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_2", State: TimelineWorking})
+
+	tracker.Clear()
+
+	stats := tracker.Stats()
+	if stats.TotalAgents != 0 {
+		t.Errorf("expected TotalAgents=0 after clear, got %d", stats.TotalAgents)
+	}
+	if stats.TotalEvents != 0 {
+		t.Errorf("expected TotalEvents=0 after clear, got %d", stats.TotalEvents)
+	}
+}
+
+func TestRemoveAgent(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWorking})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_2", State: TimelineWorking})
+
+	tracker.RemoveAgent("cc_1")
+
+	events := tracker.GetEventsForAgent("cc_1", time.Time{})
+	if events != nil {
+		t.Errorf("expected nil events for removed agent, got %v", events)
+	}
+
+	events = tracker.GetEventsForAgent("cc_2", time.Time{})
+	if len(events) != 1 {
+		t.Errorf("expected cc_2 events preserved, got %d", len(events))
+	}
+
+	stats := tracker.Stats()
+	if stats.TotalAgents != 1 {
+		t.Errorf("expected TotalAgents=1, got %d", stats.TotalAgents)
+	}
+}
+
+func TestComputeStateDurations(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	now := time.Now()
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWorking, Timestamp: now})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineIdle, Timestamp: now.Add(10 * time.Minute)})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWorking, Timestamp: now.Add(15 * time.Minute)})
+
+	durations := tracker.ComputeStateDurations("cc_1", now, now.Add(20*time.Minute))
+
+	// Working: 0-10min + 15-20min = 15min
+	// Idle: 10-15min = 5min
+	expectedWorking := 15 * time.Minute
+	expectedIdle := 5 * time.Minute
+
+	if durations[TimelineWorking] != expectedWorking {
+		t.Errorf("expected working duration=%v, got %v", expectedWorking, durations[TimelineWorking])
+	}
+	if durations[TimelineIdle] != expectedIdle {
+		t.Errorf("expected idle duration=%v, got %v", expectedIdle, durations[TimelineIdle])
+	}
+}
+
+func TestGetStateTransitions(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineIdle})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWorking})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWaiting})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineWorking})
+	tracker.RecordEvent(AgentEvent{AgentID: "cc_1", State: TimelineIdle})
+
+	transitions := tracker.GetStateTransitions("cc_1")
+
+	// idle->working, working->waiting, waiting->working, working->idle
+	if transitions["idle->working"] != 1 {
+		t.Errorf("expected idle->working=1, got %d", transitions["idle->working"])
+	}
+	if transitions["working->waiting"] != 1 {
+		t.Errorf("expected working->waiting=1, got %d", transitions["working->waiting"])
+	}
+	if transitions["waiting->working"] != 1 {
+		t.Errorf("expected waiting->working=1, got %d", transitions["waiting->working"])
+	}
+	if transitions["working->idle"] != 1 {
+		t.Errorf("expected working->idle=1, got %d", transitions["working->idle"])
+	}
+}
+
+func TestStateFromAgentStatus(t *testing.T) {
+	tests := []struct {
+		input    AgentStatus
+		expected TimelineState
+	}{
+		{AgentIdle, TimelineIdle},
+		{AgentWorking, TimelineWorking},
+		{AgentError, TimelineError},
+		{AgentCrashed, TimelineStopped},
+		{AgentStatus("unknown"), TimelineIdle}, // default
+	}
+
+	for _, tc := range tests {
+		result := StateFromAgentStatus(tc.input)
+		if result != tc.expected {
+			t.Errorf("StateFromAgentStatus(%s) = %s, expected %s", tc.input, result, tc.expected)
+		}
+	}
+}
+
+func TestTimelineStateIsTerminal(t *testing.T) {
+	tests := []struct {
+		state    TimelineState
+		terminal bool
+	}{
+		{TimelineIdle, false},
+		{TimelineWorking, false},
+		{TimelineWaiting, false},
+		{TimelineError, true},
+		{TimelineStopped, true},
+	}
+
+	for _, tc := range tests {
+		result := tc.state.IsTerminal()
+		if result != tc.terminal {
+			t.Errorf("TimelineState(%s).IsTerminal() = %v, expected %v", tc.state, result, tc.terminal)
+		}
+	}
+}
+
+func TestConcurrentAccess(t *testing.T) {
+	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
+	defer tracker.Stop()
+
+	var wg sync.WaitGroup
+	const goroutines = 10
+	const eventsPerGoroutine = 100
+
+	// Concurrent writes
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			agentID := "cc_" + string(rune('0'+id))
+			for j := 0; j < eventsPerGoroutine; j++ {
+				tracker.RecordEvent(AgentEvent{
+					AgentID:   agentID,
+					SessionID: "test",
+					State:     TimelineState([]string{"idle", "working"}[j%2]),
+				})
+			}
+		}(i)
+	}
+
+	// Concurrent reads while writing
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < eventsPerGoroutine; j++ {
+				_ = tracker.GetEvents(time.Time{})
+				_ = tracker.Stats()
+				_ = tracker.GetAgentStates()
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	stats := tracker.Stats()
+	expectedEvents := goroutines * eventsPerGoroutine
+	if stats.TotalEvents != expectedEvents {
+		t.Errorf("expected %d events, got %d", expectedEvents, stats.TotalEvents)
+	}
+	if stats.TotalAgents != goroutines {
+		t.Errorf("expected %d agents, got %d", goroutines, stats.TotalAgents)
+	}
+}
+
+func BenchmarkRecordEvent(b *testing.B) {
+	tracker := NewTimelineTracker(&TimelineConfig{
+		MaxEventsPerAgent: 10000,
+		PruneInterval:     0,
+	})
+	defer tracker.Stop()
+
+	event := AgentEvent{
+		AgentID:   "cc_1",
+		AgentType: AgentTypeClaude,
+		SessionID: "bench-session",
+		State:     TimelineWorking,
+		Details:   map[string]string{"task": "benchmark"},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tracker.RecordEvent(event)
+	}
+}
+
+func BenchmarkGetEvents(b *testing.B) {
+	tracker := NewTimelineTracker(&TimelineConfig{
+		MaxEventsPerAgent: 10000,
+		PruneInterval:     0,
+	})
+	defer tracker.Stop()
+
+	// Pre-populate with events
+	for i := 0; i < 1000; i++ {
+		tracker.RecordEvent(AgentEvent{
+			AgentID:   "cc_1",
+			State:     TimelineState([]string{"idle", "working"}[i%2]),
+		})
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = tracker.GetEvents(time.Time{})
+	}
+}
