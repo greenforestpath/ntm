@@ -198,6 +198,226 @@ Explain the optimizations and their expected impact.
 
 {{file}}`,
 	},
+	// Multi-agent workflow templates using bead/agent context variables
+	{
+		Name:        "marching_orders",
+		Description: "Initial instructions for an agent working on a bead task",
+		Variables: []VariableSpec{
+			{Name: "bead_id", Description: "Bead ID (auto-injected from context)"},
+			{Name: "bead_title", Description: "Bead title (auto-injected from context)"},
+			{Name: "bead_description", Description: "Bead description (auto-injected from context)"},
+			{Name: "bead_priority", Description: "Bead priority (auto-injected from context)"},
+			{Name: "agent_num", Description: "Agent number (auto-injected from context)"},
+			{Name: "agent_type", Description: "Agent type (auto-injected from context)"},
+			{Name: "constraints", Description: "Additional constraints or requirements"},
+		},
+		Tags:   []string{"workflow", "bead", "assignment"},
+		Source: SourceBuiltin,
+		Body: `# Marching Orders: {{BEAD_ID}}
+
+## Task
+**{{TITLE}}**
+
+{{#bead_priority}}
+**Priority:** {{bead_priority}}
+{{/bead_priority}}
+
+{{#bead_description}}
+## Description
+{{bead_description}}
+{{/bead_description}}
+
+## Instructions
+You are Agent #{{agent_num}} ({{agent_type}}). Execute this task methodically:
+
+1. **Understand**: Read and fully understand the task requirements
+2. **Plan**: Create a clear implementation plan before coding
+3. **Execute**: Implement the solution step by step
+4. **Verify**: Test your changes and ensure they work correctly
+5. **Document**: Update any relevant documentation
+
+{{#constraints}}
+## Constraints
+{{constraints}}
+{{/constraints}}
+
+## Completion
+When done, mark the bead as completed:
+` + "```" + `
+br update {{bead_id}} --status closed
+` + "```" + `
+
+If blocked, note what's blocking and move on:
+` + "```" + `
+br update {{bead_id}} --add-note "Blocked: <reason>"
+` + "```",
+	},
+	{
+		Name:        "self_review",
+		Description: "Agent reviews its own work before marking task complete",
+		Variables: []VariableSpec{
+			{Name: "bead_id", Description: "Bead ID (auto-injected from context)"},
+			{Name: "bead_title", Description: "Bead title (auto-injected from context)"},
+			{Name: "agent_num", Description: "Agent number (auto-injected from context)"},
+			{Name: "checklist", Description: "Custom checklist items to verify"},
+		},
+		Tags:   []string{"workflow", "review", "quality"},
+		Source: SourceBuiltin,
+		Body: `# Self-Review: {{BEAD_ID}}
+
+Agent #{{agent_num}}, review your work on **{{TITLE}}** before marking complete.
+
+## Checklist
+
+### Code Quality
+- [ ] Code compiles/builds without errors
+- [ ] No new warnings introduced
+- [ ] Code follows project style guidelines
+- [ ] No hardcoded values that should be configurable
+
+### Testing
+- [ ] All existing tests pass
+- [ ] New tests written for new functionality
+- [ ] Edge cases considered and tested
+
+### Documentation
+- [ ] Code is self-documenting with clear names
+- [ ] Complex logic has comments explaining "why"
+- [ ] Public APIs documented appropriately
+
+### Safety
+- [ ] No obvious security vulnerabilities
+- [ ] Error handling is appropriate
+- [ ] No resource leaks (files, connections, etc.)
+
+{{#checklist}}
+### Additional Checks
+{{checklist}}
+{{/checklist}}
+
+## Action
+If all checks pass, mark the bead as closed. If issues found, fix them first.`,
+	},
+	{
+		Name:        "cross_review",
+		Description: "One agent reviews another agent's work",
+		Variables: []VariableSpec{
+			{Name: "bead_id", Description: "Bead ID being reviewed (auto-injected)"},
+			{Name: "bead_title", Description: "Bead title (auto-injected)"},
+			{Name: "agent_num", Description: "Your agent number (auto-injected)"},
+			{Name: "author_agent", Description: "Agent number who authored the work"},
+			{Name: "files", Description: "List of files to review"},
+			{Name: "focus", Description: "Specific areas to focus review on"},
+		},
+		Tags:   []string{"workflow", "review", "collaboration"},
+		Source: SourceBuiltin,
+		Body: `# Cross-Review: {{BEAD_ID}}
+
+You are Agent #{{agent_num}}. Review the work done by Agent #{{author_agent}} on **{{TITLE}}**.
+
+{{#files}}
+## Files to Review
+{{files}}
+{{/files}}
+
+## Review Focus
+
+{{#focus}}
+### Priority Areas
+{{focus}}
+{{/focus}}
+
+### General Review
+1. **Correctness**: Does the implementation match the requirements?
+2. **Quality**: Is the code clean, readable, and maintainable?
+3. **Edge Cases**: Are edge cases handled properly?
+4. **Tests**: Are there adequate tests?
+5. **Performance**: Any obvious performance issues?
+
+## Feedback Format
+
+Provide feedback as:
+- **APPROVE**: Work is ready to merge
+- **REQUEST_CHANGES**: Issues that must be fixed
+- **COMMENT**: Suggestions or observations (non-blocking)
+
+Be constructive and specific. Reference line numbers when possible.
+
+## Communication
+After review, notify the author agent via Agent Mail if available.`,
+	},
+	{
+		Name:        "handoff",
+		Description: "Transfer work context from one agent to another",
+		Variables: []VariableSpec{
+			{Name: "bead_id", Description: "Bead ID (auto-injected from context)"},
+			{Name: "bead_title", Description: "Bead title (auto-injected from context)"},
+			{Name: "agent_num", Description: "Your agent number (auto-injected)"},
+			{Name: "target_agent", Description: "Agent number receiving the handoff"},
+			{Name: "context", Description: "Important context to transfer"},
+			{Name: "next_steps", Description: "Recommended next steps"},
+		},
+		Tags:   []string{"workflow", "collaboration", "handoff"},
+		Source: SourceBuiltin,
+		Body: `# Handoff: {{BEAD_ID}}
+
+Agent #{{agent_num}} is handing off **{{TITLE}}** to Agent #{{target_agent}}.
+
+## Current Status
+Summarize what has been accomplished so far.
+
+{{#context}}
+## Context
+{{context}}
+{{/context}}
+
+## Files Touched
+List all files modified during this work session.
+
+{{#next_steps}}
+## Recommended Next Steps
+{{next_steps}}
+{{/next_steps}}
+
+## Blockers/Issues
+List any blockers or unresolved issues.
+
+## Notes
+Additional observations or warnings for the receiving agent.
+
+---
+
+Agent #{{target_agent}}: Review this handoff and continue the work.`,
+	},
+	{
+		Name:        "batch_assign",
+		Description: "Template for distributing multiple beads across agents",
+		Variables: []VariableSpec{
+			{Name: "bead_id", Description: "Bead ID (auto-injected from context)"},
+			{Name: "bead_title", Description: "Bead title (auto-injected from context)"},
+			{Name: "send_num", Description: "Assignment number in batch (1-indexed, auto-injected)"},
+			{Name: "send_total", Description: "Total assignments in batch (auto-injected)"},
+			{Name: "agent_num", Description: "Target agent number (auto-injected)"},
+		},
+		Tags:   []string{"workflow", "batch", "assignment"},
+		Source: SourceBuiltin,
+		Body: `# Assignment {{send_num}}/{{send_total}}: {{BEAD_ID}}
+
+Agent #{{agent_num}}, you have been assigned: **{{TITLE}}**
+
+This is one of {{send_total}} tasks being distributed. Focus on your assigned task.
+
+## Instructions
+1. Mark the bead as in_progress: ` + "`br update {{bead_id}} --status in_progress`" + `
+2. Read and understand the full bead description
+3. Complete the task
+4. Run tests and verify your work
+5. Mark as closed when done: ` + "`br update {{bead_id}} --status closed`" + `
+
+## Coordination
+- If you need files another agent might be using, coordinate via Agent Mail
+- If blocked, add a note and move to your next assigned task`,
+	},
 }
 
 // GetBuiltin returns a builtin template by name, or nil if not found.

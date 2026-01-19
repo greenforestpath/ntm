@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -87,6 +88,54 @@ func (t *Template) Execute(ctx ExecutionContext) (string, error) {
 	}
 	if ctx.Clipboard != "" {
 		vars["clipboard"] = ctx.Clipboard
+	}
+
+	// Apply bead context variables
+	if ctx.BeadID != "" {
+		vars["bead_id"] = ctx.BeadID
+		vars["BEAD_ID"] = ctx.BeadID // Also support uppercase for convenience
+	}
+	if ctx.BeadTitle != "" {
+		vars["bead_title"] = ctx.BeadTitle
+		vars["TITLE"] = ctx.BeadTitle // Common alias
+	}
+	if ctx.BeadPriority != "" {
+		vars["bead_priority"] = ctx.BeadPriority
+		vars["PRIORITY"] = ctx.BeadPriority
+	}
+	if ctx.BeadDescription != "" {
+		vars["bead_description"] = ctx.BeadDescription
+		vars["DESCRIPTION"] = ctx.BeadDescription
+	}
+	if ctx.BeadStatus != "" {
+		vars["bead_status"] = ctx.BeadStatus
+	}
+	if ctx.BeadType != "" {
+		vars["bead_type"] = ctx.BeadType
+	}
+
+	// Apply agent context variables
+	if ctx.AgentNum > 0 {
+		vars["agent_num"] = fmt.Sprintf("%d", ctx.AgentNum)
+		vars["AGENT_NUM"] = vars["agent_num"]
+	}
+	if ctx.AgentType != "" {
+		vars["agent_type"] = ctx.AgentType
+		vars["AGENT_TYPE"] = ctx.AgentType
+	}
+	if ctx.AgentVariant != "" {
+		vars["agent_variant"] = ctx.AgentVariant
+		vars["VARIANT"] = ctx.AgentVariant
+	}
+	if ctx.AgentPane != "" {
+		vars["agent_pane"] = ctx.AgentPane
+	}
+
+	// Apply send batch context variables
+	if ctx.SendTotal > 0 {
+		vars["send_index"] = fmt.Sprintf("%d", ctx.SendIndex)
+		vars["send_total"] = fmt.Sprintf("%d", ctx.SendTotal)
+		vars["send_num"] = fmt.Sprintf("%d", ctx.SendIndex+1) // 1-indexed for human readability
 	}
 
 	// Perform substitution
@@ -184,4 +233,68 @@ func ExtractVariables(body string) []string {
 	}
 
 	return vars
+}
+
+// macroRe matches @macro-name patterns for inline template expansion.
+// Supports both hyphenated names (@marching-orders) and underscored names (@marching_orders).
+var macroRe = regexp.MustCompile(`@([a-zA-Z][a-zA-Z0-9_-]*)`)
+
+// ExpandMacros replaces @macro-name patterns with the corresponding builtin template body.
+// This allows users to include template content inline within prompts.
+//
+// Example:
+//
+//	input:  "Please follow @marching_orders for task bd-xyz"
+//	output: "Please follow # Marching Orders: {{BEAD_ID}}\n... for task bd-xyz"
+//
+// Macros are matched case-insensitively and both hyphens and underscores are normalized.
+// If a macro name doesn't match a builtin template, it is left unchanged.
+func ExpandMacros(text string) string {
+	return macroRe.ReplaceAllStringFunc(text, func(match string) string {
+		// Extract macro name (without @ prefix)
+		macroName := match[1:]
+
+		// Normalize: convert hyphens to underscores for lookup
+		normalizedName := strings.ReplaceAll(macroName, "-", "_")
+
+		// Look up the builtin template
+		tmpl := GetBuiltin(normalizedName)
+		if tmpl == nil {
+			// Try with the original name (maybe already uses underscores)
+			tmpl = GetBuiltin(macroName)
+		}
+
+		if tmpl != nil {
+			return tmpl.Body
+		}
+
+		// No matching template, leave the macro unchanged
+		return match
+	})
+}
+
+// ExpandMacrosWithContext expands macros and also substitutes any variables in the expanded content.
+// This is a convenience function that combines ExpandMacros with template execution.
+func ExpandMacrosWithContext(text string, ctx ExecutionContext) (string, error) {
+	// First expand all macros
+	expanded := ExpandMacros(text)
+
+	// Then treat the result as a template body and execute it
+	tmpl := &Template{
+		Name: "_inline_",
+		Body: expanded,
+	}
+
+	return tmpl.Execute(ctx)
+}
+
+// ListMacros returns a list of all available macro names.
+// This is useful for documentation and help text.
+func ListMacros() []string {
+	builtins := ListBuiltins()
+	names := make([]string, 0, len(builtins))
+	for _, t := range builtins {
+		names = append(names, t.Name)
+	}
+	return names
 }

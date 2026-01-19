@@ -3,20 +3,24 @@ package coordinator
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/persona"
 )
 
 // ScoreConfig controls how work assignments are scored.
 type ScoreConfig struct {
-	PreferCriticalPath  bool    // Weight critical path items higher
-	PenalizeFileOverlap bool    // Avoid assigning overlapping files
-	UseAgentProfiles    bool    // Match work to agent capabilities
-	BudgetAware         bool    // Consider token budgets
-	ContextThreshold    float64 // Max context usage before penalizing (percentage 0-100, default 80)
+	PreferCriticalPath        bool    // Weight critical path items higher
+	PenalizeFileOverlap       bool    // Avoid assigning overlapping files
+	UseAgentProfiles          bool    // Match work to agent capabilities
+	BudgetAware               bool    // Consider token budgets
+	ContextThreshold          float64 // Max context usage before penalizing (percentage 0-100, default 80)
+	ProfileTagBoostWeight     float64 // Weight for profile tag matches (default 0.15)
+	FocusPatternBoostWeight   float64 // Weight for focus pattern matches (default 0.10)
 }
 
 // DefaultScoreConfig returns a reasonable default configuration.
@@ -41,11 +45,13 @@ type ScoredAssignment struct {
 
 // AssignmentScoreBreakdown shows how the score was computed.
 type AssignmentScoreBreakdown struct {
-	BaseScore          float64 `json:"base_score"`           // From bv triage score
-	AgentTypeBonus     float64 `json:"agent_type_bonus"`     // Bonus for agent-task match
-	CriticalPathBonus  float64 `json:"critical_path_bonus"`  // Bonus for critical path items
-	FileOverlapPenalty float64 `json:"file_overlap_penalty"` // Penalty for file conflicts
-	ContextPenalty     float64 `json:"context_penalty"`      // Penalty for high context usage
+	BaseScore          float64 `json:"base_score"`            // From bv triage score
+	AgentTypeBonus     float64 `json:"agent_type_bonus"`      // Bonus for agent-task match
+	CriticalPathBonus  float64 `json:"critical_path_bonus"`   // Bonus for critical path items
+	FileOverlapPenalty float64 `json:"file_overlap_penalty"`  // Penalty for file conflicts
+	ContextPenalty     float64 `json:"context_penalty"`       // Penalty for high context usage
+	ProfileTagBonus    float64 `json:"profile_tag_bonus"`     // Bonus for profile tag matches
+	FocusPatternBonus  float64 `json:"focus_pattern_bonus"`   // Bonus for focus pattern matches
 }
 
 // WorkAssignment represents a work assignment to an agent.
@@ -381,6 +387,29 @@ func scoreAssignment(
 		breakdown.AgentTypeBonus = computeAgentTypeBonus(agent.AgentType, rec)
 	}
 
+	// Profile-based routing bonuses
+	if config.UseAgentProfiles && agent.Profile != nil {
+		// Extract task tags from title and any available description
+		taskTags := ExtractTaskTags(rec.Title, "")
+
+		// Compute profile tag bonus based on tag overlap
+		tagWeight := config.ProfileTagBoostWeight
+		if tagWeight == 0 {
+			tagWeight = 0.15 // Default 15% weight
+		}
+		breakdown.ProfileTagBonus = computeProfileTagBonus(agent.Profile, taskTags, tagWeight)
+
+		// Extract mentioned files from task title
+		mentionedFiles := ExtractMentionedFiles(rec.Title, "")
+
+		// Compute focus pattern bonus based on file pattern matching
+		patternWeight := config.FocusPatternBoostWeight
+		if patternWeight == 0 {
+			patternWeight = 0.10 // Default 10% weight
+		}
+		breakdown.FocusPatternBonus = computeFocusPatternBonus(agent.Profile, mentionedFiles, patternWeight)
+	}
+
 	// Critical path bonus
 	if config.PreferCriticalPath && rec.Breakdown != nil {
 		breakdown.CriticalPathBonus = computeCriticalPathBonus(rec.Breakdown)
@@ -404,7 +433,9 @@ func scoreAssignment(
 
 	totalScore := breakdown.BaseScore +
 		breakdown.AgentTypeBonus +
-		breakdown.CriticalPathBonus -
+		breakdown.CriticalPathBonus +
+		breakdown.ProfileTagBonus +
+		breakdown.FocusPatternBonus -
 		breakdown.FileOverlapPenalty -
 		breakdown.ContextPenalty
 
@@ -551,4 +582,208 @@ func computeContextPenalty(contextUsage float64, threshold float64) float64 {
 	// e.g., 10% over threshold → 0.05 penalty; 20% over → 0.10 penalty
 	excess := contextUsage - threshold
 	return (excess / 100) * 0.5
+}
+
+// taskTagKeywords maps keywords to profile tags for task routing.
+var taskTagKeywords = map[string]string{
+	// Testing keywords
+	"test":       "testing",
+	"tests":      "testing",
+	"testing":    "testing",
+	"unittest":   "testing",
+	"unit test":  "testing",
+	"e2e":        "testing",
+	"qa":         "testing",
+	"coverage":   "testing",
+
+	// Architecture keywords
+	"refactor":     "architecture",
+	"restructure":  "architecture",
+	"redesign":     "architecture",
+	"architecture": "architecture",
+	"pattern":      "architecture",
+	"design":       "architecture",
+
+	// Documentation keywords
+	"document":      "documentation",
+	"documentation": "documentation",
+	"readme":        "documentation",
+	"docs":          "documentation",
+	"docstring":     "documentation",
+	"comment":       "documentation",
+
+	// Implementation keywords
+	"implement":     "implementation",
+	"add":           "implementation",
+	"create":        "implementation",
+	"build":         "implementation",
+	"feature":       "implementation",
+	"develop":       "implementation",
+
+	// Review keywords
+	"review":  "review",
+	"audit":   "review",
+	"inspect": "review",
+	"check":   "review",
+
+	// Bug/fix keywords
+	"fix":   "bugs",
+	"bug":   "bugs",
+	"patch": "bugs",
+	"error": "bugs",
+	"crash": "bugs",
+}
+
+// ExtractTaskTags extracts relevant profile tags from task title and description.
+func ExtractTaskTags(title, description string) []string {
+	text := strings.ToLower(title + " " + description)
+	tagSet := make(map[string]bool)
+
+	for keyword, tag := range taskTagKeywords {
+		if strings.Contains(text, keyword) {
+			tagSet[tag] = true
+		}
+	}
+
+	tags := make([]string, 0, len(tagSet))
+	for tag := range tagSet {
+		tags = append(tags, tag)
+	}
+	return tags
+}
+
+// ExtractMentionedFiles extracts file paths mentioned in task text.
+func ExtractMentionedFiles(title, description string) []string {
+	text := title + " " + description
+	words := strings.Fields(text)
+	var files []string
+
+	for _, word := range words {
+		// Clean punctuation
+		word = strings.Trim(word, ",.;:()[]{}\"'`")
+		if isFilePath(word) {
+			files = append(files, word)
+		}
+	}
+	return files
+}
+
+// isFilePath checks if a string looks like a file path.
+func isFilePath(s string) bool {
+	if len(s) < 3 {
+		return false
+	}
+
+	// Contains path separator or file extension
+	if strings.Contains(s, "/") || strings.Contains(s, "\\") {
+		return true
+	}
+
+	// Has common file extensions
+	extensions := []string{".go", ".ts", ".js", ".py", ".rs", ".md", ".yaml", ".yml", ".json", ".toml"}
+	for _, ext := range extensions {
+		if strings.HasSuffix(s, ext) {
+			return true
+		}
+	}
+
+	// Contains glob patterns
+	if strings.Contains(s, "*") || strings.Contains(s, "**") {
+		return true
+	}
+
+	// Starts with dot (hidden file/directory)
+	if strings.HasPrefix(s, ".") && len(s) > 1 {
+		return true
+	}
+
+	return false
+}
+
+// computeProfileTagBonus computes bonus based on matching persona tags.
+func computeProfileTagBonus(profile *persona.Persona, taskTags []string, weight float64) float64 {
+	if profile == nil || len(profile.Tags) == 0 || len(taskTags) == 0 {
+		return 0
+	}
+
+	// Create a set of profile tags for quick lookup
+	profileTags := make(map[string]bool)
+	for _, tag := range profile.Tags {
+		profileTags[strings.ToLower(tag)] = true
+	}
+
+	// Count matching tags
+	matches := 0
+	for _, tag := range taskTags {
+		if profileTags[strings.ToLower(tag)] {
+			matches++
+		}
+	}
+
+	if matches == 0 {
+		return 0
+	}
+
+	// Score based on proportion of profile tags matched
+	matchRatio := float64(matches) / float64(len(profile.Tags))
+	return matchRatio * weight
+}
+
+// computeFocusPatternBonus computes bonus based on file pattern matches.
+func computeFocusPatternBonus(profile *persona.Persona, mentionedFiles []string, weight float64) float64 {
+	if profile == nil || len(profile.FocusPatterns) == 0 || len(mentionedFiles) == 0 {
+		return 0
+	}
+
+	// Count how many mentioned files match any focus pattern
+	matches := 0
+	for _, file := range mentionedFiles {
+		for _, pattern := range profile.FocusPatterns {
+			if matchFocusPattern(pattern, file) {
+				matches++
+				break // Count each file only once
+			}
+		}
+	}
+
+	if matches == 0 {
+		return 0
+	}
+
+	// Score based on proportion of files matched
+	matchRatio := float64(matches) / float64(len(mentionedFiles))
+	return matchRatio * weight
+}
+
+// matchFocusPattern checks if a file matches a focus pattern using glob-style matching.
+func matchFocusPattern(pattern, file string) bool {
+	// Handle ** (any path depth)
+	if strings.Contains(pattern, "**") {
+		// Convert ** to regex-style matching
+		parts := strings.Split(pattern, "**")
+		if len(parts) == 2 {
+			prefix := parts[0]
+			suffix := strings.TrimPrefix(parts[1], "/")
+
+			// File must start with prefix
+			if prefix != "" && !strings.HasPrefix(file, prefix) {
+				return false
+			}
+
+			// File must end with suffix (if any)
+			if suffix != "" {
+				// Remove leading * from suffix for extension matching
+				suffix = strings.TrimPrefix(suffix, "*")
+				return strings.HasSuffix(file, suffix)
+			}
+			return true
+		}
+	}
+
+	// Use filepath.Match for simple glob patterns
+	matched, err := filepath.Match(pattern, file)
+	if err != nil {
+		return false
+	}
+	return matched
 }

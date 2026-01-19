@@ -295,3 +295,124 @@ func containsHelper(s, substr string) bool {
 	}
 	return false
 }
+
+func TestExpandMacros(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		contains []string
+		notContains []string
+	}{
+		{
+			name:     "underscore syntax",
+			input:    "Please follow @marching_orders",
+			contains: []string{"Marching Orders", "{{BEAD_ID}}"},
+			notContains: []string{"@marching_orders"},
+		},
+		{
+			name:     "hyphen syntax",
+			input:    "Use @marching-orders for this task",
+			contains: []string{"Marching Orders", "{{BEAD_ID}}"},
+			notContains: []string{"@marching-orders"},
+		},
+		{
+			name:     "self review macro",
+			input:    "Before completing: @self_review",
+			contains: []string{"Self-Review", "Checklist"},
+			notContains: []string{"@self_review"},
+		},
+		{
+			name:     "multiple macros",
+			input:    "Start with @marching_orders then do @self_review",
+			contains: []string{"Marching Orders", "Self-Review"},
+		},
+		{
+			name:     "code_review macro",
+			input:    "Apply @code_review to this file",
+			contains: []string{"Review the following code"},
+			notContains: []string{"@code_review"},
+		},
+		{
+			name:     "unknown macro unchanged",
+			input:    "Check @nonexistent_macro here",
+			contains: []string{"@nonexistent_macro"},
+		},
+		{
+			name:     "email address not expanded",
+			input:    "Contact user@example.com for help",
+			contains: []string{"user@example.com"},
+		},
+		{
+			name:     "no macros",
+			input:    "Plain text without macros",
+			contains: []string{"Plain text without macros"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ExpandMacros(tt.input)
+
+			for _, want := range tt.contains {
+				if !contains(result, want) {
+					t.Errorf("Result should contain %q, got:\n%s", want, result)
+				}
+			}
+
+			for _, notWant := range tt.notContains {
+				if contains(result, notWant) {
+					t.Errorf("Result should NOT contain %q, got:\n%s", notWant, result)
+				}
+			}
+		})
+	}
+}
+
+func TestExpandMacrosWithContext(t *testing.T) {
+	input := "Execute @marching_orders for this bead"
+
+	ctx := ExecutionContext{
+		Variables: make(map[string]string),
+	}
+	ctx = ctx.WithBead("bd-test1", "Test Task", "P1", "Task description", "open", "task")
+	ctx = ctx.WithAgent(2, "claude", "opus", "%123")
+
+	result, err := ExpandMacrosWithContext(input, ctx)
+	if err != nil {
+		t.Fatalf("ExpandMacrosWithContext failed: %v", err)
+	}
+
+	// Check that variables are substituted
+	if !contains(result, "bd-test1") {
+		t.Error("Result should contain bead_id")
+	}
+	if !contains(result, "Test Task") {
+		t.Error("Result should contain bead title")
+	}
+	if !contains(result, "Agent #2") {
+		t.Error("Result should contain agent number")
+	}
+}
+
+func TestListMacros(t *testing.T) {
+	macros := ListMacros()
+
+	if len(macros) == 0 {
+		t.Error("ListMacros should return at least one macro")
+	}
+
+	// Check for expected macros
+	expectedMacros := []string{"marching_orders", "self_review", "cross_review", "code_review"}
+	for _, expected := range expectedMacros {
+		found := false
+		for _, m := range macros {
+			if m == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected macro %q not found in ListMacros", expected)
+		}
+	}
+}

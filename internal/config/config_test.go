@@ -1836,3 +1836,227 @@ func TestCASSContextPrintOutput(t *testing.T) {
 		t.Error("Expected output to contain prefer_same_project")
 	}
 }
+
+func TestSessionRecoveryDefaults(t *testing.T) {
+	cfg := Default()
+
+	if !cfg.SessionRecovery.Enabled {
+		t.Error("SessionRecovery should be enabled by default")
+	}
+	if !cfg.SessionRecovery.IncludeCMMemories {
+		t.Error("SessionRecovery.IncludeCMMemories should be true by default")
+	}
+	if !cfg.SessionRecovery.IncludeAgentMail {
+		t.Error("SessionRecovery.IncludeAgentMail should be true by default")
+	}
+	if !cfg.SessionRecovery.IncludeBeadsContext {
+		t.Error("SessionRecovery.IncludeBeadsContext should be true by default")
+	}
+	if cfg.SessionRecovery.MaxRecoveryTokens != 2000 {
+		t.Errorf("Expected MaxRecoveryTokens 2000, got %d", cfg.SessionRecovery.MaxRecoveryTokens)
+	}
+	if !cfg.SessionRecovery.AutoInjectOnSpawn {
+		t.Error("SessionRecovery.AutoInjectOnSpawn should be true by default")
+	}
+	if cfg.SessionRecovery.StaleThresholdHours != 24 {
+		t.Errorf("Expected StaleThresholdHours 24, got %d", cfg.SessionRecovery.StaleThresholdHours)
+	}
+}
+
+func TestSessionRecoveryFromTOML(t *testing.T) {
+	configContent := `
+[recovery]
+enabled = false
+include_cm_memories = false
+include_agent_mail = false
+include_beads_context = false
+max_recovery_tokens = 5000
+auto_inject_on_spawn = false
+stale_threshold_hours = 48
+`
+	configPath := createTempConfig(t, configContent)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if cfg.SessionRecovery.Enabled {
+		t.Error("Expected enabled = false")
+	}
+	if cfg.SessionRecovery.IncludeCMMemories {
+		t.Error("Expected include_cm_memories = false")
+	}
+	if cfg.SessionRecovery.IncludeAgentMail {
+		t.Error("Expected include_agent_mail = false")
+	}
+	if cfg.SessionRecovery.IncludeBeadsContext {
+		t.Error("Expected include_beads_context = false")
+	}
+	if cfg.SessionRecovery.MaxRecoveryTokens != 5000 {
+		t.Errorf("Expected MaxRecoveryTokens 5000, got %d", cfg.SessionRecovery.MaxRecoveryTokens)
+	}
+	if cfg.SessionRecovery.AutoInjectOnSpawn {
+		t.Error("Expected auto_inject_on_spawn = false")
+	}
+	if cfg.SessionRecovery.StaleThresholdHours != 48 {
+		t.Errorf("Expected StaleThresholdHours 48, got %d", cfg.SessionRecovery.StaleThresholdHours)
+	}
+}
+
+func TestSessionRecoveryEnvOverrides(t *testing.T) {
+	// Save original values
+	origEnabled := os.Getenv("NTM_RECOVERY_ENABLED")
+	origIncludeCM := os.Getenv("NTM_RECOVERY_INCLUDE_CM")
+	origIncludeAgentMail := os.Getenv("NTM_RECOVERY_INCLUDE_AGENT_MAIL")
+	origIncludeBeads := os.Getenv("NTM_RECOVERY_INCLUDE_BEADS")
+	origMaxTokens := os.Getenv("NTM_RECOVERY_MAX_TOKENS")
+	origAutoInject := os.Getenv("NTM_RECOVERY_AUTO_INJECT")
+	origStaleHours := os.Getenv("NTM_RECOVERY_STALE_HOURS")
+
+	// Clear env vars before test
+	os.Unsetenv("NTM_RECOVERY_ENABLED")
+	os.Unsetenv("NTM_RECOVERY_INCLUDE_CM")
+	os.Unsetenv("NTM_RECOVERY_INCLUDE_AGENT_MAIL")
+	os.Unsetenv("NTM_RECOVERY_INCLUDE_BEADS")
+	os.Unsetenv("NTM_RECOVERY_MAX_TOKENS")
+	os.Unsetenv("NTM_RECOVERY_AUTO_INJECT")
+	os.Unsetenv("NTM_RECOVERY_STALE_HOURS")
+
+	defer func() {
+		os.Setenv("NTM_RECOVERY_ENABLED", origEnabled)
+		os.Setenv("NTM_RECOVERY_INCLUDE_CM", origIncludeCM)
+		os.Setenv("NTM_RECOVERY_INCLUDE_AGENT_MAIL", origIncludeAgentMail)
+		os.Setenv("NTM_RECOVERY_INCLUDE_BEADS", origIncludeBeads)
+		os.Setenv("NTM_RECOVERY_MAX_TOKENS", origMaxTokens)
+		os.Setenv("NTM_RECOVERY_AUTO_INJECT", origAutoInject)
+		os.Setenv("NTM_RECOVERY_STALE_HOURS", origStaleHours)
+	}()
+
+	// Create a config file with defaults (enabled = true)
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(`
+[recovery]
+enabled = true
+include_cm_memories = true
+include_agent_mail = true
+include_beads_context = true
+max_recovery_tokens = 2000
+auto_inject_on_spawn = true
+stale_threshold_hours = 24
+`), 0644); err != nil {
+		t.Fatalf("Failed to create config file: %v", err)
+	}
+
+	// Test NTM_RECOVERY_ENABLED=false
+	os.Setenv("NTM_RECOVERY_ENABLED", "false")
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.SessionRecovery.Enabled {
+		t.Error("SessionRecovery should be disabled via NTM_RECOVERY_ENABLED=false")
+	}
+
+	// Test NTM_RECOVERY_ENABLED=0 (also means false)
+	os.Setenv("NTM_RECOVERY_ENABLED", "0")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.SessionRecovery.Enabled {
+		t.Error("SessionRecovery should be disabled via NTM_RECOVERY_ENABLED=0")
+	}
+
+	// Test NTM_RECOVERY_INCLUDE_CM=false
+	os.Setenv("NTM_RECOVERY_ENABLED", "true")
+	os.Setenv("NTM_RECOVERY_INCLUDE_CM", "false")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.SessionRecovery.IncludeCMMemories {
+		t.Error("IncludeCMMemories should be false via NTM_RECOVERY_INCLUDE_CM=false")
+	}
+
+	// Test NTM_RECOVERY_INCLUDE_AGENT_MAIL=false
+	os.Setenv("NTM_RECOVERY_INCLUDE_AGENT_MAIL", "false")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.SessionRecovery.IncludeAgentMail {
+		t.Error("IncludeAgentMail should be false via NTM_RECOVERY_INCLUDE_AGENT_MAIL=false")
+	}
+
+	// Test NTM_RECOVERY_INCLUDE_BEADS=false
+	os.Setenv("NTM_RECOVERY_INCLUDE_BEADS", "false")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.SessionRecovery.IncludeBeadsContext {
+		t.Error("IncludeBeadsContext should be false via NTM_RECOVERY_INCLUDE_BEADS=false")
+	}
+
+	// Test NTM_RECOVERY_MAX_TOKENS
+	os.Setenv("NTM_RECOVERY_MAX_TOKENS", "5000")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.SessionRecovery.MaxRecoveryTokens != 5000 {
+		t.Errorf("Expected MaxRecoveryTokens 5000 from env, got %d", cfg.SessionRecovery.MaxRecoveryTokens)
+	}
+
+	// Test invalid/negative MaxTokens is rejected
+	os.Setenv("NTM_RECOVERY_MAX_TOKENS", "-100")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.SessionRecovery.MaxRecoveryTokens != 2000 { // Should keep config value, not env
+		t.Errorf("Negative MaxTokens should be rejected, got %d", cfg.SessionRecovery.MaxRecoveryTokens)
+	}
+
+	// Test NTM_RECOVERY_AUTO_INJECT=false
+	os.Setenv("NTM_RECOVERY_MAX_TOKENS", "2000") // Reset to valid
+	os.Setenv("NTM_RECOVERY_AUTO_INJECT", "false")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.SessionRecovery.AutoInjectOnSpawn {
+		t.Error("AutoInjectOnSpawn should be false via NTM_RECOVERY_AUTO_INJECT=false")
+	}
+
+	// Test NTM_RECOVERY_AUTO_INJECT=1 (means true)
+	os.Setenv("NTM_RECOVERY_AUTO_INJECT", "1")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !cfg.SessionRecovery.AutoInjectOnSpawn {
+		t.Error("AutoInjectOnSpawn should be true via NTM_RECOVERY_AUTO_INJECT=1")
+	}
+
+	// Test NTM_RECOVERY_STALE_HOURS
+	os.Setenv("NTM_RECOVERY_STALE_HOURS", "48")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.SessionRecovery.StaleThresholdHours != 48 {
+		t.Errorf("Expected StaleThresholdHours 48 from env, got %d", cfg.SessionRecovery.StaleThresholdHours)
+	}
+
+	// Test invalid/negative StaleHours is rejected
+	os.Setenv("NTM_RECOVERY_STALE_HOURS", "-10")
+	cfg, err = Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.SessionRecovery.StaleThresholdHours != 24 { // Should keep config value, not env
+		t.Errorf("Negative StaleHours should be rejected, got %d", cfg.SessionRecovery.StaleThresholdHours)
+	}
+}

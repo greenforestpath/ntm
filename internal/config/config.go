@@ -35,8 +35,9 @@ type Config struct {
 	CASS            CASSConfig            `toml:"cass"`             // CASS integration configuration
 	Accounts        AccountsConfig        `toml:"accounts"`         // Multi-account management
 	Rotation        RotationConfig        `toml:"rotation"`         // Account rotation configuration
-	GeminiSetup     GeminiSetupConfig     `toml:"gemini_setup"`     // Gemini post-spawn setup
-	ContextRotation ContextRotationConfig `toml:"context_rotation"` // Context window rotation
+	GeminiSetup      GeminiSetupConfig      `toml:"gemini_setup"`      // Gemini post-spawn setup
+	ContextRotation  ContextRotationConfig  `toml:"context_rotation"`  // Context window rotation
+	SessionRecovery  SessionRecoveryConfig  `toml:"recovery"`          // Smart session recovery
 
 	// Runtime-only fields (populated by project config merging)
 	ProjectDefaults map[string]int `toml:"-"`
@@ -443,6 +444,31 @@ func DefaultGeminiSetupConfig() GeminiSetupConfig {
 	}
 }
 
+// SessionRecoveryConfig holds configuration for smart session recovery context injection.
+// This is used to provide agents with context when they start a new session.
+type SessionRecoveryConfig struct {
+	Enabled             bool `toml:"enabled"`               // Master toggle for recovery context injection
+	IncludeAgentMail    bool `toml:"include_agent_mail"`    // Include recent Agent Mail messages
+	IncludeCMMemories   bool `toml:"include_cm_memories"`   // Include CM procedural memories
+	IncludeBeadsContext bool `toml:"include_beads_context"` // Include BV task status
+	MaxRecoveryTokens   int  `toml:"max_recovery_tokens"`   // Cap recovery context size
+	AutoInjectOnSpawn   bool `toml:"auto_inject_on_spawn"`  // Send automatically on spawn
+	StaleThresholdHours int  `toml:"stale_threshold_hours"` // Ignore context older than this
+}
+
+// DefaultSessionRecoveryConfig returns sensible defaults for session recovery.
+func DefaultSessionRecoveryConfig() SessionRecoveryConfig {
+	return SessionRecoveryConfig{
+		Enabled:             true,  // Enabled by default
+		IncludeAgentMail:    true,  // Include Agent Mail messages
+		IncludeCMMemories:   true,  // Include CM procedural memories
+		IncludeBeadsContext: true,  // Include bead/task context
+		MaxRecoveryTokens:   2000,  // Token budget for recovery context
+		AutoInjectOnSpawn:   true,  // Inject on spawn by default
+		StaleThresholdHours: 24,    // Consider context up to 24 hours old
+	}
+}
+
 // PaletteCmd represents a command in the palette
 type PaletteCmd struct {
 	Key      string   `toml:"key"`
@@ -751,6 +777,7 @@ func Default() *Config {
 		Rotation:        DefaultRotationConfig(),
 		GeminiSetup:     DefaultGeminiSetupConfig(),
 		ContextRotation: DefaultContextRotationConfig(),
+		SessionRecovery: DefaultSessionRecoveryConfig(),
 	}
 
 	// Try to load palette from markdown file
@@ -972,6 +999,33 @@ func Load(path string) (*Config, error) {
 	// Gemini Env Overrides
 	if autoSelect := os.Getenv("NTM_GEMINI_AUTO_PRO"); autoSelect != "" {
 		cfg.GeminiSetup.AutoSelectProModel = autoSelect == "1" || autoSelect == "true"
+	}
+
+	// Session Recovery Env Overrides
+	if recoveryEnabled := os.Getenv("NTM_RECOVERY_ENABLED"); recoveryEnabled != "" {
+		cfg.SessionRecovery.Enabled = recoveryEnabled == "1" || recoveryEnabled == "true"
+	}
+	if includeAgentMail := os.Getenv("NTM_RECOVERY_INCLUDE_AGENT_MAIL"); includeAgentMail != "" {
+		cfg.SessionRecovery.IncludeAgentMail = includeAgentMail == "1" || includeAgentMail == "true"
+	}
+	if includeCM := os.Getenv("NTM_RECOVERY_INCLUDE_CM"); includeCM != "" {
+		cfg.SessionRecovery.IncludeCMMemories = includeCM == "1" || includeCM == "true"
+	}
+	if includeBeads := os.Getenv("NTM_RECOVERY_INCLUDE_BEADS"); includeBeads != "" {
+		cfg.SessionRecovery.IncludeBeadsContext = includeBeads == "1" || includeBeads == "true"
+	}
+	if maxTokens := os.Getenv("NTM_RECOVERY_MAX_TOKENS"); maxTokens != "" {
+		if n, err := strconv.Atoi(maxTokens); err == nil && n > 0 {
+			cfg.SessionRecovery.MaxRecoveryTokens = n
+		}
+	}
+	if autoInject := os.Getenv("NTM_RECOVERY_AUTO_INJECT"); autoInject != "" {
+		cfg.SessionRecovery.AutoInjectOnSpawn = autoInject == "1" || autoInject == "true"
+	}
+	if staleHours := os.Getenv("NTM_RECOVERY_STALE_HOURS"); staleHours != "" {
+		if n, err := strconv.Atoi(staleHours); err == nil && n > 0 {
+			cfg.SessionRecovery.StaleThresholdHours = n
+		}
 	}
 
 	// 4. Palette Precedence: Markdown > TOML > Default

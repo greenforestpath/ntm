@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -56,6 +57,7 @@ type AgentState struct {
 	CurrentTask   string           `json:"current_task,omitempty"`
 	Reservations  []string         `json:"reservations,omitempty"`
 	Healthy       bool             `json:"healthy"`
+	Profile       *persona.Persona `json:"profile,omitempty"` // Agent's assigned profile for routing
 }
 
 // CoordinatorConfig holds configuration for the coordinator.

@@ -1280,6 +1280,7 @@ func init() {
 		newMailCmd(),
 		newPluginsCmd(),
 		newAgentsCmd(),
+		newAssignCmd(),
 
 		// Session navigation
 		newAttachCmd(),

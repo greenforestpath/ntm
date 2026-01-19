@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
@@ -546,5 +547,397 @@ func TestComputeCriticalPathBonus(t *testing.T) {
 				t.Errorf("expected positive bonus, got %f", bonus)
 			}
 		})
+	}
+}
+
+func TestExtractTaskTags(t *testing.T) {
+	tests := []struct {
+		name        string
+		title       string
+		description string
+		wantTags    []string
+	}{
+		{
+			name:     "test-related title",
+			title:    "Add unit tests for the parser",
+			wantTags: []string{"testing", "implementation"}, // "add" triggers implementation
+		},
+		{
+			name:     "architecture task",
+			title:    "Refactor the API design patterns",
+			wantTags: []string{"architecture"},
+		},
+		{
+			name:     "documentation task",
+			title:    "Update README with new features",
+			wantTags: []string{"documentation", "implementation"}, // "feature" triggers implementation
+		},
+		{
+			name:     "implementation task",
+			title:    "Implement new feature for user auth",
+			wantTags: []string{"implementation"},
+		},
+		{
+			name:     "review task",
+			title:    "Code review for PR #123",
+			wantTags: []string{"review"},
+		},
+		{
+			name:     "bug fix",
+			title:    "Fix crash when loading config",
+			wantTags: []string{"bugs"},
+		},
+		{
+			name:        "multiple tags from description",
+			title:       "Add tests",
+			description: "Refactor the code and add documentation",
+			wantTags:    []string{"testing", "architecture", "documentation", "implementation"}, // "add" triggers implementation
+		},
+		{
+			name:     "no matching tags",
+			title:    "Random task with no keywords",
+			wantTags: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tags := ExtractTaskTags(tt.title, tt.description)
+			if len(tags) != len(tt.wantTags) {
+				t.Errorf("expected %d tags, got %d: %v", len(tt.wantTags), len(tags), tags)
+				return
+			}
+			tagSet := make(map[string]bool)
+			for _, tag := range tags {
+				tagSet[tag] = true
+			}
+			for _, want := range tt.wantTags {
+				if !tagSet[want] {
+					t.Errorf("expected tag %q not found in %v", want, tags)
+				}
+			}
+		})
+	}
+}
+
+func TestExtractMentionedFiles(t *testing.T) {
+	tests := []struct {
+		name        string
+		title       string
+		description string
+		wantFiles   []string
+	}{
+		{
+			name:      "go file in title",
+			title:     "Fix bug in internal/config/config.go",
+			wantFiles: []string{"internal/config/config.go"},
+		},
+		{
+			name:      "multiple files",
+			title:     "Update cmd/main.go and internal/cli/run.go",
+			wantFiles: []string{"cmd/main.go", "internal/cli/run.go"},
+		},
+		{
+			name:      "glob pattern",
+			title:     "Refactor internal/**/*.go files",
+			wantFiles: []string{"internal/**/*.go"},
+		},
+		{
+			name:        "files in description",
+			title:       "Fix tests",
+			description: "The tests in tests/e2e/main_test.go are failing",
+			wantFiles:   []string{"tests/e2e/main_test.go"},
+		},
+		{
+			name:      "no files mentioned",
+			title:     "Improve performance of the system",
+			wantFiles: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := ExtractMentionedFiles(tt.title, tt.description)
+			if len(files) != len(tt.wantFiles) {
+				t.Errorf("expected %d files, got %d: %v", len(tt.wantFiles), len(files), files)
+				return
+			}
+			fileSet := make(map[string]bool)
+			for _, f := range files {
+				fileSet[f] = true
+			}
+			for _, want := range tt.wantFiles {
+				if !fileSet[want] {
+					t.Errorf("expected file %q not found in %v", want, files)
+				}
+			}
+		})
+	}
+}
+
+func TestIsFilePath(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"internal/config/config.go", true},
+		{"cmd/main.go", true},
+		{"pkg/**/*.ts", true},
+		{"README.md", true},
+		{".gitignore", true},
+		{"hello", false},
+		{"the", false},
+		{"Fix", false},
+		{"", false},
+		{"a", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := isFilePath(tt.input)
+			if got != tt.want {
+				t.Errorf("isFilePath(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchFocusPattern(t *testing.T) {
+	tests := []struct {
+		pattern string
+		file    string
+		want    bool
+	}{
+		{"*.go", "main.go", true},
+		{"*.go", "main.ts", false},
+		{"internal/**", "internal/cli/run.go", true},
+		{"internal/**", "cmd/main.go", false},
+		{"**/*.go", "internal/config/config.go", true},
+		{"**/*.go", "config.ts", false},
+		{"internal/*.go", "internal/foo.go", true},
+		{"internal/*.go", "internal/sub/foo.go", false},
+		{"docs/**", "docs/README.md", true},
+		{"tests/**", "internal/test.go", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pattern+"_"+tt.file, func(t *testing.T) {
+			got := matchFocusPattern(tt.pattern, tt.file)
+			if got != tt.want {
+				t.Errorf("matchFocusPattern(%q, %q) = %v, want %v", tt.pattern, tt.file, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestComputeProfileTagBonus(t *testing.T) {
+	tests := []struct {
+		name     string
+		tags     []string
+		taskTags []string
+		weight   float64
+		wantMin  float64
+		wantMax  float64
+	}{
+		{
+			name:     "full match",
+			tags:     []string{"testing", "qa"},
+			taskTags: []string{"testing"},
+			weight:   0.15,
+			wantMin:  0.075, // 50% match * 0.15
+			wantMax:  0.16,
+		},
+		{
+			name:     "no match",
+			tags:     []string{"documentation"},
+			taskTags: []string{"testing"},
+			weight:   0.15,
+			wantMin:  0,
+			wantMax:  0,
+		},
+		{
+			name:     "multiple overlapping tags",
+			tags:     []string{"testing", "qa", "quality"},
+			taskTags: []string{"testing", "quality"},
+			weight:   0.15,
+			wantMin:  0.09, // 2/3 match * 0.15 = 0.10
+			wantMax:  0.16,
+		},
+		{
+			name:     "nil profile tags",
+			tags:     nil,
+			taskTags: []string{"testing"},
+			weight:   0.15,
+			wantMin:  0,
+			wantMax:  0,
+		},
+		{
+			name:     "empty task tags",
+			tags:     []string{"testing"},
+			taskTags: []string{},
+			weight:   0.15,
+			wantMin:  0,
+			wantMax:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := &persona.Persona{Tags: tt.tags}
+			bonus := computeProfileTagBonus(profile, tt.taskTags, tt.weight)
+			if bonus < tt.wantMin || bonus > tt.wantMax {
+				t.Errorf("expected bonus in [%f, %f], got %f", tt.wantMin, tt.wantMax, bonus)
+			}
+		})
+	}
+}
+
+func TestComputeFocusPatternBonus(t *testing.T) {
+	tests := []struct {
+		name           string
+		focusPatterns  []string
+		mentionedFiles []string
+		weight         float64
+		wantMin        float64
+		wantMax        float64
+	}{
+		{
+			name:           "match internal files",
+			focusPatterns:  []string{"internal/**"},
+			mentionedFiles: []string{"internal/config/config.go"},
+			weight:         0.10,
+			wantMin:        0.09,
+			wantMax:        0.11,
+		},
+		{
+			name:           "no match",
+			focusPatterns:  []string{"docs/**"},
+			mentionedFiles: []string{"internal/config/config.go"},
+			weight:         0.10,
+			wantMin:        0,
+			wantMax:        0,
+		},
+		{
+			name:           "partial match",
+			focusPatterns:  []string{"internal/**", "docs/**"},
+			mentionedFiles: []string{"internal/cli.go", "cmd/main.go"},
+			weight:         0.10,
+			wantMin:        0.04, // 1/2 match * 0.10
+			wantMax:        0.06,
+		},
+		{
+			name:           "nil focus patterns",
+			focusPatterns:  nil,
+			mentionedFiles: []string{"internal/cli.go"},
+			weight:         0.10,
+			wantMin:        0,
+			wantMax:        0,
+		},
+		{
+			name:           "empty mentioned files",
+			focusPatterns:  []string{"internal/**"},
+			mentionedFiles: []string{},
+			weight:         0.10,
+			wantMin:        0,
+			wantMax:        0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := &persona.Persona{FocusPatterns: tt.focusPatterns}
+			bonus := computeFocusPatternBonus(profile, tt.mentionedFiles, tt.weight)
+			if bonus < tt.wantMin || bonus > tt.wantMax {
+				t.Errorf("expected bonus in [%f, %f], got %f", tt.wantMin, tt.wantMax, bonus)
+			}
+		})
+	}
+}
+
+func TestScoreAssignmentWithProfile(t *testing.T) {
+	// Test that profile bonuses are applied correctly in scoreAssignment
+	testerProfile := &persona.Persona{
+		Name:          "tester",
+		Tags:          []string{"testing", "qa", "quality"},
+		FocusPatterns: []string{"**/*_test.go", "tests/**"},
+	}
+
+	agent := &AgentState{
+		PaneID:    "%1",
+		AgentType: "cc",
+		Profile:   testerProfile,
+	}
+
+	// Task that matches tester profile
+	testingTask := &bv.TriageRecommendation{
+		ID:    "ntm-001",
+		Title: "Add unit tests for internal/config/config_test.go",
+		Type:  "task",
+		Score: 0.5,
+	}
+
+	// Task that doesn't match tester profile
+	docTask := &bv.TriageRecommendation{
+		ID:    "ntm-002",
+		Title: "Update documentation in docs/README.md",
+		Type:  "task",
+		Score: 0.5,
+	}
+
+	config := ScoreConfig{
+		UseAgentProfiles:        true,
+		ProfileTagBoostWeight:   0.15,
+		FocusPatternBoostWeight: 0.10,
+	}
+
+	testingResult := scoreAssignment(agent, testingTask, config, nil)
+	docResult := scoreAssignment(agent, docTask, config, nil)
+
+	// Testing task should have higher profile bonuses
+	if testingResult.ScoreBreakdown.ProfileTagBonus <= docResult.ScoreBreakdown.ProfileTagBonus {
+		t.Errorf("testing task should have higher ProfileTagBonus: testing=%f, doc=%f",
+			testingResult.ScoreBreakdown.ProfileTagBonus, docResult.ScoreBreakdown.ProfileTagBonus)
+	}
+
+	if testingResult.ScoreBreakdown.FocusPatternBonus <= docResult.ScoreBreakdown.FocusPatternBonus {
+		t.Errorf("testing task should have higher FocusPatternBonus: testing=%f, doc=%f",
+			testingResult.ScoreBreakdown.FocusPatternBonus, docResult.ScoreBreakdown.FocusPatternBonus)
+	}
+
+	// Total score for testing task should be higher
+	if testingResult.TotalScore <= docResult.TotalScore {
+		t.Errorf("testing task should have higher total score: testing=%f, doc=%f",
+			testingResult.TotalScore, docResult.TotalScore)
+	}
+}
+
+func TestScoreAssignmentWithNilProfile(t *testing.T) {
+	// Test that nil profile doesn't cause panic and results in zero bonuses
+	agent := &AgentState{
+		PaneID:    "%1",
+		AgentType: "cc",
+		Profile:   nil,
+	}
+
+	task := &bv.TriageRecommendation{
+		ID:    "ntm-001",
+		Title: "Add unit tests",
+		Type:  "task",
+		Score: 0.5,
+	}
+
+	config := ScoreConfig{
+		UseAgentProfiles:        true,
+		ProfileTagBoostWeight:   0.15,
+		FocusPatternBoostWeight: 0.10,
+	}
+
+	result := scoreAssignment(agent, task, config, nil)
+
+	if result.ScoreBreakdown.ProfileTagBonus != 0 {
+		t.Errorf("expected zero ProfileTagBonus with nil profile, got %f", result.ScoreBreakdown.ProfileTagBonus)
+	}
+	if result.ScoreBreakdown.FocusPatternBonus != 0 {
+		t.Errorf("expected zero FocusPatternBonus with nil profile, got %f", result.ScoreBreakdown.FocusPatternBonus)
 	}
 }

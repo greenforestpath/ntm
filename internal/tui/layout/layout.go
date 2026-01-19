@@ -66,6 +66,55 @@ func TierForWidth(width int) Tier {
 	}
 }
 
+// HysteresisMargin is the number of columns of padding around tier boundaries
+// to prevent rapid tier changes when the width is near a boundary.
+const HysteresisMargin = 5
+
+// TierForWidthWithHysteresis maps width to a tier with hysteresis to prevent
+// flickering when resizing near tier boundaries. If the previous tier is
+// provided, the function will prefer staying in that tier if the width is
+// within HysteresisMargin of the boundary.
+func TierForWidthWithHysteresis(width int, prevTier Tier) Tier {
+	newTier := TierForWidth(width)
+
+	// If no change or previous tier is invalid, use the new tier directly
+	if newTier == prevTier || prevTier < TierNarrow || prevTier > TierMega {
+		return newTier
+	}
+
+	// Apply hysteresis: only change tier if we're clearly past the boundary
+	// This prevents flickering when resizing near tier boundaries
+	switch prevTier {
+	case TierNarrow:
+		// Stay narrow unless clearly into split
+		if width < SplitViewThreshold+HysteresisMargin {
+			return TierNarrow
+		}
+	case TierSplit:
+		// Stay split unless clearly out of range
+		if width >= SplitViewThreshold-HysteresisMargin && width < WideViewThreshold+HysteresisMargin {
+			return TierSplit
+		}
+	case TierWide:
+		// Stay wide unless clearly out of range
+		if width >= WideViewThreshold-HysteresisMargin && width < UltraWideViewThreshold+HysteresisMargin {
+			return TierWide
+		}
+	case TierUltra:
+		// Stay ultra unless clearly out of range
+		if width >= UltraWideViewThreshold-HysteresisMargin && width < MegaWideViewThreshold+HysteresisMargin {
+			return TierUltra
+		}
+	case TierMega:
+		// Stay mega unless clearly below threshold
+		if width >= MegaWideViewThreshold-HysteresisMargin {
+			return TierMega
+		}
+	}
+
+	return newTier
+}
+
 // TruncateRunes trims a string to max runes and appends suffix if truncated.
 // It is rune‑aware to avoid splitting emoji or wide glyphs.
 func TruncateRunes(s string, max int, suffix string) string {

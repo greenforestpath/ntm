@@ -73,6 +73,54 @@ type ExecutionContext struct {
 
 	// Clipboard content for {{clipboard}} variable
 	Clipboard string
+
+	// Bead context for {{bead_id}}, {{bead_title}}, {{bead_priority}}, {{bead_description}}
+	BeadID          string
+	BeadTitle       string
+	BeadPriority    string // e.g., "P0", "P1"
+	BeadDescription string
+	BeadStatus      string // e.g., "open", "in_progress"
+	BeadType        string // e.g., "feature", "bug", "task"
+
+	// Agent context for {{agent_num}}, {{agent_type}}, {{agent_variant}}, {{agent_pane}}
+	AgentNum     int    // 1-indexed agent number
+	AgentType    string // "claude", "codex", "gemini"
+	AgentVariant string // e.g., "opus", "sonnet"
+	AgentPane    string // pane ID like "%123"
+
+	// Index in a multi-send operation for {{send_index}}, {{send_total}}
+	SendIndex int // 0-indexed position in send batch
+	SendTotal int // total number of targets in send batch
+}
+
+// WithBead sets bead context on an ExecutionContext and returns the modified context.
+// This is a convenience method for chaining.
+func (ctx ExecutionContext) WithBead(id, title, priority, description, status, issueType string) ExecutionContext {
+	ctx.BeadID = id
+	ctx.BeadTitle = title
+	ctx.BeadPriority = priority
+	ctx.BeadDescription = description
+	ctx.BeadStatus = status
+	ctx.BeadType = issueType
+	return ctx
+}
+
+// WithAgent sets agent context on an ExecutionContext and returns the modified context.
+// agentNum should be 1-indexed (first agent is 1, not 0).
+func (ctx ExecutionContext) WithAgent(agentNum int, agentType, variant, paneID string) ExecutionContext {
+	ctx.AgentNum = agentNum
+	ctx.AgentType = agentType
+	ctx.AgentVariant = variant
+	ctx.AgentPane = paneID
+	return ctx
+}
+
+// WithSendBatch sets send batch context (for multi-target sends).
+// index is 0-indexed, total is the count of all targets.
+func (ctx ExecutionContext) WithSendBatch(index, total int) ExecutionContext {
+	ctx.SendIndex = index
+	ctx.SendTotal = total
+	return ctx
 }
 
 // Validate checks that all required variables are provided.

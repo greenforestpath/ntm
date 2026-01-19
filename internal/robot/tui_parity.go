@@ -353,11 +353,27 @@ func PrintInspectPane(opts InspectPaneOptions) error {
 		}
 	}
 
+	// If pane index 0 was requested but not found, and there are panes,
+	// the user likely wants the first pane but tmux has pane-base-index > 0.
+	// Fall back to the first pane in the list.
+	if targetPane == nil && opts.PaneIndex == 0 && len(panes) > 0 {
+		targetPane = &panes[0]
+	}
+
 	if targetPane == nil {
+		// Build list of actual valid pane indices for a helpful hint
+		var validIndices []string
+		for _, p := range panes {
+			validIndices = append(validIndices, fmt.Sprintf("%d", p.Index))
+		}
+		hint := "No panes found"
+		if len(validIndices) > 0 {
+			hint = fmt.Sprintf("Valid pane indices: %s", strings.Join(validIndices, ", "))
+		}
 		return RobotError(
 			fmt.Errorf("pane %d not found in session '%s'", opts.PaneIndex, opts.Session),
 			ErrCodePaneNotFound,
-			fmt.Sprintf("Valid pane indices: 0-%d", len(panes)-1),
+			hint,
 		)
 	}
 
