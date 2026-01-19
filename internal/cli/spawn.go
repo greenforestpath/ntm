@@ -1077,6 +1077,21 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			}
 		}
 
+		// Register spawned agents with Agent Mail
+		var agentMailStatus *output.AgentMailSpawnStatus
+		if len(launchedAgents) > 0 {
+			spawnedAgents := make([]spawnedAgentInfo, len(launchedAgents))
+			for i, agent := range launchedAgents {
+				spawnedAgents[i] = spawnedAgentInfo{
+					paneIndex:     agent.paneIndex,
+					agentType:     agent.agentType,
+					model:         agent.model,
+					resolvedModel: agent.resolvedModel,
+				}
+			}
+			agentMailStatus = registerSpawnedAgents(dir, spawnedAgents)
+		}
+
 		return output.PrintJSON(output.SpawnResponse{
 			TimestampedResponse: output.NewTimestamped(),
 			Session:             opts.Session,
@@ -1085,6 +1100,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			Panes:               paneResponses,
 			AgentCounts:         agentCounts,
 			Stagger:             staggerCfg,
+			AgentMail:           agentMailStatus,
 		})
 	}
 
@@ -1102,6 +1118,20 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			Variant:   agent.model,
 			PaneIndex: agent.paneIndex,
 		})
+	}
+
+	// Register spawned agents with Agent Mail (non-JSON mode)
+	if len(launchedAgents) > 0 {
+		spawnedAgents := make([]spawnedAgentInfo, len(launchedAgents))
+		for i, agent := range launchedAgents {
+			spawnedAgents[i] = spawnedAgentInfo{
+				paneIndex:     agent.paneIndex,
+				agentType:     agent.agentType,
+				model:         agent.model,
+				resolvedModel: agent.resolvedModel,
+			}
+		}
+		_ = registerSpawnedAgents(dir, spawnedAgents) // Ignore result in non-JSON mode
 	}
 
 	// Run post-spawn hooks
@@ -1233,6 +1263,113 @@ func registerSessionAgent(sessionName, workingDir string) {
 	}
 	if info != nil && !IsJSONOutput() {
 		output.PrintInfof("Registered with Agent Mail as %s", info.AgentName)
+	}
+}
+
+// spawnedAgentInfo holds agent info for registration with Agent Mail.
+type spawnedAgentInfo struct {
+	paneIndex     int
+	agentType     string
+	model         string
+	resolvedModel string
+}
+
+// registerSpawnedAgents registers each spawned agent with Agent Mail and returns status.
+// This function implements graceful degradation - Agent Mail unavailability does not
+// cause spawn to fail. Returns nil if Agent Mail is not available or disabled.
+func registerSpawnedAgents(workingDir string, agents []spawnedAgentInfo) *output.AgentMailSpawnStatus {
+	// Check if Agent Mail integration is enabled
+	if cfg != nil && !cfg.AgentMail.Enabled {
+		return nil
+	}
+
+	var opts []agentmail.Option
+	if cfg != nil {
+		if cfg.AgentMail.URL != "" {
+			opts = append(opts, agentmail.WithBaseURL(cfg.AgentMail.URL))
+		}
+		if cfg.AgentMail.Token != "" {
+			opts = append(opts, agentmail.WithToken(cfg.AgentMail.Token))
+		}
+	}
+	client := agentmail.NewClient(opts...)
+
+	// Check availability first (uses cached result)
+	if !client.IsAvailable() {
+		return &output.AgentMailSpawnStatus{
+			Available:         false,
+			ProjectRegistered: false,
+			AgentsRegistered:  0,
+			AgentsFailed:      len(agents),
+		}
+	}
+
+	status := &output.AgentMailSpawnStatus{
+		Available: true,
+		AgentMap:  make(map[string]string),
+	}
+
+	// Ensure project exists
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := client.EnsureProject(ctx, workingDir)
+	if err != nil {
+		if !IsJSONOutput() {
+			output.PrintWarningf("Agent Mail project registration failed: %v", err)
+		}
+		status.ProjectRegistered = false
+		status.AgentsFailed = len(agents)
+		return status
+	}
+	status.ProjectRegistered = true
+
+	// Register each agent
+	for _, agent := range agents {
+		// Map agent type to program name
+		program := agentTypeToProgram(agent.agentType)
+		model := agent.resolvedModel
+		if model == "" {
+			model = agent.model
+		}
+
+		regCtx, regCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		registered, err := client.CreateAgentIdentity(regCtx, agentmail.RegisterAgentOptions{
+			ProjectKey: workingDir,
+			Program:    program,
+			Model:      model,
+		})
+		regCancel()
+
+		if err != nil {
+			status.AgentsFailed++
+			if !IsJSONOutput() {
+				output.PrintWarningf("Agent Mail registration failed for pane %d: %v", agent.paneIndex, err)
+			}
+			continue
+		}
+
+		status.AgentsRegistered++
+		status.AgentMap[fmt.Sprintf("%d", agent.paneIndex)] = registered.Name
+		if !IsJSONOutput() {
+			output.PrintInfof("Registered agent pane %d as %s", agent.paneIndex, registered.Name)
+		}
+	}
+
+	return status
+}
+
+// agentTypeToProgram maps NTM agent types to Agent Mail program names.
+func agentTypeToProgram(agentType string) string {
+	switch agentType {
+	case "cc":
+		return "claude-code"
+	case "cod":
+		return "codex-cli"
+	case "gmi":
+		return "gemini-cli"
+	default:
+		return agentType
 	}
 }
 
@@ -1748,66 +1885,5 @@ func FormatRecoveryPrompt(rc *RecoveryContext) string {
 
 	sb.WriteString("Reread AGENTS.md and continue from where you left off.\n")
 
-	return sb.String()
-	}
-
-	// Blocked beads
-	if len(rc.BlockedBeads) > 0 {
-		sb.WriteString("### Blocked Beads\n")
-		for _, b := range rc.BlockedBeads {
-			sb.WriteString(fmt.Sprintf("- **%s**: %s\n", b.ID, b.Title))
-		}
-		sb.WriteString("\n")
-	}
-
-	// Agent Mail messages
-	if len(rc.Messages) > 0 {
-		sb.WriteString("### Recent Agent Mail Messages\n")
-		for _, m := range rc.Messages {
-			importance := ""
-			if m.Importance != "" && m.Importance != "normal" {
-				importance = fmt.Sprintf(" [%s]", strings.ToUpper(m.Importance))
-			}
-			sb.WriteString(fmt.Sprintf("- **From %s%s:** %s\n", m.From, importance, m.Subject))
-			if m.Body != "" {
-				body := m.Body
-				if len(body) > 200 {
-					body = body[:200] + "..."
-				}
-				sb.WriteString(fmt.Sprintf("  > %s\n", strings.ReplaceAll(body, "\n", "\n  > ")))
-			}
-		}
-		sb.WriteString("\n")
-	}
-
-	// File reservations
-	if len(rc.FileReservations) > 0 {
-		sb.WriteString("### Active File Reservations\n")
-		sb.WriteString("These files are currently reserved by this session:\n")
-		for _, f := range rc.FileReservations {
-			sb.WriteString(fmt.Sprintf("- `%s`\n", f))
-		}
-		sb.WriteString("\n")
-	}
-
-	// CM memories
-	if rc.CMMemories != nil {
-		if len(rc.CMMemories.Rules) > 0 {
-			sb.WriteString("### Procedural Memories (Rules)\n")
-			for _, r := range rc.CMMemories.Rules {
-				sb.WriteString(fmt.Sprintf("- [%s] %s\n", r.ID, r.Content))
-			}
-			sb.WriteString("\n")
-		}
-		if len(rc.CMMemories.AntiPatterns) > 0 {
-			sb.WriteString("### Anti-Patterns to Avoid\n")
-			for _, r := range rc.CMMemories.AntiPatterns {
-				sb.WriteString(fmt.Sprintf("- [%s] %s\n", r.ID, r.Content))
-			}
-			sb.WriteString("\n")
-		}
-	}
-
-	sb.WriteString("</session-recovery-context>\n")
 	return sb.String()
 }

@@ -343,7 +343,11 @@ func (r *Rotator) CheckAndRotate(sessionName, workDir string) ([]RotationResult,
 
 		// If confirmation is required, create a pending rotation instead
 		if r.config.RequireConfirm {
-			pending := r.createPendingRotation(sessionName, agentInfo.AgentID, agentInfo.UsagePercent, workDir)
+			usagePercent := 0.0
+			if agentInfo.Estimate != nil {
+				usagePercent = agentInfo.Estimate.UsagePercent
+			}
+			pending := r.createPendingRotation(sessionName, agentInfo.AgentID, usagePercent, workDir)
 			results = append(results, RotationResult{
 				OldAgentID: agentInfo.AgentID,
 				Method:     RotationThresholdExceeded,

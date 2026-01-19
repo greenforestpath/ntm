@@ -92,15 +92,25 @@ type StaggerConfig struct {
 	IntervalMs int64 `json:"interval_ms,omitempty"`
 }
 
+// AgentMailSpawnStatus represents Agent Mail registration status for a spawn operation
+type AgentMailSpawnStatus struct {
+	Available         bool              `json:"available"`
+	ProjectRegistered bool              `json:"project_registered"`
+	AgentsRegistered  int               `json:"agents_registered"`
+	AgentsFailed      int               `json:"agents_failed"`
+	AgentMap          map[string]string `json:"agent_map,omitempty"` // pane index -> agent name
+}
+
 // SpawnResponse is the output format for spawn command (with agents)
 type SpawnResponse struct {
 	TimestampedResponse
-	Session          string              `json:"session"`
-	Created          bool                `json:"created"`
-	WorkingDirectory string              `json:"working_directory,omitempty"`
-	Panes            []PaneResponse      `json:"panes"`
-	AgentCounts      AgentCountsResponse `json:"agent_counts"`
-	Stagger          *StaggerConfig      `json:"stagger,omitempty"`
+	Session          string                `json:"session"`
+	Created          bool                  `json:"created"`
+	WorkingDirectory string                `json:"working_directory,omitempty"`
+	Panes            []PaneResponse        `json:"panes"`
+	AgentCounts      AgentCountsResponse   `json:"agent_counts"`
+	Stagger          *StaggerConfig        `json:"stagger,omitempty"`
+	AgentMail        *AgentMailSpawnStatus `json:"agent_mail,omitempty"`
 }
 
 // CreateResponse is the output format for create command (basic session)
@@ -156,13 +166,15 @@ type SessionListItem struct {
 // StatusResponse is the output format for status command
 type StatusResponse struct {
 	TimestampedResponse
-	Session          string              `json:"session"`
-	Exists           bool                `json:"exists"`
-	Attached         bool                `json:"attached"`
-	WorkingDirectory string              `json:"working_directory"`
-	Panes            []PaneResponse      `json:"panes"`
-	AgentCounts      AgentCountsResponse `json:"agent_counts"`
-	AgentMail        *AgentMailStatus    `json:"agent_mail,omitempty"`
+	Session          string               `json:"session"`
+	Exists           bool                 `json:"exists"`
+	Attached         bool                 `json:"attached"`
+	WorkingDirectory string               `json:"working_directory"`
+	Panes            []PaneResponse       `json:"panes"`
+	AgentCounts      AgentCountsResponse  `json:"agent_counts"`
+	AgentMail        *AgentMailStatus     `json:"agent_mail,omitempty"`
+	Assignments      []AssignmentResponse `json:"assignments,omitempty"`
+	AssignmentStats  *AssignmentStats     `json:"assignment_stats,omitempty"`
 }
 
 // AgentMailStatus represents Agent Mail integration status for a session
@@ -222,4 +234,37 @@ type AnalyticsResponse struct {
 	TotalCharsSent int    `json:"total_chars_sent"`
 	TotalTokensEst int    `json:"total_tokens_estimated"`
 	ErrorCount     int    `json:"error_count"`
+}
+
+// AssignmentResponse represents a single bead-to-agent assignment
+type AssignmentResponse struct {
+	BeadID      string  `json:"bead_id"`
+	BeadTitle   string  `json:"bead_title"`
+	Pane        int     `json:"pane"`
+	AgentType   string  `json:"agent_type"`
+	AgentName   string  `json:"agent_name,omitempty"`
+	Status      string  `json:"status"`
+	AssignedAt  string  `json:"assigned_at"`
+	StartedAt   *string `json:"started_at,omitempty"`
+	CompletedAt *string `json:"completed_at,omitempty"`
+	FailedAt    *string `json:"failed_at,omitempty"`
+	FailReason  string  `json:"fail_reason,omitempty"`
+}
+
+// AssignmentsResponse is the output format for assignment tracking
+type AssignmentsResponse struct {
+	TimestampedResponse
+	Session     string               `json:"session"`
+	Assignments []AssignmentResponse `json:"assignments"`
+	Stats       AssignmentStats      `json:"stats"`
+}
+
+// AssignmentStats contains summary statistics for assignments
+type AssignmentStats struct {
+	Total      int `json:"total"`
+	Assigned   int `json:"assigned"`
+	Working    int `json:"working"`
+	Completed  int `json:"completed"`
+	Failed     int `json:"failed"`
+	Reassigned int `json:"reassigned"`
 }
