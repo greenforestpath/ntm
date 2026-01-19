@@ -9,7 +9,18 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
+	"github.com/Dicklesworthstone/ntm/internal/tui/terminal"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
+)
+
+// Animation tick interval. Higher values reduce visual jitter but make
+// animations less smooth. 150ms is a good balance.
+const progressTickInterval = 150 * time.Millisecond
+
+// ASCII fallback characters for terminals without Unicode block support
+const (
+	FilledASCII = "="
+	EmptyASCII  = "-"
 )
 
 // ProgressBar is an animated progress bar with gradient support

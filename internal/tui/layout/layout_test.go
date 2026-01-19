@@ -307,3 +307,113 @@ func TestTierConstants(t *testing.T) {
 		t.Errorf("TierMega = %d, want 5", TierMega)
 	}
 }
+
+// TestTruncatePaneTitle tests the smart truncation function for pane titles
+// that preserves the agent suffix (e.g., __cc_1) to keep panes distinguishable.
+func TestTruncatePaneTitle(t *testing.T) {
+	tests := []struct {
+		name     string
+		title    string
+		maxWidth int
+		want     string
+	}{
+		{
+			name:     "fits without truncation",
+			title:    "myproject__cc_1",
+			maxWidth: 20,
+			want:     "myproject__cc_1",
+		},
+		{
+			name:     "truncates prefix preserves suffix",
+			title:    "destructive_command_guard__cc_1",
+			maxWidth: 20,
+			want:     "destructive_c…__cc_1",
+		},
+		{
+			name:     "truncates long prefix preserves suffix",
+			title:    "very_long_project_name__cod_10",
+			maxWidth: 18,
+			want:     "very_long…__cod_10",
+		},
+		{
+			name:     "multiple panes remain distinguishable",
+			title:    "destructive_command_guard__cc_2",
+			maxWidth: 20,
+			want:     "destructive_c…__cc_2",
+		},
+		{
+			name:     "gemini agent suffix",
+			title:    "destructive_command_guard__gmi_3",
+			maxWidth: 20,
+			want:     "destructive_…__gmi_3",
+		},
+		{
+			name:     "no suffix falls back to standard truncation",
+			title:    "just_a_regular_long_name",
+			maxWidth: 15,
+			want:     "just_a_regular…",
+		},
+		{
+			name:     "empty string",
+			title:    "",
+			maxWidth: 10,
+			want:     "",
+		},
+		{
+			name:     "zero width",
+			title:    "myproject__cc_1",
+			maxWidth: 0,
+			want:     "",
+		},
+		{
+			name:     "suffix only when prefix doesn't fit",
+			title:    "x__cc_1",
+			maxWidth: 7,
+			want:     "x__cc_1",
+		},
+		{
+			name:     "very tight width shows suffix",
+			title:    "project__cc_1",
+			maxWidth: 10,
+			want:     "pro…__cc_1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TruncatePaneTitle(tt.title, tt.maxWidth)
+			if got != tt.want {
+				t.Errorf("TruncatePaneTitle(%q, %d) = %q, want %q",
+					tt.title, tt.maxWidth, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTruncatePaneTitle_DistinguishableOutput verifies that panes with the same
+// project prefix but different agent numbers produce distinguishable output.
+func TestTruncatePaneTitle_DistinguishableOutput(t *testing.T) {
+	titles := []string{
+		"destructive_command_guard__cc_1",
+		"destructive_command_guard__cc_2",
+		"destructive_command_guard__cc_3",
+		"destructive_command_guard__cod_1",
+		"destructive_command_guard__gmi_1",
+	}
+
+	maxWidth := 20
+	results := make(map[string]bool)
+
+	for _, title := range titles {
+		truncated := TruncatePaneTitle(title, maxWidth)
+		if results[truncated] {
+			t.Errorf("duplicate truncated output %q from different titles", truncated)
+		}
+		results[truncated] = true
+	}
+
+	// Verify we got unique outputs for each input
+	if len(results) != len(titles) {
+		t.Errorf("expected %d unique outputs, got %d", len(titles), len(results))
+	}
+}

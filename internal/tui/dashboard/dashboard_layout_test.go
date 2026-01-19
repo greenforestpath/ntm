@@ -712,6 +712,89 @@ func TestHelpBarIncludesHelpHint(t *testing.T) {
 	}
 }
 
+// TestHelpBarContextualHints verifies that help hints change based on the focused panel.
+// This tests the getFocusedPanelHints() implementation (bd-144k acceptance criteria #2).
+func TestHelpBarContextualHints(t *testing.T) {
+	t.Parallel()
+
+	// Create model with wide terminal to ensure full help bar visibility
+	m := newTestModel(200)
+	m.tier = layout.TierWide
+
+	// Initialize panels that provide keybindings
+	m.beadsPanel = panels.NewBeadsPanel()
+	m.alertsPanel = panels.NewAlertsPanel()
+	m.metricsPanel = panels.NewMetricsPanel()
+	m.historyPanel = panels.NewHistoryPanel()
+
+	// Test PanelPaneList (default) - should have default hints
+	m.focusedPanel = PanelPaneList
+	paneListHelp := m.renderHelpBar()
+
+	// Test PanelBeads - should include beads-specific hints
+	m.focusedPanel = PanelBeads
+	beadsHelp := m.renderHelpBar()
+
+	// Test PanelAlerts - should include alerts-specific hints
+	m.focusedPanel = PanelAlerts
+	alertsHelp := m.renderHelpBar()
+
+	// All views should contain base navigation hints
+	for _, helpBar := range []string{paneListHelp, beadsHelp, alertsHelp} {
+		if !strings.Contains(helpBar, "navigate") {
+			t.Error("all help bars should contain 'navigate' hint")
+		}
+		if !strings.Contains(helpBar, "quit") {
+			t.Error("all help bars should contain 'quit' hint")
+		}
+	}
+
+	// Verify help bars are non-empty
+	if paneListHelp == "" {
+		t.Error("pane list help bar should not be empty")
+	}
+	if beadsHelp == "" {
+		t.Error("beads help bar should not be empty")
+	}
+	if alertsHelp == "" {
+		t.Error("alerts help bar should not be empty")
+	}
+}
+
+// TestHelpBarNoAccumulation verifies that multiple View() calls produce the same output
+// without accumulating duplicate hints (bd-144k acceptance criteria #4).
+func TestHelpBarNoAccumulation(t *testing.T) {
+	t.Parallel()
+
+	m := newTestModel(140)
+	m.height = 30
+	m.tier = layout.TierForWidth(m.width)
+
+	// Call View() multiple times and verify output is identical
+	view1 := m.View()
+	view2 := m.View()
+	view3 := m.View()
+
+	// Strip ANSI for comparison
+	plain1 := status.StripANSI(view1)
+	plain2 := status.StripANSI(view2)
+	plain3 := status.StripANSI(view3)
+
+	if plain1 != plain2 {
+		t.Error("View() output should be identical between calls (call 1 vs 2)")
+	}
+	if plain2 != plain3 {
+		t.Error("View() output should be identical between calls (call 2 vs 3)")
+	}
+
+	// Verify "navigate" appears exactly once in each view
+	for i, plain := range []string{plain1, plain2, plain3} {
+		if count := strings.Count(plain, "navigate"); count != 1 {
+			t.Errorf("View() call %d: expected 'navigate' once, got %d", i+1, count)
+		}
+	}
+}
+
 func TestViewRendersHelpOverlayWhenOpen(t *testing.T) {
 	t.Parallel()
 

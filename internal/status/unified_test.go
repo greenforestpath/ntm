@@ -872,11 +872,19 @@ func TestDetermineState(t *testing.T) {
 			wantError:    ErrorNone,
 		},
 		{
-			name:         "unknown when truly indeterminate",
+			name:         "known agent type defaults to idle when indeterminate",
 			output:       "Still processing the very long task that has been running for a while now",
 			agentType:    "cc",
 			lastActivity: time.Now().Add(-60 * time.Second),
-			wantState:    StateUnknown,
+			wantState:    StateIdle, // Known agent types default to idle, not unknown
+			wantError:    ErrorNone,
+		},
+		{
+			name:         "user pane stays unknown when indeterminate",
+			output:       "Still processing the very long task that has been running for a while now",
+			agentType:    "user",
+			lastActivity: time.Now().Add(-60 * time.Second),
+			wantState:    StateUnknown, // User panes can still be unknown
 			wantError:    ErrorNone,
 		},
 	}
@@ -889,6 +897,37 @@ func TestDetermineState(t *testing.T) {
 			}
 			if errType != tt.wantError {
 				t.Errorf("determineState() errType = %v, want %v", errType, tt.wantError)
+			}
+		})
+	}
+}
+
+// TestIsKnownAgentType tests the agent type classification
+func TestIsKnownAgentType(t *testing.T) {
+	tests := []struct {
+		agentType string
+		expected  bool
+	}{
+		// Known AI agent types
+		{"cc", true},
+		{"cod", true},
+		{"gmi", true},
+		{"cursor", true},
+		{"windsurf", true},
+		{"aider", true},
+		// Unknown/shell types
+		{"user", false},
+		{"", false},
+		{"bash", false},
+		{"zsh", false},
+		{"unknown", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.agentType, func(t *testing.T) {
+			result := isKnownAgentType(tt.agentType)
+			if result != tt.expected {
+				t.Errorf("isKnownAgentType(%q) = %v, want %v", tt.agentType, result, tt.expected)
 			}
 		})
 	}
