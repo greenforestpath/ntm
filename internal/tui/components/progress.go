@@ -86,28 +86,35 @@ func (p ProgressBar) View() string {
 	filledWidth := int(p.Percent * float64(p.Width))
 	emptyWidth := p.Width - filledWidth
 
-	// Create filled portion with gradient
+	// Determine characters to use (ASCII fallback for limited terminals)
+	filledChar, emptyChar := p.FilledChar, p.EmptyChar
+	if !terminal.SupportsUnicodeBlocks() {
+		filledChar, emptyChar = FilledASCII, EmptyASCII
+	}
+
+	// Create filled portion with gradient (or solid color for limited terminals)
 	var filledStr string
 	if filledWidth > 0 {
-		if p.Animated {
-			// Animated shimmer effect
-			filledStr = styles.Shimmer(
-				strings.Repeat(p.FilledChar, filledWidth),
-				p.AnimationTick,
-				p.GradientColors...,
-			)
+		barText := strings.Repeat(filledChar, filledWidth)
+		if terminal.SupportsTrueColor() {
+			if p.Animated {
+				// Animated shimmer effect
+				filledStr = styles.Shimmer(barText, p.AnimationTick, p.GradientColors...)
+			} else {
+				filledStr = styles.GradientText(barText, p.GradientColors...)
+			}
 		} else {
-			filledStr = styles.GradientText(
-				strings.Repeat(p.FilledChar, filledWidth),
-				p.GradientColors...,
-			)
+			// Fallback to solid primary color for terminals without true color
+			filledStr = lipgloss.NewStyle().
+				Foreground(theme.Current().Primary).
+				Render(barText)
 		}
 	}
 
 	// Create empty portion
 	emptyStr := lipgloss.NewStyle().
 		Foreground(p.EmptyColor).
-		Render(strings.Repeat(p.EmptyChar, emptyWidth))
+		Render(strings.Repeat(emptyChar, emptyWidth))
 
 	// Build result
 	bar := filledStr + emptyStr
@@ -140,7 +147,7 @@ func (p *ProgressBar) SetPercent(percent float64) {
 }
 
 func (p ProgressBar) tick() tea.Cmd {
-	return tea.Tick(time.Millisecond*50, func(t time.Time) tea.Msg {
+	return tea.Tick(progressTickInterval, func(t time.Time) tea.Msg {
 		return ProgressTickMsg(t)
 	})
 }
@@ -174,7 +181,7 @@ func (b IndeterminateBar) Update(msg tea.Msg) (IndeterminateBar, tea.Cmd) {
 	switch msg.(type) {
 	case ProgressTickMsg:
 		b.Tick++
-		return b, tea.Tick(time.Millisecond*50, func(t time.Time) tea.Msg {
+		return b, tea.Tick(progressTickInterval, func(t time.Time) tea.Msg {
 			return ProgressTickMsg(t)
 		})
 	}
@@ -192,6 +199,12 @@ func (b IndeterminateBar) View() string {
 		barWidth = 1
 	}
 
+	// Determine characters to use (ASCII fallback for limited terminals)
+	filledChar, emptyChar := "█", "░"
+	if !terminal.SupportsUnicodeBlocks() {
+		filledChar, emptyChar = FilledASCII, EmptyASCII
+	}
+
 	// Calculate position (bouncing back and forth)
 	period := (b.Width - barWidth) * 2
 	if period < 1 {
@@ -207,16 +220,23 @@ func (b IndeterminateBar) View() string {
 	bgStyle := lipgloss.NewStyle().Foreground(theme.Current().Surface0)
 
 	// Empty before
-	result.WriteString(bgStyle.Render(strings.Repeat("░", pos)))
+	result.WriteString(bgStyle.Render(strings.Repeat(emptyChar, pos)))
 
-	// Moving bar with gradient
-	bar := styles.GradientText(strings.Repeat("█", barWidth), b.Colors...)
+	// Moving bar with gradient (or solid color for limited terminals)
+	var bar string
+	if terminal.SupportsTrueColor() {
+		bar = styles.GradientText(strings.Repeat(filledChar, barWidth), b.Colors...)
+	} else {
+		bar = lipgloss.NewStyle().
+			Foreground(theme.Current().Primary).
+			Render(strings.Repeat(filledChar, barWidth))
+	}
 	result.WriteString(bar)
 
 	// Empty after
 	remaining := b.Width - pos - barWidth
 	if remaining > 0 {
-		result.WriteString(bgStyle.Render(strings.Repeat("░", remaining)))
+		result.WriteString(bgStyle.Render(strings.Repeat(emptyChar, remaining)))
 	}
 
 	output := result.String()
@@ -232,7 +252,7 @@ func (b IndeterminateBar) View() string {
 
 // Init initializes the indeterminate bar
 func (b IndeterminateBar) Init() tea.Cmd {
-	return tea.Tick(time.Millisecond*50, func(t time.Time) tea.Msg {
+	return tea.Tick(progressTickInterval, func(t time.Time) tea.Msg {
 		return ProgressTickMsg(t)
 	})
 }

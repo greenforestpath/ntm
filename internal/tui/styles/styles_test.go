@@ -159,6 +159,15 @@ func TestShimmer(t *testing.T) {
 		}
 	})
 
+	t.Run("deterministic for same tick", func(t *testing.T) {
+		// Same tick value should always produce identical output (for global tick sync)
+		r1 := Shimmer("test", 42, "#FF0000", "#00FF00")
+		r2 := Shimmer("test", 42, "#FF0000", "#00FF00")
+		if r1 != r2 {
+			t.Error("Shimmer should be deterministic for same tick value")
+		}
+	})
+
 	t.Run("different ticks produce different results", func(t *testing.T) {
 		r1 := Shimmer("hello", 0, "#ff0000", "#0000ff")
 		r2 := Shimmer("hello", 50, "#ff0000", "#0000ff")
