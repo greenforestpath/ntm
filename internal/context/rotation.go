@@ -402,6 +402,10 @@ func (r *Rotator) createPendingRotation(session, agentID string, contextPercent 
 	}
 
 	r.pending[agentID] = pending
+
+	// Also persist to the pending rotation store for CLI access
+	_ = AddPendingRotation(pending)
+
 	return pending
 }
 
@@ -425,10 +429,12 @@ func (r *Rotator) processExpiredPending(session, workDir string) {
 		case ConfirmPostpone:
 			// Re-add with new timeout
 			pending.TimeoutAt = time.Now().Add(30 * time.Minute)
-			continue // Don't remove from pending
+			_ = AddPendingRotation(pending) // Update persistent store
+			continue                        // Don't remove from pending
 		}
 
 		delete(r.pending, agentID)
+		_ = RemovePendingRotation(agentID) // Also remove from persistent store
 	}
 }
 
@@ -878,6 +884,7 @@ func (r *Rotator) ConfirmRotation(agentID string, action ConfirmAction, postpone
 	case ConfirmRotate:
 		// Remove from pending and perform the rotation
 		delete(r.pending, agentID)
+		_ = RemovePendingRotation(agentID) // Also remove from persistent store
 		return r.rotateAgent(pending.SessionName, agentID, pending.WorkDir)
 
 	case ConfirmCompact:
@@ -888,6 +895,7 @@ func (r *Rotator) ConfirmRotation(agentID string, action ConfirmAction, postpone
 			return result
 		}
 		delete(r.pending, agentID)
+		_ = RemovePendingRotation(agentID) // Also remove from persistent store
 		compactResult := r.tryCompaction(agentID, pending.PaneID)
 		if compactResult != nil && compactResult.Success {
 			result.Success = true
@@ -905,6 +913,7 @@ func (r *Rotator) ConfirmRotation(agentID string, action ConfirmAction, postpone
 	case ConfirmIgnore:
 		// Cancel the rotation
 		delete(r.pending, agentID)
+		_ = RemovePendingRotation(agentID) // Also remove from persistent store
 		result.Success = true
 		result.State = RotationStateAborted
 		result.Error = "rotation cancelled by user"
@@ -917,6 +926,8 @@ func (r *Rotator) ConfirmRotation(agentID string, action ConfirmAction, postpone
 			minutes = 30 // Default postpone duration
 		}
 		pending.TimeoutAt = time.Now().Add(time.Duration(minutes) * time.Minute)
+		// Update persistent store with new timeout
+		_ = AddPendingRotation(pending)
 		result.Success = true
 		result.State = RotationStatePending
 		result.Error = fmt.Sprintf("rotation postponed for %d minutes", minutes)
@@ -933,6 +944,7 @@ func (r *Rotator) ConfirmRotation(agentID string, action ConfirmAction, postpone
 func (r *Rotator) CancelPendingRotation(agentID string) bool {
 	if _, exists := r.pending[agentID]; exists {
 		delete(r.pending, agentID)
+		_ = RemovePendingRotation(agentID) // Also remove from persistent store
 		return true
 	}
 	return false
@@ -941,4 +953,5 @@ func (r *Rotator) CancelPendingRotation(agentID string) bool {
 // ClearPending removes all pending rotations.
 func (r *Rotator) ClearPending() {
 	r.pending = make(map[string]*PendingRotation)
+	_ = DefaultPendingRotationStore.Clear() // Also clear persistent store
 }
