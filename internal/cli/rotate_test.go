@@ -47,6 +47,11 @@ func TestRotateCmdValidation(t *testing.T) {
 			}
 			defer os.Chdir(oldWd)
 
+			// Unset TMUX env var to prevent auto-detection from environment
+			oldTmux := os.Getenv("TMUX")
+			os.Unsetenv("TMUX")
+			defer os.Setenv("TMUX", oldTmux)
+
 			if tt.skipIfAutoSelectPossible && sessionAutoSelectPossible() {
 				t.Skip("Skipping: exactly one tmux session running (auto-selection applies)")
 			}

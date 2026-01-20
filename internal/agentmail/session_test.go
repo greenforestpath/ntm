@@ -445,6 +445,31 @@ func TestLoadSessionAgentRegistry_NonExistent(t *testing.T) {
 	}
 }
 
+func TestLoadSessionAgentRegistry_CleanPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	sessionName := "test-clean-path"
+	projectKey := filepath.Join(tmpDir, "project")
+
+	// Create and save registry with clean path
+	registry := NewSessionAgentRegistry(sessionName, projectKey)
+	registry.AddAgent("pane1", "id1", "Agent1")
+	if err := SaveSessionAgentRegistry(registry); err != nil {
+		t.Fatalf("SaveSessionAgentRegistry error: %v", err)
+	}
+
+	// Load with path containing trailing slash - should succeed if cleaned
+	dirtyKey := projectKey + string(filepath.Separator)
+	loaded, err := LoadSessionAgentRegistry(sessionName, dirtyKey)
+	if err != nil {
+		t.Fatalf("LoadSessionAgentRegistry error: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("expected non-nil registry when loading with dirty path (trailing slash)")
+	}
+}
+
 func TestSaveSessionAgentRegistry_NilError(t *testing.T) {
 	err := SaveSessionAgentRegistry(nil)
 	if err == nil {

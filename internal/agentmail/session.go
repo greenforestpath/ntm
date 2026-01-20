@@ -314,7 +314,7 @@ func LoadSessionAgentRegistry(sessionName, projectKey string) (*SessionAgentRegi
 	}
 
 	// Validate project key matches
-	if projectKey != "" && registry.ProjectKey != projectKey {
+	if projectKey != "" && filepath.Clean(registry.ProjectKey) != filepath.Clean(projectKey) {
 		return nil, nil
 	}
 

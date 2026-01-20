@@ -619,7 +619,7 @@ func generateDescription(goal string) string {
 	// Lowercase
 	desc := strings.ToLower(goal)
 
-	// Take first few words (up to 5)
+	// Take first few words (up to 8)
 	words := strings.Fields(desc)
 	if len(words) > 8 {
 		words = words[:8]

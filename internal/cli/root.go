@@ -226,6 +226,13 @@ Shell Integration:
 			}
 			return
 		}
+		if robotTools {
+			if err := robot.PrintTools(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if robotMail {
 			projectKey, _ := os.Getwd()
 			sessionName := ""
@@ -1253,6 +1260,9 @@ func init() {
 
 	// Robot-mail flag for Agent Mail state
 	rootCmd.Flags().BoolVar(&robotMail, "robot-mail", false, "Get Agent Mail inbox/outbox state (JSON). Shows pending messages and coordination status")
+
+	// Robot-tools flag for tool inventory and health
+	rootCmd.Flags().BoolVar(&robotTools, "robot-tools", false, "Get tool inventory with health status (JSON). Shows all registered flywheel tools")
 
 	// Robot-ack flags for send confirmation tracking
 	rootCmd.Flags().StringVar(&robotAck, "robot-ack", "", "Watch for agent responses after send. Required: SESSION. Example: ntm --robot-ack=proj --ack-timeout=30s")

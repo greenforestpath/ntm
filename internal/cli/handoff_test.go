@@ -85,7 +85,7 @@ func TestGenerateDescription(t *testing.T) {
 	}{
 		{"", "handoff"},
 		{"Implemented authentication", "implemented-authentication"},
-		{"Fixed bug in the API handler", "fixed-bug-in-the-api"},
+		{"Fixed bug in the API handler", "fixed-bug-in-the-api-handler"},
 		{"A VERY LONG GOAL THAT EXCEEDS THE LIMIT", "a-very-long-goal-that-exceeds"},
 		{"With  multiple   spaces", "with-multiple-spaces"},
 		{"Special!@#$%^&*()chars", "specialchars"},
