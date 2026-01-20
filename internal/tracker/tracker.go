@@ -486,8 +486,8 @@ func SnapshotDirectory(root string, opts SnapshotOptions) (map[string]FileState,
 // This is O(1) git operation + O(N) stat calls for *dirty files only*,
 // compared to O(M) stat calls for *all files* with WalkDir.
 func SnapshotGit(root string, opts SnapshotOptions) (map[string]FileState, error) {
-	// git status --porcelain -uall (shows modified and untracked)
-	cmd := exec.Command("git", "-C", root, "status", "--porcelain", "-uall")
+	// git status --porcelain -uall --no-renames (shows modified and untracked, splits renames)
+	cmd := exec.Command("git", "-C", root, "status", "--porcelain", "-uall", "--no-renames")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git status failed: %w", err)
