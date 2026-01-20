@@ -68,8 +68,16 @@ var errorPatterns = []ErrorPattern{
 	{Type: ErrorCrash, Literal: "SIGTERM", Description: "SIGTERM signal"},
 	{Type: ErrorCrash, Literal: "Traceback (most recent", Description: "Python traceback"},
 	{Type: ErrorCrash, Regex: regexp.MustCompile(`(?i)unhandled (exception|error|rejection)`), Description: "Unhandled exception"},
+	{Type: ErrorCrash, Regex: regexp.MustCompile(`(?i)exception in thread`), Description: "Java/Thread exception"},
+	{Type: ErrorCrash, Literal: "bus error", Description: "Bus error"},
 	{Type: ErrorCrash, Regex: regexp.MustCompile(`(?i)stack trace:`), Description: "Stack trace"},
 	{Type: ErrorCrash, Regex: regexp.MustCompile(`at [A-Za-z_./\\]\S*:\d+:\d+`), Description: "JS stack frame"},
+
+	// Build/Runtime errors
+	{Type: ErrorGeneric, Regex: regexp.MustCompile(`(?i)npm ERR!`), Description: "NPM error"},
+	{Type: ErrorGeneric, Regex: regexp.MustCompile(`(?i)make: \*\*\*`), Description: "Make error"},
+	{Type: ErrorGeneric, Regex: regexp.MustCompile(`(?i)cargo: error:`), Description: "Cargo error"},
+	{Type: ErrorGeneric, Regex: regexp.MustCompile(`(?i)go: cannot find module`), Description: "Go module error"},
 
 	// Generic errors (lowest priority - catch-all)
 	{Type: ErrorGeneric, Regex: regexp.MustCompile(`(?i)^error:`), Description: "Error prefix"},

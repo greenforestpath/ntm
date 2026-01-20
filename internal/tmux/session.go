@@ -35,6 +35,10 @@ const (
 	AgentUser   AgentType = "user"
 )
 
+// FieldSeparator is used to separate fields in tmux format strings.
+// It uses a unique sequence unlikely to appear in user input (e.g. pane titles).
+const FieldSeparator = "|#~NTM~#|"
+
 // ProfileName returns the friendly display name for the agent type.
 // This is used in the dashboard to show profile names prominently.
 func (a AgentType) ProfileName() string {
@@ -162,7 +166,7 @@ func SessionExists(name string) bool {
 
 // ListSessions returns all tmux sessions
 func (c *Client) ListSessions() ([]Session, error) {
-	sep := "|===|"
+	sep := FieldSeparator
 	format := fmt.Sprintf("#{session_name}%[1]s#{session_windows}%[1]s#{session_attached}%[1]s#{session_created_string}", sep)
 	output, err := c.Run("list-sessions", "-F", format)
 	if err != nil {
@@ -214,7 +218,7 @@ func (c *Client) GetSession(name string) (*Session, error) {
 	}
 
 	// Get session info
-	sep := "|===|"
+	sep := FieldSeparator
 	format := fmt.Sprintf("#{session_name}%[1]s#{session_windows}%[1]s#{session_attached}", sep)
 	output, err := c.Run("list-sessions", "-F", format, "-f", fmt.Sprintf("#{==:#{session_name},%s}", name))
 	if err != nil {
@@ -267,7 +271,7 @@ func (c *Client) GetPanes(session string) ([]Pane, error) {
 
 // GetPanesContext returns all panes in a session with cancellation support.
 func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
-	sep := "|===|"
+	sep := FieldSeparator
 	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", session, "-F", format)
 	if err != nil {
@@ -910,7 +914,7 @@ type PaneActivity struct {
 
 // GetPanesWithActivityContext returns all panes in a session with their activity times with cancellation support.
 func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string) ([]PaneActivity, error) {
-	sep := "|===|"
+	sep := FieldSeparator
 	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_last_activity}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", session, "-F", format)
 	if err != nil {
