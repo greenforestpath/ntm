@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // ============================================================================
@@ -692,9 +693,9 @@ func TestBalancedStrategyDeterminism(t *testing.T) {
 	// Given the same agents and beads, the balanced strategy should
 	// always produce the same assignment order
 	agents := []assignAgentInfo{
-		{agentType: "claude", pane: &paneInfo{Index: 1}},
-		{agentType: "codex", pane: &paneInfo{Index: 2}},
-		{agentType: "gemini", pane: &paneInfo{Index: 3}},
+		{agentType: "claude", pane: tmux.Pane{Index: 1}},
+		{agentType: "codex", pane: tmux.Pane{Index: 2}},
+		{agentType: "gemini", pane: tmux.Pane{Index: 3}},
 	}
 
 	// Verify agents are sortable by pane index for deterministic tiebreaker
@@ -714,15 +715,13 @@ func TestBalancedStrategyDeterminism(t *testing.T) {
 
 // TestAssignAgentInfoHasPane verifies the agent info structure has pane reference
 func TestAssignAgentInfoHasPane(t *testing.T) {
-	pane := &paneInfo{Index: 5}
+	pane := tmux.Pane{Index: 5}
 	agent := assignAgentInfo{
 		agentType: "claude",
 		pane:      pane,
 	}
 
-	if agent.pane == nil {
-		t.Fatal("Agent pane should not be nil")
-	}
+	// Verify pane index is set correctly (zero value Index would be 0)
 	if agent.pane.Index != 5 {
 		t.Errorf("Expected pane index 5, got %d", agent.pane.Index)
 	}
