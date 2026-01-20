@@ -250,16 +250,23 @@ ntm deps -v        # Verbose output with versions
 
 ## Installation
 
-### One-Line Install (Recommended)
-
-```bash
-curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/ntm/main/install.sh?$(date +%s)" | bash -s -- --easy-mode
-```
-
-### Homebrew (macOS/Linux)
+### Recommended: Homebrew (macOS/Linux)
 
 ```bash
 brew install dicklesworthstone/tap/ntm
+```
+
+### Windows: Scoop
+
+```powershell
+scoop bucket add dicklesworthstone https://github.com/Dicklesworthstone/scoop-bucket
+scoop install dicklesworthstone/ntm
+```
+
+### Alternative: One-Line Install
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/ntm/main/install.sh?$(date +%s)" | bash -s -- --easy-mode
 ```
 
 ### Go Install

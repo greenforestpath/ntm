@@ -375,6 +375,9 @@ install_ntm() {
     echo "  ntm palette                           # Open command palette"
     echo "  ntm tutorial                          # Interactive tutorial"
     echo ""
+    echo "Tip: You can also install via Homebrew:"
+    echo "  brew install dicklesworthstone/tap/ntm"
+    echo ""
     echo "Run 'ntm --help' for full documentation."
 }
 
