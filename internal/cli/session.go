@@ -49,6 +49,33 @@ type contextRow struct {
 	Model   string
 }
 
+// filterAssignments filters assignments by status, agent type, and pane number.
+// Empty filterStatus or filterAgent means no filtering on that field.
+// filterPane < 0 means no filtering on pane.
+func filterAssignments(assignments []*assignment.Assignment, filterStatus, filterAgent string, filterPane int) []*assignment.Assignment {
+	if filterStatus == "" && filterAgent == "" && filterPane < 0 {
+		return assignments // No filtering needed
+	}
+
+	result := make([]*assignment.Assignment, 0, len(assignments))
+	for _, a := range assignments {
+		// Filter by status
+		if filterStatus != "" && string(a.Status) != filterStatus {
+			continue
+		}
+		// Filter by agent type
+		if filterAgent != "" && a.AgentType != filterAgent {
+			continue
+		}
+		// Filter by pane
+		if filterPane >= 0 && a.Pane != filterPane {
+			continue
+		}
+		result = append(result, a)
+	}
+	return result
+}
+
 func newAttachCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "attach <session-name>",
@@ -505,33 +532,38 @@ func runStatus(w io.Writer, session string, opts statusOptions) error {
 			resp.Panes = append(resp.Panes, paneResp)
 		}
 
-		// Add assignments if requested
-		if opts.showAssignments && assignmentStore != nil {
+		// Add assignments if requested (with optional filtering)
+		if (opts.showAssignments || opts.filterStatus != "" || opts.filterAgent != "" || opts.filterPane >= 0 || opts.showSummary) && assignmentStore != nil {
 			assignments := assignmentStore.List()
-			for _, a := range assignments {
-				assignResp := output.AssignmentResponse{
-					BeadID:     a.BeadID,
-					BeadTitle:  a.BeadTitle,
-					Pane:       a.Pane,
-					AgentType:  a.AgentType,
-					AgentName:  a.AgentName,
-					Status:     string(a.Status),
-					AssignedAt: a.AssignedAt.Format(time.RFC3339),
-					FailReason: a.FailReason,
+			// Apply filters
+			assignments = filterAssignments(assignments, opts.filterStatus, opts.filterAgent, opts.filterPane)
+			// Include individual assignments unless --summary is used
+			if !opts.showSummary {
+				for _, a := range assignments {
+					assignResp := output.AssignmentResponse{
+						BeadID:     a.BeadID,
+						BeadTitle:  a.BeadTitle,
+						Pane:       a.Pane,
+						AgentType:  a.AgentType,
+						AgentName:  a.AgentName,
+						Status:     string(a.Status),
+						AssignedAt: a.AssignedAt.Format(time.RFC3339),
+						FailReason: a.FailReason,
+					}
+					if a.StartedAt != nil {
+						ts := a.StartedAt.Format(time.RFC3339)
+						assignResp.StartedAt = &ts
+					}
+					if a.CompletedAt != nil {
+						ts := a.CompletedAt.Format(time.RFC3339)
+						assignResp.CompletedAt = &ts
+					}
+					if a.FailedAt != nil {
+						ts := a.FailedAt.Format(time.RFC3339)
+						assignResp.FailedAt = &ts
+					}
+					resp.Assignments = append(resp.Assignments, assignResp)
 				}
-				if a.StartedAt != nil {
-					ts := a.StartedAt.Format(time.RFC3339)
-					assignResp.StartedAt = &ts
-				}
-				if a.CompletedAt != nil {
-					ts := a.CompletedAt.Format(time.RFC3339)
-					assignResp.CompletedAt = &ts
-				}
-				if a.FailedAt != nil {
-					ts := a.FailedAt.Format(time.RFC3339)
-					assignResp.FailedAt = &ts
-				}
-				resp.Assignments = append(resp.Assignments, assignResp)
 			}
 			stats := assignmentStore.Stats()
 			resp.AssignmentStats = &output.AssignmentStats{
@@ -854,75 +886,80 @@ func runStatus(w io.Writer, session string, opts statusOptions) error {
 	}
 
 	// Assignments section (only if requested)
-	if opts.showAssignments && assignmentStore != nil {
+	needAssignmentsDisplay := opts.showAssignments || opts.filterStatus != "" || opts.filterAgent != "" || opts.filterPane >= 0 || opts.showSummary
+	if needAssignmentsDisplay && assignmentStore != nil {
 		assignColor := color(t.Peach)
 		beadIcon := "◆"
 
 		fmt.Fprintf(w, "  %sAssignments%s\n", bold, reset)
 		fmt.Fprintf(w, "  %s%s%s\n", surface, "─────────────────────────────────────────────────────────", reset)
 
-		assignments := assignmentStore.List()
-		if len(assignments) == 0 {
-			fmt.Fprintf(w, "    %sNo active assignments%s\n", overlay, reset)
-		} else {
-			// Sort by pane index for consistent display
-			sort.Slice(assignments, func(i, j int) bool {
-				return assignments[i].Pane < assignments[j].Pane
-			})
+		assignments := filterAssignments(assignmentStore.List(), opts.filterStatus, opts.filterAgent, opts.filterPane)
 
-			// Build a map of pane index -> assignments for grouped display
-			for _, a := range assignments {
-				// Status icon and color
-				var statusIcon, statusColor string
-				switch a.Status {
-				case assignment.StatusAssigned:
-					statusIcon = "○"
-					statusColor = overlay
-				case assignment.StatusWorking:
-					statusIcon = "▶"
-					statusColor = success
-				case assignment.StatusCompleted:
-					statusIcon = "✓"
-					statusColor = success
-				case assignment.StatusFailed:
-					statusIcon = "✗"
-					statusColor = errorColor
-				case assignment.StatusReassigned:
-					statusIcon = "→"
-					statusColor = subtext
-				default:
-					statusIcon = "?"
-					statusColor = overlay
+		// If --summary, skip individual listings
+		if !opts.showSummary {
+			if len(assignments) == 0 {
+				fmt.Fprintf(w, "    %sNo active assignments%s\n", overlay, reset)
+			} else {
+				// Sort by pane index for consistent display
+				sort.Slice(assignments, func(i, j int) bool {
+					return assignments[i].Pane < assignments[j].Pane
+				})
+
+				// Build a map of pane index -> assignments for grouped display
+				for _, a := range assignments {
+					// Status icon and color
+					var statusIcon, statusColor string
+					switch a.Status {
+					case assignment.StatusAssigned:
+						statusIcon = "○"
+						statusColor = overlay
+					case assignment.StatusWorking:
+						statusIcon = "▶"
+						statusColor = success
+					case assignment.StatusCompleted:
+						statusIcon = "✓"
+						statusColor = success
+					case assignment.StatusFailed:
+						statusIcon = "✗"
+						statusColor = errorColor
+					case assignment.StatusReassigned:
+						statusIcon = "→"
+						statusColor = subtext
+					default:
+						statusIcon = "?"
+						statusColor = overlay
+					}
+
+					// Agent type color
+					var agentColor string
+					switch a.AgentType {
+					case "claude":
+						agentColor = claude
+					case "codex":
+						agentColor = codex
+					case "gemini":
+						agentColor = gemini
+					default:
+						agentColor = text
+					}
+
+					// Duration since assigned
+					duration := time.Since(a.AssignedAt)
+					durationStr := formatDuration(duration)
+
+					// Truncate bead title
+					title := a.BeadTitle
+					if len(title) > 40 {
+						title = title[:37] + "..."
+					}
+
+					fmt.Fprintf(w, "    %s%s%s %s%-8s%s %s%s %s%s%s %s(%s)%s\n",
+						statusColor, statusIcon, reset,
+						assignColor, beadIcon+" "+a.BeadID, reset,
+						agentColor, a.AgentType, text, title, reset,
+						overlay, durationStr, reset)
 				}
-
-				// Agent type color
-				var agentColor string
-				switch a.AgentType {
-				case "claude":
-					agentColor = claude
-				case "codex":
-					agentColor = codex
-				case "gemini":
-					agentColor = gemini
-				default:
-					agentColor = text
-				}
-
-				// Duration since assigned
-				duration := time.Since(a.AssignedAt)
-				durationStr := formatDuration(duration)
-
-				// Truncate bead title
-				title := a.BeadTitle
-				if len(title) > 40 {
-					title = title[:37] + "..."
-				}
-
-				fmt.Fprintf(w, "    %s%s%s %s%-8s%s %s%s %s%s%s %s(%s)%s\n",
-					statusColor, statusIcon, reset,
-					assignColor, beadIcon+" "+a.BeadID, reset,
-					agentColor, a.AgentType, text, title, reset,
-					overlay, durationStr, reset)
 			}
 		}
 
