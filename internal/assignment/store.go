@@ -29,18 +29,20 @@ const (
 
 // Assignment represents a bead assigned to an agent
 type Assignment struct {
-	BeadID      string           `json:"bead_id"`
-	BeadTitle   string           `json:"bead_title"`
-	Pane        int              `json:"pane"`
-	AgentType   string           `json:"agent_type"`           // claude, codex, gemini
-	AgentName   string           `json:"agent_name,omitempty"` // Agent Mail name if registered
-	Status      AssignmentStatus `json:"status"`
-	AssignedAt  time.Time        `json:"assigned_at"`
-	StartedAt   *time.Time       `json:"started_at,omitempty"` // When agent started working
-	CompletedAt *time.Time       `json:"completed_at,omitempty"`
-	FailedAt    *time.Time       `json:"failed_at,omitempty"`
-	FailReason  string           `json:"fail_reason,omitempty"`
-	PromptSent  string           `json:"prompt_sent,omitempty"` // The actual prompt sent
+	BeadID        string           `json:"bead_id"`
+	BeadTitle     string           `json:"bead_title"`
+	Pane          int              `json:"pane"`
+	AgentType     string           `json:"agent_type"`           // claude, codex, gemini
+	AgentName     string           `json:"agent_name,omitempty"` // Agent Mail name if registered
+	Status        AssignmentStatus `json:"status"`
+	AssignedAt    time.Time        `json:"assigned_at"`
+	StartedAt     *time.Time       `json:"started_at,omitempty"` // When agent started working
+	CompletedAt   *time.Time       `json:"completed_at,omitempty"`
+	FailedAt      *time.Time       `json:"failed_at,omitempty"`
+	FailReason    string           `json:"fail_reason,omitempty"`
+	FailureReason string           `json:"failure_reason,omitempty"` // Detailed failure reason
+	RetryCount    int              `json:"retry_count,omitempty"`    // Number of retry attempts
+	PromptSent    string           `json:"prompt_sent,omitempty"`    // The actual prompt sent
 }
 
 // AssignmentStore manages bead-to-agent assignments for a session

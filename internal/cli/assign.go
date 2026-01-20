@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -16,7 +19,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/assign"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
-	"github.com/Dicklesworthstone/ntm/internal/output"
+	"github.com/Dicklesworthstone/ntm/internal/completion"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -54,6 +57,17 @@ var (
 	assignWatch         bool          // Enable watch mode for continuous auto-assignment on completion
 	assignAutoReassign  bool          // Enable auto-reassignment of newly unblocked beads (default true in watch mode)
 	assignWatchInterval time.Duration // How often to check for completions (default 30s)
+	assignStopWhenDone  bool          // Exit watch mode when no more ready beads
+	assignDelay         time.Duration // Delay between consecutive assignments
+
+	// Reassignment flags for moving beads between agents
+	assignReassign string // Bead ID to reassign
+	assignToPane   int    // Target pane for reassignment (-1 = not specified)
+	assignToType   string // Target agent type (auto-select idle agent of this type)
+
+	// Retry flags for retrying failed assignments
+	assignRetry       string // Bead ID to retry
+	assignRetryFailed bool   // Retry all failed assignments
 )
 
 // assignAgentInfo holds information about an agent pane for assignment matching
@@ -108,9 +122,30 @@ Watch Mode (Dependency-Aware Auto-Assignment):
   Use --watch to enable continuous monitoring for task completions and automatic
   reassignment of newly unblocked beads to idle agents.
 
-  ntm assign myproject --watch                    # Watch mode with auto-reassignment
-  ntm assign myproject --watch --no-auto-reassign # Watch mode without auto-reassignment
+  ntm assign myproject --watch                      # Watch mode with auto-reassignment
+  ntm assign myproject --watch --strategy=dependency # Watch with dependency-first strategy
+  ntm assign myproject --watch --limit=2            # Limit to 2 assignments per cycle
+  ntm assign myproject --watch --stop-when-done     # Exit when no more beads ready
+  ntm assign myproject --watch --delay=5s           # 5s delay between assignments
   ntm assign myproject --watch --watch-interval=10s # Check every 10 seconds
+
+Reassignment (Move Bead Between Agents):
+  Use --reassign to move an assigned bead from one agent to another. This is useful
+  when an agent is stuck, or when you want to redistribute work to a different agent.
+
+  ntm assign myproject --reassign bd-xyz --to-pane=4         # Move to specific pane
+  ntm assign myproject --reassign bd-xyz --to-type=codex     # Move to idle codex agent
+  ntm assign myproject --reassign bd-xyz --to-pane=4 --prompt="Continue work"
+  ntm assign myproject --reassign bd-xyz --to-pane=4 --force # Force even if pane busy
+
+Retry Failed Assignments:
+  Use --retry to retry a specific failed assignment, or --retry-failed to retry all
+  failed assignments. Failed assignments are re-queued to idle agents.
+
+  ntm assign myproject --retry bd-xyz                        # Retry specific bead
+  ntm assign myproject --retry-failed                        # Retry all failed beads
+  ntm assign myproject --retry bd-xyz --to-pane=4            # Retry to specific pane
+  ntm assign myproject --retry-failed --to-type=claude       # Retry all to claude agents
 
 Examples:
   ntm assign myproject                         # Show assignment recommendations
@@ -127,7 +162,11 @@ Examples:
   ntm assign myproject --clear bd-123          # Clear assignment for bead bd-123
   ntm assign myproject --clear-pane=3          # Clear all assignments for pane 3
   ntm assign myproject --clear-failed          # Clear all failed assignments
-  ntm assign myproject --clear bd-123 --force  # Clear completed assignment`,
+  ntm assign myproject --clear bd-123 --force  # Clear completed assignment
+  ntm assign myproject --reassign bd-123 --to-pane=4   # Reassign to pane 4
+  ntm assign myproject --reassign bd-123 --to-type=codex  # Reassign to idle codex
+  ntm assign myproject --retry bd-123          # Retry failed bead bd-123
+  ntm assign myproject --retry-failed          # Retry all failed assignments`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runAssign,
 	}
@@ -170,6 +209,17 @@ Examples:
 	cmd.Flags().BoolVar(&assignWatch, "watch", false, "Enable watch mode for continuous auto-assignment on completion")
 	cmd.Flags().BoolVar(&assignAutoReassign, "auto-reassign", true, "Enable auto-reassignment of newly unblocked beads in watch mode")
 	cmd.Flags().DurationVar(&assignWatchInterval, "watch-interval", 30*time.Second, "How often to check for completions in watch mode")
+	cmd.Flags().BoolVar(&assignStopWhenDone, "stop-when-done", false, "Exit watch mode when no more beads are ready")
+	cmd.Flags().DurationVar(&assignDelay, "delay", 0, "Delay between consecutive assignments in watch mode")
+
+	// Reassignment flags for moving beads between agents
+	cmd.Flags().StringVar(&assignReassign, "reassign", "", "Bead ID to reassign to a different agent")
+	cmd.Flags().IntVar(&assignToPane, "to-pane", -1, "Target pane for reassignment (use with --reassign)")
+	cmd.Flags().StringVar(&assignToType, "to-type", "", "Target agent type for reassignment: claude, codex, gemini (auto-selects idle agent)")
+
+	// Retry flags for retrying failed assignments
+	cmd.Flags().StringVar(&assignRetry, "retry", "", "Retry a specific failed assignment (bead ID)")
+	cmd.Flags().BoolVar(&assignRetryFailed, "retry-failed", false, "Retry all failed assignments")
 
 	return cmd
 }
@@ -198,6 +248,16 @@ func runAssign(cmd *cobra.Command, args []string) error {
 	// Handle clear operations first
 	if assignClear != "" || assignClearPane >= 0 || assignClearFailed {
 		return runClearAssignments(cmd, session)
+	}
+
+	// Handle reassignment operation
+	if assignReassign != "" {
+		return runReassignment(cmd, session)
+	}
+
+	// Handle retry operations
+	if assignRetry != "" || assignRetryFailed {
+		return runRetryAssignments(cmd, session)
 	}
 
 	// Handle watch mode for continuous auto-assignment
@@ -266,7 +326,7 @@ func runAssign(cmd *cobra.Command, args []string) error {
 	}
 
 	// If no recommendations, we're done
-	if len(assignOutput.Assigned) == 0 {
+	if len(assignOutput.Assignments) == 0 {
 		return nil
 	}
 
@@ -291,6 +351,110 @@ func runAssign(cmd *cobra.Command, args []string) error {
 	if !assignQuiet {
 		fmt.Println("Assignments cancelled.")
 	}
+	return nil
+}
+
+// runWatchMode implements the --watch flag for continuous auto-assignment.
+// It monitors for task completions and automatically assigns newly unblocked
+// work to idle agents, with streaming output and graceful shutdown.
+func runWatchMode(cmd *cobra.Command, session string) error {
+	// Resolve agent type filter from flags
+	agentTypeFilter := resolveAgentTypeFilter()
+
+	// Build auto-reassign options
+	opts := &AutoReassignOptions{
+		Session:         session,
+		Strategy:        assignStrategy,
+		Template:        assignTemplate,
+		TemplateFile:    assignTemplateFile,
+		ReserveFiles:    assignReserveFiles,
+		Verbose:         assignVerbose,
+		Quiet:           assignQuiet,
+		Timeout:         assignTimeout,
+		AgentTypeFilter: agentTypeFilter,
+	}
+
+	// Load or create assignment store
+	store, err := assignment.LoadStore(session)
+	if err != nil {
+		return fmt.Errorf("failed to load assignment store: %w", err)
+	}
+
+	// Create watch loop
+	watchLoop := NewWatchLoop(session, store, opts)
+
+	// Set up signal handling for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-sigCh
+		watchLoop.logf("Received interrupt signal, shutting down gracefully...")
+		cancel()
+	}()
+
+	// Do initial assignment pass
+	watchLoop.logf("Performing initial assignment pass...")
+
+	assignOpts := &AssignCommandOptions{
+		Session:         session,
+		Strategy:        assignStrategy,
+		Limit:           assignLimit,
+		AgentTypeFilter: agentTypeFilter,
+		Template:        assignTemplate,
+		TemplateFile:    assignTemplateFile,
+		Verbose:         assignVerbose,
+		Quiet:           true, // Suppress normal output during initial pass
+		Timeout:         assignTimeout,
+		ReserveFiles:    assignReserveFiles,
+	}
+
+	initialOutput, err := getAssignOutputEnhanced(assignOpts)
+	if err != nil {
+		watchLoop.logf("Warning: Initial assignment failed: %v", err)
+	} else if len(initialOutput.Assignments) > 0 {
+		// Execute initial assignments
+		assignOpts.Quiet = assignQuiet // Restore quiet setting for execution
+		if err := executeAssignmentsEnhanced(session, initialOutput, assignOpts); err != nil {
+			watchLoop.logf("Warning: Failed to execute initial assignments: %v", err)
+		} else {
+			watchLoop.logf("Initial assignment: %d beads to %d agents", len(initialOutput.Assignments), len(initialOutput.Assignments))
+			for _, assigned := range initialOutput.Assignments {
+				watchLoop.mu.Lock()
+				watchLoop.totalAssigned++
+				watchLoop.lastAssignmentAt = time.Now()
+				watchLoop.mu.Unlock()
+				watchLoop.logf("  %s -> pane %d (%s)", assigned.BeadID, assigned.Pane, assigned.AgentType)
+			}
+		}
+	} else {
+		watchLoop.logf("Initial assignment: No beads to assign (no idle agents or no ready work)")
+	}
+
+	// Check stop-when-done before entering watch loop
+	if assignStopWhenDone && watchLoop.shouldStop() {
+		watchLoop.logf("No work available. Exiting watch mode.")
+		fmt.Println(watchLoop.Summary())
+		return nil
+	}
+
+	// Run the watch loop
+	if err := watchLoop.Run(ctx); err != nil && err != context.Canceled {
+		return err
+	}
+
+	// Print summary
+	fmt.Println()
+	fmt.Println(watchLoop.Summary())
+
+	// Save store state
+	if err := store.Save(); err != nil {
+		watchLoop.logf("Warning: Failed to save assignment store: %v", err)
+	}
+
 	return nil
 }
 
@@ -338,44 +502,71 @@ type AssignCommandOptions struct {
 	ClearPane int    // Clear all assignments for a pane (-1 = disabled)
 }
 
-// AssignOutputEnhanced is the enhanced output structure matching the spec
+// AssignOutputEnhanced is the enhanced output structure matching the spec.
 type AssignOutputEnhanced struct {
-	Strategy string                `json:"strategy"`
-	Assigned []AssignedItem        `json:"assigned"`
-	Skipped  []SkippedItem         `json:"skipped"`
-	Summary  AssignSummaryEnhanced `json:"summary"`
-	Errors   []string              `json:"errors,omitempty"`
+	Strategy    string                `json:"strategy"`
+	Assignments []AssignmentItem      `json:"assignments"`
+	Skipped     []SkippedItem         `json:"skipped"`
+	Summary     AssignSummaryEnhanced `json:"summary"`
+	Errors      []string              `json:"-"`
 }
 
-// AssignedItem represents a single assignment
-type AssignedItem struct {
+// AssignmentItem represents a single assignment in JSON output.
+type AssignmentItem struct {
 	BeadID     string  `json:"bead_id"`
 	BeadTitle  string  `json:"bead_title"`
 	Pane       int     `json:"pane"`
 	AgentType  string  `json:"agent_type"`
-	AgentName  string  `json:"agent_name,omitempty"`
-	Score      float64 `json:"score"`
-	PromptSent bool    `json:"prompt_sent"`
-	Reasoning  string  `json:"reasoning,omitempty"`
+	AgentName  string  `json:"agent_name"`
+	Status     string  `json:"status"`      // assigned|working|completed|failed
+	PromptSent bool    `json:"prompt_sent"` // Whether prompt was sent
+	AssignedAt string  `json:"assigned_at"` // ISO8601 timestamp
+	Score      float64 `json:"score,omitempty"`
+	Reasoning  string  `json:"-"`
 }
 
 // SkippedItem represents a skipped bead
 type SkippedItem struct {
 	BeadID       string   `json:"bead_id"`
-	BeadTitle    string   `json:"bead_title,omitempty"`
+	BeadTitle    string   `json:"bead_title"`
 	Reason       string   `json:"reason"`
 	BlockedByIDs []string `json:"blocked_by_ids,omitempty"` // Only set when reason is "blocked"
 }
 
 // AssignSummaryEnhanced contains summary statistics
 type AssignSummaryEnhanced struct {
-	TotalBeads    int `json:"total_beads"`
-	ActionableC   int `json:"actionable"` // Beads with no blockers
-	BlockedCount  int `json:"blocked"`    // Beads blocked by dependencies
-	Assigned      int `json:"assigned"`
-	Skipped       int `json:"skipped"`
-	IdleAgents    int `json:"idle_agents"`
-	CycleWarnings int `json:"cycle_warnings,omitempty"` // Beads in dependency cycles
+	TotalBeadCount    int `json:"total_bead_count"`
+	ActionableCount   int `json:"actionable_count"`               // Beads with no blockers
+	BlockedCount      int `json:"blocked_count"`                  // Beads blocked by dependencies
+	AssignedCount     int `json:"assigned_count"`
+	SkippedCount      int `json:"skipped_count"`
+	IdleAgentCount    int `json:"idle_agent_count"`
+	CycleWarningCount int `json:"cycle_warning_count,omitempty"` // Beads in dependency cycles
+}
+
+// AssignError represents an error in assign JSON output.
+type AssignError struct {
+	Code    string                 `json:"code"`
+	Message string                 `json:"message"`
+	Details map[string]interface{} `json:"details,omitempty"`
+}
+
+// AssignEnvelope is the standard JSON envelope for assign operations.
+type AssignEnvelope[T any] struct {
+	Command    string      `json:"command"`
+	Subcommand string      `json:"subcommand,omitempty"`
+	Session    string      `json:"session"`
+	Timestamp  string      `json:"timestamp"`
+	Success    bool        `json:"success"`
+	Data       *T          `json:"data"`
+	Warnings   []string    `json:"warnings"`
+	Error      *AssignError `json:"error"`
+}
+
+// DirectAssignData holds the data for a direct pane assignment.
+type DirectAssignData struct {
+	Assignment       *AssignmentItem `json:"assignment"`
+	FileReservations []string        `json:"file_reservations"`
 }
 
 // getAssignOutput builds the assignment output without printing
@@ -839,21 +1030,43 @@ func marshalAssignOutput(output *robot.AssignOutput) ([]byte, error) {
 func runAssignJSON(opts *AssignCommandOptions) error {
 	assignOutput, err := getAssignOutputEnhanced(opts)
 	if err != nil {
-		// Return error as JSON
-		errResp := output.NewError(err.Error())
-		return json.NewEncoder(os.Stdout).Encode(errResp)
+		// Return error as JSON using standard envelope
+		envelope := AssignEnvelope[AssignOutputEnhanced]{
+			Command:   "assign",
+			Session:   opts.Session,
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			Success:   false,
+			Data:      nil,
+			Warnings:  []string{},
+			Error: &AssignError{
+				Code:    "ASSIGN_ERROR",
+				Message: err.Error(),
+			},
+		}
+		return json.NewEncoder(os.Stdout).Encode(envelope)
 	}
 
-	// Build full JSON response
-	resp := struct {
-		output.TimestampedResponse
-		*AssignOutputEnhanced
-	}{
-		TimestampedResponse:  output.NewTimestamped(),
-		AssignOutputEnhanced: assignOutput,
+	// Collect warnings from errors field
+	var warnings []string
+	if len(assignOutput.Errors) > 0 {
+		warnings = assignOutput.Errors
+	}
+	if warnings == nil {
+		warnings = []string{}
 	}
 
-	return json.NewEncoder(os.Stdout).Encode(resp)
+	// Build full JSON response using standard envelope
+	envelope := AssignEnvelope[AssignOutputEnhanced]{
+		Command:   "assign",
+		Session:   opts.Session,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Success:   true,
+		Data:      assignOutput,
+		Warnings:  warnings,
+		Error:     nil,
+	}
+
+	return json.NewEncoder(os.Stdout).Encode(envelope)
 }
 
 // getAssignOutputEnhanced builds the enhanced assignment output
@@ -904,10 +1117,11 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 	var readyBeads []bv.BeadPreview
 	var blockedBeads []SkippedItem
 	var fallbackReason string
+	var triageErrors []string // Track errors before result is initialized
 
 	if err != nil {
 		fallbackReason = fmt.Sprintf("BV triage unavailable: %v", err)
-		result.Errors = append(result.Errors, fallbackReason)
+		triageErrors = append(triageErrors, fallbackReason)
 
 		// Try alternative dependency checking methods
 		if opts.Verbose {
@@ -1031,16 +1245,17 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 	allSkipped := append(blockedBeads, cyclicBeads...)
 
 	result := &AssignOutputEnhanced{
-		Strategy: opts.Strategy,
-		Assigned: make([]AssignedItem, 0),
-		Skipped:  allSkipped, // Blocked + cyclic beads
+		Strategy:    opts.Strategy,
+		Assignments: make([]AssignmentItem, 0),
+		Skipped:     allSkipped, // Blocked + cyclic beads
 		Summary: AssignSummaryEnhanced{
-			TotalBeads:    len(readyBeads) + len(blockedBeads) + cycleWarnings,
-			ActionableC:   len(readyBeads),
-			BlockedCount:  len(blockedBeads),
-			IdleAgents:    len(idleAgents),
-			CycleWarnings: cycleWarnings,
+			TotalBeads:        len(readyBeads) + len(blockedBeads) + cycleWarnings,
+			ActionableCount:   len(readyBeads),
+			BlockedCount:      len(blockedBeads),
+			IdleAgents:        len(idleAgents),
+			CycleWarningCount: cycleWarnings,
 		},
+		Errors: triageErrors, // Add any triage errors collected before result was initialized
 	}
 
 	// No idle agents available
@@ -1051,7 +1266,7 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 				Reason: "no_idle_agents",
 			})
 		}
-		result.Summary.Skipped = len(readyBeads)
+		result.Summary.SkippedCount = len(readyBeads)
 		return result, nil
 	}
 
@@ -1075,16 +1290,18 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 		assignments = assignments[:opts.Limit]
 	}
 
-	result.Assigned = assignments
-	result.Summary.Assigned = len(assignments)
-	result.Summary.Skipped = len(result.Skipped)
+	result.Assignments = assignments
+	result.Summary.AssignedCount = len(assignments)
+	result.Summary.SkippedCount = len(result.Skipped)
 
 	return result, nil
 }
 
 // generateAssignmentsEnhanced creates assignment recommendations using the enhanced strategy logic
-func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPreview, opts *AssignCommandOptions) []AssignedItem {
-	var assignments []AssignedItem
+func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPreview, opts *AssignCommandOptions) []AssignmentItem {
+	var assignments []AssignmentItem
+	assignedAt := time.Now().UTC().Format(time.RFC3339)
+	defaultStatus := string(assignment.StatusAssigned)
 
 	switch strings.ToLower(opts.Strategy) {
 	case "round-robin":
@@ -1109,14 +1326,17 @@ func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPrevie
 				break
 			}
 			agent := agents[i%len(agents)]
-			assignments = append(assignments, AssignedItem{
-				BeadID:    bead.ID,
-				BeadTitle: bead.Title,
-				Pane:      agent.pane.Index,
-				AgentType: agent.agentType,
-				AgentName: assignmentAgentName(opts.Session, agent.agentType, agent.pane.Index),
-				Score:     1.0, // Round-robin: all assignments equally valid
-				Reasoning: fmt.Sprintf("round-robin slot %d → agent %d", i+1, i%len(agents)),
+			assignments = append(assignments, AssignmentItem{
+				BeadID:     bead.ID,
+				BeadTitle:  bead.Title,
+				Pane:       agent.pane.Index,
+				AgentType:  agent.agentType,
+				AgentName:  assignmentAgentName(opts.Session, agent.agentType, agent.pane.Index),
+				Status:     defaultStatus,
+				PromptSent: false,
+				AssignedAt: assignedAt,
+				Score:      1.0, // Round-robin: all assignments equally valid
+				Reasoning:  fmt.Sprintf("round-robin slot %d → agent %d", i+1, i%len(agents)),
 			})
 		}
 
@@ -1139,14 +1359,17 @@ func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPrevie
 			}
 
 			if bestAgent != nil {
-				assignments = append(assignments, AssignedItem{
-					BeadID:    bead.ID,
-					BeadTitle: bead.Title,
-					Pane:      bestAgent.pane.Index,
-					AgentType: bestAgent.agentType,
-					AgentName: assignmentAgentName(opts.Session, bestAgent.agentType, bestAgent.pane.Index),
-					Score:     bestScore,
-					Reasoning: buildReasoning(bestAgent.agentType, bead, "quality"),
+				assignments = append(assignments, AssignmentItem{
+					BeadID:     bead.ID,
+					BeadTitle:  bead.Title,
+					Pane:       bestAgent.pane.Index,
+					AgentType:  bestAgent.agentType,
+					AgentName:  assignmentAgentName(opts.Session, bestAgent.agentType, bestAgent.pane.Index),
+					Status:     defaultStatus,
+					PromptSent: false,
+					AssignedAt: assignedAt,
+					Score:      bestScore,
+					Reasoning:  buildReasoning(bestAgent.agentType, bead, "quality"),
 				})
 				usedAgents[bestAgent.pane.Index] = true
 			}
@@ -1161,14 +1384,17 @@ func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPrevie
 					continue
 				}
 				score := (calculateMatchConfidence(agents[i].agentType, bead, "speed") + 0.9) / 2
-				assignments = append(assignments, AssignedItem{
-					BeadID:    bead.ID,
-					BeadTitle: bead.Title,
-					Pane:      agents[i].pane.Index,
-					AgentType: agents[i].agentType,
-					AgentName: assignmentAgentName(opts.Session, agents[i].agentType, agents[i].pane.Index),
-					Score:     score,
-					Reasoning: buildReasoning(agents[i].agentType, bead, "speed"),
+				assignments = append(assignments, AssignmentItem{
+					BeadID:     bead.ID,
+					BeadTitle:  bead.Title,
+					Pane:       agents[i].pane.Index,
+					AgentType:  agents[i].agentType,
+					AgentName:  assignmentAgentName(opts.Session, agents[i].agentType, agents[i].pane.Index),
+					Status:     defaultStatus,
+					PromptSent: false,
+					AssignedAt: assignedAt,
+					Score:      score,
+					Reasoning:  buildReasoning(agents[i].agentType, bead, "speed"),
 				})
 				usedAgents[agents[i].pane.Index] = true
 				break
@@ -1199,14 +1425,17 @@ func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPrevie
 			}
 
 			if bestAgent != nil {
-				assignments = append(assignments, AssignedItem{
-					BeadID:    bead.ID,
-					BeadTitle: bead.Title,
-					Pane:      bestAgent.pane.Index,
-					AgentType: bestAgent.agentType,
-					AgentName: assignmentAgentName(opts.Session, bestAgent.agentType, bestAgent.pane.Index),
-					Score:     bestScore,
-					Reasoning: buildReasoning(bestAgent.agentType, bead, "dependency"),
+				assignments = append(assignments, AssignmentItem{
+					BeadID:     bead.ID,
+					BeadTitle:  bead.Title,
+					Pane:       bestAgent.pane.Index,
+					AgentType:  bestAgent.agentType,
+					AgentName:  assignmentAgentName(opts.Session, bestAgent.agentType, bestAgent.pane.Index),
+					Status:     defaultStatus,
+					PromptSent: false,
+					AssignedAt: assignedAt,
+					Score:      bestScore,
+					Reasoning:  buildReasoning(bestAgent.agentType, bead, "dependency"),
 				})
 				usedAgents[bestAgent.pane.Index] = true
 			}
@@ -1233,14 +1462,17 @@ func generateAssignmentsEnhanced(agents []assignAgentInfo, beads []bv.BeadPrevie
 			}
 
 			if bestAgent != nil {
-				assignments = append(assignments, AssignedItem{
-					BeadID:    bead.ID,
-					BeadTitle: bead.Title,
-					Pane:      bestAgent.pane.Index,
-					AgentType: bestAgent.agentType,
-					AgentName: assignmentAgentName(opts.Session, bestAgent.agentType, bestAgent.pane.Index),
-					Score:     bestScore,
-					Reasoning: buildReasoning(bestAgent.agentType, bead, "balanced"),
+				assignments = append(assignments, AssignmentItem{
+					BeadID:     bead.ID,
+					BeadTitle:  bead.Title,
+					Pane:       bestAgent.pane.Index,
+					AgentType:  bestAgent.agentType,
+					AgentName:  assignmentAgentName(opts.Session, bestAgent.agentType, bestAgent.pane.Index),
+					Status:     defaultStatus,
+					PromptSent: false,
+					AssignedAt: assignedAt,
+					Score:      bestScore,
+					Reasoning:  buildReasoning(bestAgent.agentType, bead, "balanced"),
 				})
 				agentAssignCounts[bestAgent.pane.Index]++
 			}
@@ -1288,19 +1520,19 @@ func displayAssignOutputEnhanced(out *AssignOutputEnhanced, verbose bool) {
 	// Summary
 	fmt.Println()
 	fmt.Printf("Strategy: %s\n", out.Strategy)
-	fmt.Printf("Idle Agents: %d | Actionable Beads: %d", out.Summary.IdleAgents, out.Summary.ActionableC)
+	fmt.Printf("Idle Agents: %d | Actionable Beads: %d", out.Summary.IdleAgents, out.Summary.ActionableCount)
 	if out.Summary.BlockedCount > 0 {
 		fmt.Printf(" | Blocked: %d", out.Summary.BlockedCount)
 	}
 	fmt.Println()
 
 	// Assignments
-	if len(out.Assigned) > 0 {
+	if len(out.Assignments) > 0 {
 		fmt.Println()
 		fmt.Println(titleStyle.Render("Recommended Assignments:"))
 		fmt.Println()
 
-		for _, item := range out.Assigned {
+		for _, item := range out.Assignments {
 			agentStyle := getAgentStyle(item.AgentType, th)
 			agentBadge := agentStyle.Render(fmt.Sprintf("[%s pane %d]", item.AgentType, item.Pane))
 			confStr := fmt.Sprintf("(%.0f%% score)", item.Score*100)
@@ -1397,7 +1629,7 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 
 	var successCount, failCount, reservedCount int
 
-	for _, item := range out.Assigned {
+	for _, item := range out.Assignments {
 		// Try to reserve file paths if manager is available
 		if reservationMgr != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
@@ -1567,8 +1799,9 @@ type ClearAssignmentsData struct {
 
 // ClearAssignmentsError represents an error in the clear envelope.
 type ClearAssignmentsError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string                 `json:"code"`
+	Message string                 `json:"message"`
+	Details map[string]interface{} `json:"details,omitempty"`
 }
 
 // ClearAssignmentsEnvelope is the standard JSON envelope for clear operations.
@@ -1583,14 +1816,409 @@ type ClearAssignmentsEnvelope struct {
 	Error      *ClearAssignmentsError `json:"error,omitempty"`
 }
 
+// ReassignData holds the successful reassignment data.
+type ReassignData struct {
+	BeadID                       string `json:"bead_id"`
+	BeadTitle                    string `json:"bead_title"`
+	Pane                         int    `json:"pane"`
+	AgentType                    string `json:"agent_type"`
+	AgentName                    string `json:"agent_name,omitempty"`
+	Status                       string `json:"status"`
+	PromptSent                   bool   `json:"prompt_sent"`
+	AssignedAt                   string `json:"assigned_at"`
+	PreviousPane                 int    `json:"previous_pane"`
+	PreviousAgent                string `json:"previous_agent,omitempty"`
+	PreviousAgentType            string `json:"previous_agent_type"`
+	PreviousStatus               string `json:"previous_status"`
+	FileReservationsTransferred  bool   `json:"file_reservations_transferred"`
+	FileReservationsReleasedFrom int    `json:"file_reservations_released_from,omitempty"`
+	FileReservationsCreatedFor   int    `json:"file_reservations_created_for,omitempty"`
+}
+
+// ReassignError represents an error in the reassignment envelope.
+type ReassignError struct {
+	Code    string                 `json:"code"`
+	Message string                 `json:"message"`
+	Details map[string]interface{} `json:"details,omitempty"`
+}
+
+// ReassignEnvelope is the standard JSON envelope for reassignment operations.
+type ReassignEnvelope struct {
+	Command    string         `json:"command"`
+	Subcommand string         `json:"subcommand"`
+	Session    string         `json:"session"`
+	Timestamp  string         `json:"timestamp"`
+	Success    bool           `json:"success"`
+	Data       *ReassignData  `json:"data,omitempty"`
+	Warnings   []string       `json:"warnings"`
+	Error      *ReassignError `json:"error,omitempty"`
+}
+
+// RetryItem holds data for a single retried assignment.
+type RetryItem struct {
+	BeadID             string `json:"bead_id"`
+	BeadTitle          string `json:"bead_title"`
+	Pane               int    `json:"pane"`
+	AgentType          string `json:"agent_type"`
+	AgentName          string `json:"agent_name,omitempty"`
+	Status             string `json:"status"`
+	PromptSent         bool   `json:"prompt_sent"`
+	AssignedAt         string `json:"assigned_at"`
+	PreviousPane       int    `json:"previous_pane"`
+	PreviousAgent      string `json:"previous_agent,omitempty"`
+	PreviousFailReason string `json:"previous_fail_reason,omitempty"`
+	RetryCount         int    `json:"retry_count"`
+}
+
+// RetrySkippedItem holds data for a skipped retry.
+type RetrySkippedItem struct {
+	BeadID string `json:"bead_id"`
+	Reason string `json:"reason"`
+}
+
+// RetrySummary provides summary statistics for retry operations.
+type RetrySummary struct {
+	TotalFailed  int `json:"total_failed"`
+	RetriedCount int `json:"retried_count"`
+	SkippedCount int `json:"skipped_count"`
+}
+
+// RetryData holds the data payload for retry operations.
+type RetryData struct {
+	Retried []RetryItem        `json:"retried"`
+	Skipped []RetrySkippedItem `json:"skipped"`
+	Summary RetrySummary       `json:"summary"`
+}
+
+// RetryError represents an error in the retry envelope.
+type RetryError struct {
+	Code    string                 `json:"code"`
+	Message string                 `json:"message"`
+	Details map[string]interface{} `json:"details,omitempty"`
+}
+
+// RetryEnvelope is the standard JSON envelope for retry operations.
+type RetryEnvelope struct {
+	Command    string      `json:"command"`
+	Subcommand string      `json:"subcommand"`
+	Session    string      `json:"session"`
+	Timestamp  string      `json:"timestamp"`
+	Success    bool        `json:"success"`
+	Data       *RetryData  `json:"data,omitempty"`
+	Warnings   []string    `json:"warnings"`
+	Error      *RetryError `json:"error,omitempty"`
+}
+
 var releaseReservations = releaseFileReservations
+
+// makeRetryEnvelope creates a standard RetryEnvelope for JSON output.
+func makeRetryEnvelope(session string, success bool, data *RetryData, errCode, errMsg string, warnings []string) RetryEnvelope {
+	envelope := RetryEnvelope{
+		Command:    "assign",
+		Subcommand: "retry",
+		Session:    session,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Success:    success,
+		Data:       data,
+		Warnings:   warnings,
+	}
+	if warnings == nil {
+		envelope.Warnings = []string{}
+	}
+	if errCode != "" {
+		envelope.Error = &RetryError{
+			Code:    errCode,
+			Message: errMsg,
+		}
+	}
+	return envelope
+}
+
+// runRetryAssignments handles --retry and --retry-failed operations.
+func runRetryAssignments(cmd *cobra.Command, session string) error {
+	// Load assignment store
+	store, err := assignment.LoadStore(session)
+	if err != nil {
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeRetryEnvelope(
+				session, false, nil, "STORE_LOAD_ERROR",
+				fmt.Sprintf("failed to load assignment store: %v", err), nil,
+			))
+		}
+		return fmt.Errorf("failed to load assignment store: %w", err)
+	}
+
+	// Get all assignments including completed/failed
+	allAssignments := store.GetAll()
+	if len(allAssignments) == 0 {
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeRetryEnvelope(
+				session, false, nil, "NO_ASSIGNMENTS", "no assignments found", nil,
+			))
+		}
+		return fmt.Errorf("no assignments found")
+	}
+
+	// Filter to find failed assignments
+	var failedAssignments []assignment.Assignment
+	for _, a := range allAssignments {
+		if a.Status == assignment.StatusFailed {
+			failedAssignments = append(failedAssignments, a)
+		}
+	}
+
+	// If --retry specified, filter to just that bead
+	if assignRetry != "" {
+		var found *assignment.Assignment
+		for i := range failedAssignments {
+			if failedAssignments[i].BeadID == assignRetry {
+				found = &failedAssignments[i]
+				break
+			}
+		}
+		if found == nil {
+			// Check if it exists but isn't failed
+			for _, a := range allAssignments {
+				if a.BeadID == assignRetry {
+					if IsJSONOutput() {
+						return json.NewEncoder(os.Stdout).Encode(makeRetryEnvelope(
+							session, false, nil, "NOT_FAILED",
+							fmt.Sprintf("bead %s is not in failed state (status: %s)", assignRetry, a.Status), nil,
+						))
+					}
+					return fmt.Errorf("bead %s is not in failed state (status: %s)", assignRetry, a.Status)
+				}
+			}
+			if IsJSONOutput() {
+				return json.NewEncoder(os.Stdout).Encode(makeRetryEnvelope(
+					session, false, nil, "NOT_FOUND",
+					fmt.Sprintf("bead %s not found in assignments", assignRetry), nil,
+				))
+			}
+			return fmt.Errorf("bead %s not found in assignments", assignRetry)
+		}
+		failedAssignments = []assignment.Assignment{*found}
+	}
+
+	if len(failedAssignments) == 0 {
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeRetryEnvelope(
+				session, true, &RetryData{
+					Summary: RetrySummary{TotalFailed: 0, RetriedCount: 0, SkippedCount: 0},
+					Retried: []RetryItem{},
+					Skipped: []RetrySkippedItem{},
+				}, "", "", nil,
+			))
+		}
+		fmt.Println("No failed assignments to retry")
+		return nil
+	}
+
+	// Get idle agents for assignment
+	idleAgents, err := getIdleAgents(session, assignToType, assignVerbose)
+	if err != nil {
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeRetryEnvelope(
+				session, false, nil, "AGENT_ERROR",
+				fmt.Sprintf("failed to get idle agents: %v", err), nil,
+			))
+		}
+		return fmt.Errorf("failed to get idle agents: %w", err)
+	}
+
+	// Get all panes for --to-pane
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeRetryEnvelope(
+				session, false, nil, "PANE_ERROR",
+				fmt.Sprintf("failed to get panes: %v", err), nil,
+			))
+		}
+		return fmt.Errorf("failed to get panes: %w", err)
+	}
+
+	// Process each failed assignment
+	var retriedItems []RetryItem
+	var skippedItems []RetrySkippedItem
+	var warnings []string
+
+	for _, failed := range failedAssignments {
+		// Find a target pane
+		var targetPane *tmux.Pane
+		var targetAgentType string
+
+		if assignToPane >= 0 {
+			// Specific pane requested
+			for i := range panes {
+				if panes[i].Index == assignToPane {
+					targetPane = &panes[i]
+					targetAgentType = string(panes[i].Type)
+					break
+				}
+			}
+			if targetPane == nil {
+				skippedItems = append(skippedItems, RetrySkippedItem{
+					BeadID: failed.BeadID,
+					Reason: fmt.Sprintf("target pane %d not found", assignToPane),
+				})
+				continue
+			}
+		} else if assignToType != "" {
+			// Specific agent type requested - find idle agent of that type
+			for i := range idleAgents {
+				if idleAgents[i].agentType == assignToType {
+					targetPane = &idleAgents[i].pane
+					targetAgentType = assignToType
+					// Remove from idle list
+					idleAgents = append(idleAgents[:i], idleAgents[i+1:]...)
+					break
+				}
+			}
+			if targetPane == nil {
+				skippedItems = append(skippedItems, RetrySkippedItem{
+					BeadID: failed.BeadID,
+					Reason: fmt.Sprintf("no idle agent of type %s", assignToType),
+				})
+				continue
+			}
+		} else {
+			// Use first available idle agent
+			if len(idleAgents) == 0 {
+				skippedItems = append(skippedItems, RetrySkippedItem{
+					BeadID: failed.BeadID,
+					Reason: "no idle agents available",
+				})
+				continue
+			}
+			targetPane = &idleAgents[0].pane
+			targetAgentType = idleAgents[0].agentType
+			idleAgents = idleAgents[1:]
+		}
+
+		// Check if target pane already has an active assignment
+		existingAssignment := findAssignmentForPane(store, targetPane.Index)
+		if existingAssignment != nil {
+			skippedItems = append(skippedItems, RetrySkippedItem{
+				BeadID: failed.BeadID,
+				Reason: fmt.Sprintf("pane %d already has assignment %s", targetPane.Index, existingAssignment.BeadID),
+			})
+			continue
+		}
+
+		// Get bead title if not stored
+		beadTitle := failed.BeadTitle
+		if beadTitle == "" {
+			beadTitle = getBeadTitle(failed.BeadID)
+		}
+
+		// Generate new agent name
+		newAgentName := fmt.Sprintf("%s-%d", targetAgentType, targetPane.Index)
+
+		// Create new assignment (remove old one first)
+		store.Remove(failed.BeadID)
+		prompt := expandPromptTemplate(failed.BeadID, beadTitle, assignTemplate, assignTemplateFile)
+		newAssignment, assignErr := store.Assign(failed.BeadID, beadTitle, targetPane.Index, targetAgentType, newAgentName, prompt)
+		if assignErr != nil {
+			skippedItems = append(skippedItems, RetrySkippedItem{
+				BeadID: failed.BeadID,
+				Reason: fmt.Sprintf("failed to create new assignment: %v", assignErr),
+			})
+			continue
+		}
+
+		// Send prompt to pane
+		paneID := fmt.Sprintf("%s:%d", session, targetPane.Index)
+		promptSent := true
+		if err := tmux.SendKeys(paneID, prompt, true); err != nil {
+			promptSent = false
+			warnings = append(warnings, fmt.Sprintf("failed to send prompt to pane %d for %s: %v",
+				targetPane.Index, failed.BeadID, err))
+		}
+
+		// Update assignment with prompt
+		if promptSent {
+			newAssignment.PromptSent = prompt
+			_ = store.Save()
+		}
+
+		now := time.Now().UTC()
+		retriedItems = append(retriedItems, RetryItem{
+			BeadID:             failed.BeadID,
+			BeadTitle:          beadTitle,
+			Pane:               targetPane.Index,
+			AgentType:          targetAgentType,
+			AgentName:          newAgentName,
+			Status:             string(assignment.StatusAssigned),
+			PromptSent:         promptSent,
+			AssignedAt:         now.Format(time.RFC3339),
+			PreviousPane:       failed.Pane,
+			PreviousAgent:      failed.AgentName,
+			PreviousFailReason: failed.FailureReason,
+			RetryCount:         failed.RetryCount + 1,
+		})
+	}
+
+	// Save any changes
+	if err := store.Save(); err != nil {
+		warnings = append(warnings, fmt.Sprintf("failed to save assignment store: %v", err))
+	}
+
+	// Output results
+	if IsJSONOutput() {
+		return json.NewEncoder(os.Stdout).Encode(makeRetryEnvelope(
+			session, true, &RetryData{
+				Summary: RetrySummary{
+					TotalFailed:  len(failedAssignments),
+					RetriedCount: len(retriedItems),
+					SkippedCount: len(skippedItems),
+				},
+				Retried: retriedItems,
+				Skipped: skippedItems,
+			}, "", "", warnings,
+		))
+	}
+
+	// Text output
+	if !assignQuiet {
+		fmt.Printf("Retry summary: %d failed, %d retried, %d skipped\n",
+			len(failedAssignments), len(retriedItems), len(skippedItems))
+		for _, item := range retriedItems {
+			fmt.Printf("  Retried %s: pane %d → pane %d (%s)\n",
+				item.BeadID, item.PreviousPane, item.Pane, item.AgentType)
+		}
+		for _, item := range skippedItems {
+			fmt.Printf("  Skipped %s: %s\n", item.BeadID, item.Reason)
+		}
+		for _, w := range warnings {
+			fmt.Printf("  Warning: %s\n", w)
+		}
+	}
+
+	return nil
+}
 
 // runClearAssignments handles --clear and --clear-pane operations
 func runClearAssignments(cmd *cobra.Command, session string) error {
+	makeClearErrorEnvelope := func(code, msg string) ClearAssignmentsEnvelope {
+		return ClearAssignmentsEnvelope{
+			Command:    "assign",
+			Subcommand: "clear",
+			Session:    session,
+			Timestamp:  time.Now().UTC().Format(time.RFC3339),
+			Success:    false,
+			Warnings:   []string{},
+			Error: &ClearAssignmentsError{
+				Code:    code,
+				Message: msg,
+			},
+		}
+	}
+
 	if assignClear != "" && assignClearPane >= 0 {
 		err := fmt.Errorf("cannot use both --clear and --clear-pane at the same time")
 		if IsJSONOutput() {
-			return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+			return json.NewEncoder(os.Stdout).Encode(makeClearErrorEnvelope("INVALID_ARGS", err.Error()))
 		}
 		return err
 	}
@@ -1605,7 +2233,7 @@ func runClearAssignments(cmd *cobra.Command, session string) error {
 
 	err := fmt.Errorf("no clear operation specified")
 	if IsJSONOutput() {
-		return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+		return json.NewEncoder(os.Stdout).Encode(makeClearErrorEnvelope("INVALID_ARGS", err.Error()))
 	}
 	return err
 }
@@ -1622,7 +2250,19 @@ func runClearSpecificBeads(cmd *cobra.Command, session string, clearBeads string
 	if err != nil {
 		err = fmt.Errorf("failed to load assignment store: %w", err)
 		if IsJSONOutput() {
-			return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+			envelope := ClearAssignmentsEnvelope{
+				Command:    "assign",
+				Subcommand: "clear",
+				Session:    session,
+				Timestamp:  time.Now().UTC().Format(time.RFC3339),
+				Success:    false,
+				Warnings:   []string{},
+				Error: &ClearAssignmentsError{
+					Code:    "STORE_ERROR",
+					Message: err.Error(),
+				},
+			}
+			return json.NewEncoder(os.Stdout).Encode(envelope)
 		}
 		return err
 	}
@@ -1672,18 +2312,31 @@ func runClearSpecificBeads(cmd *cobra.Command, session string, clearBeads string
 
 	// Output results
 	if IsJSONOutput() {
-		resp := struct {
-			output.TimestampedResponse
-			Results      []ClearAssignmentResult `json:"results"`
-			SuccessCount int                     `json:"success_count"`
-			TotalCount   int                     `json:"total_count"`
-		}{
-			TimestampedResponse: output.NewTimestamped(),
-			Results:             results,
-			SuccessCount:        successCount,
-			TotalCount:          len(beadIDs),
+		// Calculate reservations released count
+		reservationsReleased := 0
+		for _, r := range results {
+			if r.FileReservationsReleased {
+				reservationsReleased += len(r.FilesReleased)
+			}
 		}
-		return json.NewEncoder(os.Stdout).Encode(resp)
+
+		envelope := ClearAssignmentsEnvelope{
+			Command:    "assign",
+			Subcommand: "clear",
+			Session:    session,
+			Timestamp:  time.Now().UTC().Format(time.RFC3339),
+			Success:    successCount > 0 || len(beadIDs) == 0,
+			Data: &ClearAssignmentsData{
+				Cleared: results,
+				Summary: ClearAssignmentsSummary{
+					ClearedCount:         successCount,
+					ReservationsReleased: reservationsReleased,
+					FailedCount:          len(beadIDs) - successCount,
+				},
+			},
+			Warnings: []string{},
+		}
+		return json.NewEncoder(os.Stdout).Encode(envelope)
 	}
 
 	// Text output
@@ -1706,12 +2359,30 @@ func runClearSpecificBeads(cmd *cobra.Command, session string, clearBeads string
 
 // runClearPaneAssignments handles --clear-pane flag (clear all assignments for a pane)
 func runClearPaneAssignments(cmd *cobra.Command, session string, pane int) error {
+	// Helper to create error envelope for clear-pane
+	makeClearPaneErrorEnvelope := func(code, msg string) ClearAssignmentsEnvelope {
+		panePtr := pane
+		return ClearAssignmentsEnvelope{
+			Command:    "assign",
+			Subcommand: "clear-pane",
+			Session:    session,
+			Timestamp:  time.Now().UTC().Format(time.RFC3339),
+			Success:    false,
+			Data:       &ClearAssignmentsData{Pane: &panePtr},
+			Warnings:   []string{},
+			Error: &ClearAssignmentsError{
+				Code:    code,
+				Message: msg,
+			},
+		}
+	}
+
 	// Get panes to validate the pane exists
 	panes, err := tmux.GetPanes(session)
 	if err != nil {
 		err = fmt.Errorf("failed to get panes: %w", err)
 		if IsJSONOutput() {
-			return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+			return json.NewEncoder(os.Stdout).Encode(makeClearPaneErrorEnvelope("TMUX_ERROR", err.Error()))
 		}
 		return err
 	}
@@ -1728,7 +2399,7 @@ func runClearPaneAssignments(cmd *cobra.Command, session string, pane int) error
 	if targetPane == nil {
 		err := fmt.Errorf("pane %d not found in session %s", pane, session)
 		if IsJSONOutput() {
-			return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+			return json.NewEncoder(os.Stdout).Encode(makeClearPaneErrorEnvelope("PANE_NOT_FOUND", err.Error()))
 		}
 		return err
 	}
@@ -1740,7 +2411,7 @@ func runClearPaneAssignments(cmd *cobra.Command, session string, pane int) error
 	if err != nil {
 		err = fmt.Errorf("failed to load assignment store: %w", err)
 		if IsJSONOutput() {
-			return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+			return json.NewEncoder(os.Stdout).Encode(makeClearPaneErrorEnvelope("STORE_ERROR", err.Error()))
 		}
 		return err
 	}
@@ -1790,14 +2461,33 @@ func runClearPaneAssignments(cmd *cobra.Command, session string, pane int) error
 
 	// Output result
 	if IsJSONOutput() {
-		resp := struct {
-			output.TimestampedResponse
-			*ClearAllResult
-		}{
-			TimestampedResponse: output.NewTimestamped(),
-			ClearAllResult:      &result,
+		// Calculate reservations released count
+		reservationsReleased := 0
+		for _, r := range result.ClearedBeads {
+			if r.FileReservationsReleased {
+				reservationsReleased += len(r.FilesReleased)
+			}
 		}
-		return json.NewEncoder(os.Stdout).Encode(resp)
+
+		panePtr := pane
+		envelope := ClearAssignmentsEnvelope{
+			Command:    "assign",
+			Subcommand: "clear-pane",
+			Session:    session,
+			Timestamp:  time.Now().UTC().Format(time.RFC3339),
+			Success:    true,
+			Data: &ClearAssignmentsData{
+				Cleared:   result.ClearedBeads,
+				Pane:      &panePtr,
+				AgentType: agentType,
+				Summary: ClearAssignmentsSummary{
+					ClearedCount:         len(result.ClearedBeads),
+					ReservationsReleased: reservationsReleased,
+				},
+			},
+			Warnings: []string{},
+		}
+		return json.NewEncoder(os.Stdout).Encode(envelope)
 	}
 
 	// Text output
@@ -1819,6 +2509,293 @@ func runClearPaneAssignments(cmd *cobra.Command, session string, pane int) error
 		}
 	}
 
+	return nil
+}
+
+// runReassignment handles the --reassign flag for moving a bead between agents
+func runReassignment(cmd *cobra.Command, session string) error {
+	beadID := strings.TrimSpace(assignReassign)
+	if beadID == "" {
+		err := fmt.Errorf("bead ID required for --reassign")
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeReassignErrorEnvelope(session, "INVALID_ARGS", err.Error(), nil))
+		}
+		return err
+	}
+
+	// Validate that either --to-pane or --to-type is specified
+	if assignToPane < 0 && assignToType == "" {
+		err := fmt.Errorf("either --to-pane or --to-type must be specified with --reassign")
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeReassignErrorEnvelope(session, "INVALID_ARGS", err.Error(), nil))
+		}
+		return err
+	}
+
+	// Cannot specify both --to-pane and --to-type
+	if assignToPane >= 0 && assignToType != "" {
+		err := fmt.Errorf("cannot specify both --to-pane and --to-type")
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeReassignErrorEnvelope(session, "INVALID_ARGS", err.Error(), nil))
+		}
+		return err
+	}
+
+	// Load assignment store
+	store, err := assignment.LoadStore(session)
+	if err != nil {
+		err = fmt.Errorf("failed to load assignment store: %w", err)
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeReassignErrorEnvelope(session, "STORE_ERROR", err.Error(), nil))
+		}
+		return err
+	}
+
+	// Find the current assignment
+	currentAssignment := store.Get(beadID)
+	if currentAssignment == nil {
+		err = fmt.Errorf("bead %s does not have an active assignment", beadID)
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeReassignErrorEnvelope(session, "NOT_ASSIGNED", err.Error(), nil))
+		}
+		return err
+	}
+
+	// Verify the assignment is in an active state (not completed)
+	if currentAssignment.Status == assignment.StatusCompleted {
+		err = fmt.Errorf("bead %s assignment is already completed", beadID)
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeReassignErrorEnvelope(session, "NOT_ASSIGNED", err.Error(), map[string]interface{}{
+				"current_status": string(currentAssignment.Status),
+			}))
+		}
+		return err
+	}
+
+	// Get panes from tmux
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		err = fmt.Errorf("failed to get panes: %w", err)
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeReassignErrorEnvelope(session, "TMUX_ERROR", err.Error(), nil))
+		}
+		return err
+	}
+
+	var targetPane *tmux.Pane
+	var targetAgentType string
+
+	if assignToPane >= 0 {
+		// Direct pane assignment
+		for i := range panes {
+			if panes[i].Index == assignToPane {
+				targetPane = &panes[i]
+				break
+			}
+		}
+		if targetPane == nil {
+			err = fmt.Errorf("pane %d not found in session %s", assignToPane, session)
+			if IsJSONOutput() {
+				return json.NewEncoder(os.Stdout).Encode(makeReassignErrorEnvelope(session, "PANE_NOT_FOUND", err.Error(), nil))
+			}
+			return err
+		}
+		targetAgentType = detectAgentTypeFromTitle(targetPane.Title)
+		if targetAgentType == "user" || targetAgentType == "unknown" {
+			err = fmt.Errorf("pane %d is not an agent pane (type: %s)", assignToPane, targetAgentType)
+			if IsJSONOutput() {
+				return json.NewEncoder(os.Stdout).Encode(makeReassignErrorEnvelope(session, "PANE_NOT_FOUND", err.Error(), nil))
+			}
+			return err
+		}
+	} else {
+		// Find idle agent of specified type
+		idleAgents, err := getIdleAgents(session, assignToType, assignVerbose)
+		if err != nil {
+			if IsJSONOutput() {
+				return json.NewEncoder(os.Stdout).Encode(makeReassignErrorEnvelope(session, "TMUX_ERROR", err.Error(), nil))
+			}
+			return err
+		}
+		if len(idleAgents) == 0 {
+			err = fmt.Errorf("no idle %s agents available", assignToType)
+			if IsJSONOutput() {
+				return json.NewEncoder(os.Stdout).Encode(makeReassignErrorEnvelope(session, "NO_IDLE_AGENT", err.Error(), map[string]interface{}{
+					"agent_type": assignToType,
+				}))
+			}
+			return err
+		}
+		// Pick the first idle agent
+		targetPane = &idleAgents[0].pane
+		targetAgentType = idleAgents[0].agentType
+	}
+
+	// Check if target pane is same as current
+	if targetPane.Index == currentAssignment.Pane {
+		err = fmt.Errorf("bead %s is already assigned to pane %d", beadID, targetPane.Index)
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeReassignErrorEnvelope(session, "ALREADY_ASSIGNED", err.Error(), nil))
+		}
+		return err
+	}
+
+	// Check if target pane is busy (unless --force)
+	scrollback, _ := tmux.CapturePaneOutput(targetPane.ID, 10)
+	state := determineAgentState(scrollback, targetAgentType)
+
+	if state != "idle" && !assignForce {
+		// Check if pane has an existing assignment
+		existingAssignment := findAssignmentForPane(store, targetPane.Index)
+		details := map[string]interface{}{
+			"pane_state": state,
+		}
+		if existingAssignment != nil {
+			details["current_bead"] = existingAssignment.BeadID
+			details["current_status"] = string(existingAssignment.Status)
+		}
+		err = fmt.Errorf("pane %d is busy (state: %s), use --force to override", targetPane.Index, state)
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeReassignErrorEnvelope(session, "TARGET_BUSY", err.Error(), details))
+		}
+		return err
+	}
+
+	// Prepare warnings
+	var warnings []string
+
+	// Release file reservations from old agent
+	oldAgentName := currentAssignment.AgentName
+	if oldAgentName == "" {
+		oldAgentName = fmt.Sprintf("%s_%s", session, currentAssignment.AgentType)
+	}
+	releasedFiles, releaseErr := releaseFileReservations(session, beadID, oldAgentName)
+	if releaseErr != nil {
+		warnings = append(warnings, fmt.Sprintf("failed to release file reservations: %v", releaseErr))
+	}
+
+	// Create file reservations for new agent
+	newAgentName := fmt.Sprintf("%s_%s", session, targetAgentType)
+	beadTitle := currentAssignment.BeadTitle
+	if beadTitle == "" {
+		beadTitle = getBeadTitle(beadID)
+	}
+	reservationResult := reserveFilesForBead(session, beadID, beadTitle, targetAgentType, assignVerbose)
+
+	// Update assignment store using Reassign method
+	newAssignment, err := store.Reassign(beadID, targetPane.Index, targetAgentType, newAgentName)
+	if err != nil {
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(makeReassignErrorEnvelope(session, "REASSIGN_ERROR", err.Error(), nil))
+		}
+		return err
+	}
+
+	// Build prompt
+	var prompt string
+	if assignPrompt != "" {
+		prompt = assignPrompt
+	} else {
+		prompt = expandPromptTemplate(beadID, beadTitle, assignTemplate, assignTemplateFile)
+	}
+
+	// Send prompt to new agent
+	paneID := fmt.Sprintf("%s:%d", session, targetPane.Index)
+	promptSent := true
+	if err := tmux.SendKeys(paneID, prompt, true); err != nil {
+		promptSent = false
+		warnings = append(warnings, fmt.Sprintf("failed to send prompt: %v", err))
+	}
+
+	// Update the assignment with the new prompt if different
+	if prompt != currentAssignment.PromptSent {
+		newAssignment.PromptSent = prompt
+		_ = store.Save()
+	}
+
+	// Build result
+	now := time.Now().UTC()
+	data := &ReassignData{
+		BeadID:                      beadID,
+		BeadTitle:                   beadTitle,
+		Pane:                        targetPane.Index,
+		AgentType:                   targetAgentType,
+		AgentName:                   newAgentName,
+		Status:                      string(assignment.StatusAssigned),
+		PromptSent:                  promptSent,
+		AssignedAt:                  now.Format(time.RFC3339),
+		PreviousPane:                currentAssignment.Pane,
+		PreviousAgent:               currentAssignment.AgentName,
+		PreviousAgentType:           currentAssignment.AgentType,
+		PreviousStatus:              string(currentAssignment.Status),
+		FileReservationsTransferred: len(releasedFiles) > 0 || (reservationResult != nil && len(reservationResult.GrantedPaths) > 0),
+	}
+	if len(releasedFiles) > 0 {
+		data.FileReservationsReleasedFrom = len(releasedFiles)
+	}
+	if reservationResult != nil && len(reservationResult.GrantedPaths) > 0 {
+		data.FileReservationsCreatedFor = len(reservationResult.GrantedPaths)
+	}
+
+	// Output result
+	if IsJSONOutput() {
+		if warnings == nil {
+			warnings = []string{}
+		}
+		envelope := ReassignEnvelope{
+			Command:    "assign",
+			Subcommand: "reassign",
+			Session:    session,
+			Timestamp:  now.Format(time.RFC3339),
+			Success:    true,
+			Data:       data,
+			Warnings:   warnings,
+		}
+		return json.NewEncoder(os.Stdout).Encode(envelope)
+	}
+
+	// Text output
+	if !assignQuiet {
+		fmt.Printf("Reassigned %s to pane %d (%s)\n", beadID, targetPane.Index, targetAgentType)
+		fmt.Printf("  Previous: pane %d (%s)\n", currentAssignment.Pane, currentAssignment.AgentType)
+		if promptSent {
+			fmt.Printf("  Prompt sent: %s...\n", truncateString(prompt, 50))
+		}
+		if data.FileReservationsTransferred {
+			fmt.Printf("  File reservations transferred\n")
+		}
+		for _, w := range warnings {
+			fmt.Printf("  Warning: %s\n", w)
+		}
+	}
+
+	return nil
+}
+
+// makeReassignErrorEnvelope creates a standard error envelope for reassignment operations
+func makeReassignErrorEnvelope(session, code, message string, details map[string]interface{}) ReassignEnvelope {
+	return ReassignEnvelope{
+		Command:    "assign",
+		Subcommand: "reassign",
+		Session:    session,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Success:    false,
+		Warnings:   []string{},
+		Error: &ReassignError{
+			Code:    code,
+			Message: message,
+			Details: details,
+		},
+	}
+}
+
+// findAssignmentForPane finds the assignment for a specific pane
+func findAssignmentForPane(store *assignment.AssignmentStore, pane int) *assignment.Assignment {
+	for _, a := range store.ListActive() {
+		if a.Pane == pane {
+			return a
+		}
+	}
 	return nil
 }
 
@@ -2247,13 +3224,40 @@ type DirectAssignResult struct {
 	BlockedByBeads []string                      `json:"blocked_by_beads,omitempty"`
 }
 
+// makeDirectAssignEnvelope creates a standard assign envelope for direct pane assignment JSON output.
+func makeDirectAssignEnvelope(session string, success bool, data *DirectAssignData, errCode, errMsg string, warnings []string) AssignEnvelope[DirectAssignData] {
+	if warnings == nil {
+		warnings = []string{}
+	}
+	envelope := AssignEnvelope[DirectAssignData]{
+		Command:    "assign",
+		Subcommand: "pane",
+		Session:    session,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Success:    success,
+		Data:       data,
+		Warnings:   warnings,
+		Error:      nil,
+	}
+	if errCode != "" {
+		envelope.Error = &AssignError{
+			Code:    errCode,
+			Message: errMsg,
+		}
+	}
+	return envelope
+}
+
 // runDirectPaneAssignment handles the --pane flag for direct bead-to-pane assignment
 func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) error {
+	var warnings []string
+	now := time.Now().UTC().Format(time.RFC3339)
+
 	// Validate: exactly one bead must be specified
 	if len(opts.BeadIDs) != 1 {
 		err := fmt.Errorf("--pane requires exactly one bead (use --beads=bd-xxx)")
 		if IsJSONOutput() {
-			return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+			return json.NewEncoder(os.Stdout).Encode(makeDirectAssignEnvelope(opts.Session, false, nil, "INVALID_ARGS", err.Error(), nil))
 		}
 		return err
 	}
@@ -2265,7 +3269,7 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 	if err != nil {
 		err = fmt.Errorf("failed to get panes: %w", err)
 		if IsJSONOutput() {
-			return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+			return json.NewEncoder(os.Stdout).Encode(makeDirectAssignEnvelope(opts.Session, false, nil, "TMUX_ERROR", err.Error(), nil))
 		}
 		return err
 	}
@@ -2282,7 +3286,7 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 	if targetPane == nil {
 		err = fmt.Errorf("pane %d not found in session %s", opts.Pane, opts.Session)
 		if IsJSONOutput() {
-			return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+			return json.NewEncoder(os.Stdout).Encode(makeDirectAssignEnvelope(opts.Session, false, nil, "PANE_NOT_FOUND", err.Error(), nil))
 		}
 		return err
 	}
@@ -2292,7 +3296,7 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 	if agentType == "user" || agentType == "unknown" {
 		err = fmt.Errorf("pane %d is not an agent pane (type: %s)", opts.Pane, agentType)
 		if IsJSONOutput() {
-			return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+			return json.NewEncoder(os.Stdout).Encode(makeDirectAssignEnvelope(opts.Session, false, nil, "NOT_AGENT_PANE", err.Error(), nil))
 		}
 		return err
 	}
@@ -2300,65 +3304,75 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 	scrollback, _ := tmux.CapturePaneOutput(targetPane.ID, 10)
 	state := determineAgentState(scrollback, agentType)
 
-	result := &DirectAssignResult{
-		BeadID:    beadID,
-		Pane:      opts.Pane,
-		AgentType: agentType,
+	// Build assignment item
+	assignItem := &DirectAssignItem{
+		BeadID:     beadID,
+		Pane:       opts.Pane,
+		AgentType:  agentType,
+		Status:     "assigned",
+		AssignedAt: now,
 	}
 
 	// Check if pane is busy (unless --force)
 	if state != "idle" && !opts.Force {
-		result.Success = false
-		result.Error = fmt.Sprintf("pane %d is busy (state: %s), use --force to override", opts.Pane, state)
-		result.PaneWasBusy = true
+		assignItem.PaneWasBusy = true
+		errMsg := fmt.Sprintf("pane %d is busy (state: %s), use --force to override", opts.Pane, state)
 
 		if IsJSONOutput() {
-			return json.NewEncoder(os.Stdout).Encode(struct {
-				output.TimestampedResponse
-				*DirectAssignResult
-			}{
-				TimestampedResponse: output.NewTimestamped(),
-				DirectAssignResult:  result,
-			})
+			data := &DirectAssignData{Assignment: assignItem}
+			return json.NewEncoder(os.Stdout).Encode(makeDirectAssignEnvelope(opts.Session, false, data, "PANE_BUSY", errMsg, nil))
 		}
-		return fmt.Errorf("%s", result.Error)
+		return fmt.Errorf("%s", errMsg)
 	}
-	result.PaneWasBusy = state != "idle"
+	assignItem.PaneWasBusy = state != "idle"
 
 	// Check dependencies (unless --ignore-deps)
 	if !opts.IgnoreDeps {
 		blockers, err := getBeadBlockers(beadID)
 		if err != nil && opts.Verbose {
 			fmt.Fprintf(os.Stderr, "[DEP] Warning: could not check dependencies: %v\n", err)
+			warnings = append(warnings, fmt.Sprintf("could not check dependencies: %v", err))
 		}
 		if len(blockers) > 0 {
-			result.Success = false
-			result.Error = fmt.Sprintf("bead %s is blocked by: %v, use --ignore-deps to override", beadID, blockers)
-			result.BlockedByBeads = blockers
+			assignItem.BlockedByIDs = blockers
+			errMsg := fmt.Sprintf("bead %s is blocked by: %v, use --ignore-deps to override", beadID, blockers)
 
 			if IsJSONOutput() {
-				return json.NewEncoder(os.Stdout).Encode(struct {
-					output.TimestampedResponse
-					*DirectAssignResult
-				}{
-					TimestampedResponse: output.NewTimestamped(),
-					DirectAssignResult:  result,
-				})
+				data := &DirectAssignData{Assignment: assignItem}
+				return json.NewEncoder(os.Stdout).Encode(makeDirectAssignEnvelope(opts.Session, false, data, "BLOCKED", errMsg, nil))
 			}
-			return fmt.Errorf("%s", result.Error)
+			return fmt.Errorf("%s", errMsg)
 		}
 	} else {
-		result.DepsIgnored = true
+		assignItem.DepsIgnored = true
 	}
 
 	// Get bead title
 	beadTitle := getBeadTitle(beadID)
-	result.BeadTitle = beadTitle
+	assignItem.BeadTitle = beadTitle
 
 	// Reserve files via Agent Mail (if enabled)
+	var fileReservations *DirectAssignFileReservations
 	if opts.ReserveFiles {
 		reservationResult := reserveFilesForBead(opts.Session, beadID, beadTitle, agentType, opts.Verbose)
-		result.Reservations = reservationResult
+		if reservationResult != nil {
+			// Compute denied paths (requested but not granted)
+			grantedSet := make(map[string]bool)
+			for _, p := range reservationResult.GrantedPaths {
+				grantedSet[p] = true
+			}
+			var deniedPaths []string
+			for _, p := range reservationResult.RequestedPaths {
+				if !grantedSet[p] {
+					deniedPaths = append(deniedPaths, p)
+				}
+			}
+			fileReservations = &DirectAssignFileReservations{
+				Requested: reservationResult.RequestedPaths,
+				Granted:   reservationResult.GrantedPaths,
+				Denied:    deniedPaths,
+			}
+		}
 	}
 
 	// Build prompt
@@ -2368,43 +3382,37 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 	} else {
 		prompt = expandPromptTemplate(beadID, beadTitle, opts.Template, opts.TemplateFile)
 	}
-	result.PromptSent = prompt
+	assignItem.Prompt = prompt
+	assignItem.PromptSent = true
 
 	// Execute the assignment
 	paneID := fmt.Sprintf("%s:%d", opts.Session, opts.Pane)
 	if err := tmux.SendKeys(paneID, prompt, true); err != nil {
-		result.Success = false
-		result.Error = fmt.Sprintf("failed to send prompt: %v", err)
+		assignItem.PromptSent = false
+		errMsg := fmt.Sprintf("failed to send prompt: %v", err)
 
 		if IsJSONOutput() {
-			return json.NewEncoder(os.Stdout).Encode(struct {
-				output.TimestampedResponse
-				*DirectAssignResult
-			}{
-				TimestampedResponse: output.NewTimestamped(),
-				DirectAssignResult:  result,
-			})
+			data := &DirectAssignData{Assignment: assignItem, FileReservations: fileReservations}
+			return json.NewEncoder(os.Stdout).Encode(makeDirectAssignEnvelope(opts.Session, false, data, "SEND_ERROR", errMsg, warnings))
 		}
 		return err
 	}
 
-	result.Success = true
-
 	// Track in assignment store
-	store, err := assignment.LoadStore(opts.Session)
-	if err == nil && store != nil {
+	store, storeErr := assignment.LoadStore(opts.Session)
+	if storeErr == nil && store != nil {
 		_, _ = store.Assign(beadID, beadTitle, opts.Pane, agentType, "", prompt)
+	} else if storeErr != nil {
+		warnings = append(warnings, fmt.Sprintf("could not save assignment to store: %v", storeErr))
 	}
 
 	// Output result
 	if IsJSONOutput() {
-		return json.NewEncoder(os.Stdout).Encode(struct {
-			output.TimestampedResponse
-			*DirectAssignResult
-		}{
-			TimestampedResponse: output.NewTimestamped(),
-			DirectAssignResult:  result,
-		})
+		data := &DirectAssignData{
+			Assignment:       assignItem,
+			FileReservations: fileReservations,
+		}
+		return json.NewEncoder(os.Stdout).Encode(makeDirectAssignEnvelope(opts.Session, true, data, "", "", warnings))
 	}
 
 	// Text output
@@ -2413,14 +3421,14 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 		if beadTitle != "" {
 			fmt.Printf("  Title: %s\n", beadTitle)
 		}
-		if result.PaneWasBusy {
+		if assignItem.PaneWasBusy {
 			fmt.Printf("  Note: Pane was busy (--force used)\n")
 		}
-		if result.DepsIgnored {
+		if assignItem.DepsIgnored {
 			fmt.Printf("  Note: Dependencies ignored (--ignore-deps used)\n")
 		}
-		if result.Reservations != nil && len(result.Reservations.GrantedPaths) > 0 {
-			fmt.Printf("  Reserved: %v\n", result.Reservations.GrantedPaths)
+		if fileReservations != nil && len(fileReservations.Granted) > 0 {
+			fmt.Printf("  Reserved: %v\n", fileReservations.Granted)
 		}
 		fmt.Printf("  Prompt: %s\n", prompt)
 	}
@@ -2511,7 +3519,7 @@ type AutoReassignOptions struct {
 type AutoReassignResult struct {
 	TriggerBeadID  string          `json:"trigger_bead_id"`
 	NewlyUnblocked []UnblockedBead `json:"newly_unblocked"`
-	Assigned       []AssignedItem  `json:"assigned"`
+	Assignments    []AssignmentItem `json:"assignments"`
 	Skipped        []SkippedItem   `json:"skipped"`
 	IdleAgents     int             `json:"idle_agents"`
 	Errors         []string        `json:"errors,omitempty"`
@@ -2530,7 +3538,7 @@ func PerformAutoReassignment(completedBeadID string, opts *AutoReassignOptions) 
 	result := &AutoReassignResult{
 		TriggerBeadID:  completedBeadID,
 		CompletionTime: time.Now(),
-		Assigned:       make([]AssignedItem, 0),
+		Assignments:    make([]AssignmentItem, 0),
 		Skipped:        make([]SkippedItem, 0),
 	}
 
@@ -2640,15 +3648,15 @@ func PerformAutoReassignment(completedBeadID string, opts *AutoReassignOptions) 
 	}
 
 	assignments := generateAssignmentsEnhanced(idleAgents, filteredBeads, assignOpts)
-	result.Assigned = assignments
+	result.Assignments = assignments
 
 	// Step 6: Execute assignments
 	if len(assignments) > 0 {
 		// Create a mock enhanced output for execution
 		enhancedOut := &AssignOutputEnhanced{
-			Strategy: opts.Strategy,
-			Assigned: assignments,
-			Skipped:  result.Skipped,
+			Strategy:    opts.Strategy,
+			Assignments: assignments,
+			Skipped:     result.Skipped,
 		}
 
 		if err := executeAssignmentsEnhanced(opts.Session, enhancedOut, assignOpts); err != nil {
@@ -2722,7 +3730,6 @@ func WatchForCompletions(opts *AutoReassignOptions) error {
 	}
 
 	// Get initial state of assignments
-	lastCheckTime := time.Now()
 	knownAssignments := make(map[string]assignment.Assignment)
 	for _, a := range store.GetAll() {
 		knownAssignments[a.BeadID] = a
@@ -2747,18 +3754,16 @@ func WatchForCompletions(opts *AutoReassignOptions) error {
 					result, err := PerformAutoReassignment(current.BeadID, opts)
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "[WATCH] Auto-reassignment failed for %s: %v\n", current.BeadID, err)
-					} else if len(result.Assigned) > 0 {
+					} else if len(result.Assignments) > 0 {
 						if !opts.Quiet {
 							fmt.Printf("[AUTO] Assigned %d newly unblocked beads after %s completion\n",
-								len(result.Assigned), current.BeadID)
+								len(result.Assignments), current.BeadID)
 						}
 					}
 				}
 			}
 			knownAssignments[current.BeadID] = current
 		}
-
-		lastCheckTime = time.Now()
 	}
 
 	return nil
@@ -2793,3 +3798,235 @@ func TriggerCompletionCheck(session, completedBeadID string, opts *AutoReassignO
 
 	return result, nil
 }
+
+// WatchLoop manages the continuous auto-assignment watch mode
+type WatchLoop struct {
+	session  string
+	strategy string
+	store    *assignment.AssignmentStore
+	detector *completion.CompletionDetector
+	opts     *AutoReassignOptions
+
+	// Configuration
+	stopWhenDone bool
+	delay        time.Duration
+	limit        int
+	quiet        bool
+	verbose      bool
+
+	// Concurrency control
+	completionCh chan completion.CompletionEvent
+	stopCh       chan struct{}
+	wg           sync.WaitGroup
+
+	// Statistics
+	mu               sync.Mutex
+	totalAssigned    int
+	totalCompleted   int
+	totalFailed      int
+	startTime        time.Time
+	lastAssignmentAt time.Time
+}
+
+// NewWatchLoop creates a new watch loop for a session
+func NewWatchLoop(session string, store *assignment.AssignmentStore, opts *AutoReassignOptions) *WatchLoop {
+	return &WatchLoop{
+		session:      session,
+		strategy:     opts.Strategy,
+		store:        store,
+		opts:         opts,
+		stopWhenDone: assignStopWhenDone,
+		delay:        assignDelay,
+		limit:        assignLimit,
+		quiet:        opts.Quiet,
+		verbose:      opts.Verbose,
+		stopCh:       make(chan struct{}),
+		startTime:    time.Now(),
+	}
+}
+
+// logf prints a timestamped log message
+func (w *WatchLoop) logf(format string, args ...interface{}) {
+	if w.quiet {
+		return
+	}
+	timestamp := time.Now().Format("15:04:05")
+	msg := fmt.Sprintf(format, args...)
+	fmt.Printf("[%s] %s\n", timestamp, msg)
+}
+
+// Run starts the watch loop and blocks until stopped
+func (w *WatchLoop) Run(ctx context.Context) error {
+	// Create completion detector
+	detectorCfg := completion.DetectionConfig{
+		PollInterval:      assignWatchInterval,
+		IdleThreshold:     120 * time.Second,
+		RetryOnError:      true,
+		RetryInterval:     10 * time.Second,
+		MaxRetries:        3,
+		DedupWindow:       5 * time.Second,
+		GracefulDegrading: true,
+		CaptureLines:      50,
+	}
+	w.detector = completion.NewWithConfig(w.session, w.store, detectorCfg)
+
+	// Start watching for completions
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	defer watchCancel()
+
+	w.completionCh = make(chan completion.CompletionEvent, 10)
+	eventsCh := w.detector.Watch(watchCtx)
+
+	// Forward events to our channel (allows select with other channels)
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		defer close(w.completionCh)
+		for event := range eventsCh {
+			select {
+			case w.completionCh <- event:
+			case <-w.stopCh:
+				return
+			}
+		}
+	}()
+
+	w.logf("Starting watch mode with strategy=%s", w.strategy)
+
+	// Main watch loop
+	for {
+		select {
+		case event, ok := <-w.completionCh:
+			if !ok {
+				// Channel closed, exit
+				return nil
+			}
+
+			if err := w.handleCompletion(event); err != nil {
+				w.logf("Error handling completion: %v", err)
+			}
+
+			// Check stop-when-done condition
+			if w.stopWhenDone {
+				if w.shouldStop() {
+					w.logf("All beads complete. Exiting watch mode.")
+					return nil
+				}
+			}
+
+		case <-ctx.Done():
+			w.logf("Watch mode interrupted. Shutting down...")
+			return ctx.Err()
+
+		case <-w.stopCh:
+			w.logf("Watch mode stopped.")
+			return nil
+		}
+	}
+}
+
+// handleCompletion processes a single completion event
+func (w *WatchLoop) handleCompletion(event completion.CompletionEvent) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	duration := event.Duration.Round(time.Second)
+
+	if event.IsFailed {
+		w.totalFailed++
+		w.logf("Failed: %s by pane %d (%s) - %s", event.BeadID, event.Pane, event.AgentType, event.FailReason)
+		return nil
+	}
+
+	w.totalCompleted++
+	w.logf("Completion: %s by pane %d (%s, %v)", event.BeadID, event.Pane, event.AgentType, duration)
+
+	// Check for delay between assignments
+	if w.delay > 0 && !w.lastAssignmentAt.IsZero() {
+		elapsed := time.Since(w.lastAssignmentAt)
+		if elapsed < w.delay {
+			sleepTime := w.delay - elapsed
+			w.logf("Waiting %v before next assignment...", sleepTime.Round(time.Millisecond))
+			time.Sleep(sleepTime)
+		}
+	}
+
+	// Perform auto-reassignment if enabled
+	if assignAutoReassign {
+		result, err := PerformAutoReassignment(event.BeadID, w.opts)
+		if err != nil {
+			return fmt.Errorf("auto-reassignment failed: %w", err)
+		}
+
+		// Log unblocked beads
+		if len(result.NewlyUnblocked) > 0 {
+			var ids []string
+			for _, ub := range result.NewlyUnblocked {
+				ids = append(ids, ub.ID)
+			}
+			w.logf("Unblocked: %s", strings.Join(ids, ", "))
+		}
+
+		// Log assignments
+		for _, assigned := range result.Assignments {
+			w.totalAssigned++
+			w.lastAssignmentAt = time.Now()
+			w.logf("Assigned: %s -> pane %d (%s)", assigned.BeadID, assigned.Pane, assigned.AgentType)
+
+			// Respect limit
+			if w.limit > 0 && len(result.Assignments) >= w.limit {
+				w.logf("Assignment limit (%d) reached for this cycle", w.limit)
+				break
+			}
+		}
+
+		// Log errors
+		for _, errMsg := range result.Errors {
+			w.logf("Warning: %s", errMsg)
+		}
+	}
+
+	return nil
+}
+
+// shouldStop checks if watch mode should exit
+func (w *WatchLoop) shouldStop() bool {
+	// Check if there are any active assignments
+	active := w.store.ListActive()
+	if len(active) > 0 {
+		return false // Still have work in progress
+	}
+
+	// Check if there are ready beads
+	wd, _ := os.Getwd()
+	readyBeads := bv.GetReadyPreview(wd, 10)
+	if len(readyBeads) > 0 {
+		return false // Still have work available
+	}
+
+	// Check if there are idle agents
+	idleAgents, err := getIdleAgents(w.session, w.opts.AgentTypeFilter, false)
+	if err == nil && len(idleAgents) == 0 {
+		w.logf("Warning: No idle agents available")
+	}
+
+	return true // No active work, no ready beads
+}
+
+// Stop signals the watch loop to stop
+func (w *WatchLoop) Stop() {
+	close(w.stopCh)
+	w.wg.Wait()
+}
+
+// Summary returns statistics about the watch session
+func (w *WatchLoop) Summary() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	duration := time.Since(w.startTime).Round(time.Second)
+	return fmt.Sprintf("Watch session: %d assigned, %d completed, %d failed in %v",
+		w.totalAssigned, w.totalCompleted, w.totalFailed, duration)
+}
+
+// runWatchMode implements the --watch flag for continuous auto-assignment

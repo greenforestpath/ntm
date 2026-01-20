@@ -32,19 +32,19 @@ func TestDependencyFilteringInAssignment(t *testing.T) {
 // TestAssignSummaryBlockedCount tests that the summary correctly tracks blocked count
 func TestAssignSummaryBlockedCount(t *testing.T) {
 	summary := AssignSummaryEnhanced{
-		TotalBeads:   10,
-		ActionableC:  7,
-		BlockedCount: 3,
-		Assigned:     5,
-		Skipped:      5, // 3 blocked + 2 other reasons
-		IdleAgents:   2,
+		TotalBeads:      10,
+		ActionableCount: 7,
+		BlockedCount:    3,
+		AssignedCount:   5,
+		SkippedCount:    5, // 3 blocked + 2 other reasons
+		IdleAgents:      2,
 	}
 
 	if summary.TotalBeads != 10 {
 		t.Errorf("Expected TotalBeads=10, got %d", summary.TotalBeads)
 	}
-	if summary.ActionableC != 7 {
-		t.Errorf("Expected ActionableC=7, got %d", summary.ActionableC)
+	if summary.ActionableCount != 7 {
+		t.Errorf("Expected ActionableCount=7, got %d", summary.ActionableCount)
 	}
 	if summary.BlockedCount != 3 {
 		t.Errorf("Expected BlockedCount=3, got %d", summary.BlockedCount)
@@ -135,7 +135,7 @@ func TestBlockedBeadsReasonString(t *testing.T) {
 func TestAssignOutputEnhancedStructure(t *testing.T) {
 	output := AssignOutputEnhanced{
 		Strategy: "balanced",
-		Assigned: []AssignedItem{
+		Assignments: []AssignmentItem{
 			{
 				BeadID:    "bd-100",
 				BeadTitle: "Test task",
@@ -153,12 +153,12 @@ func TestAssignOutputEnhancedStructure(t *testing.T) {
 			},
 		},
 		Summary: AssignSummaryEnhanced{
-			TotalBeads:   2,
-			ActionableC:  1,
-			BlockedCount: 1,
-			Assigned:     1,
-			Skipped:      1,
-			IdleAgents:   3,
+			TotalBeads:      2,
+			ActionableCount: 1,
+			BlockedCount:    1,
+			AssignedCount:   1,
+			SkippedCount:    1,
+			IdleAgents:      3,
 		},
 	}
 
@@ -166,14 +166,14 @@ func TestAssignOutputEnhancedStructure(t *testing.T) {
 	if output.Strategy != "balanced" {
 		t.Errorf("Expected strategy 'balanced', got %q", output.Strategy)
 	}
-	if len(output.Assigned) != 1 {
-		t.Errorf("Expected 1 assigned, got %d", len(output.Assigned))
+	if len(output.Assignments) != 1 {
+		t.Errorf("Expected 1 assigned, got %d", len(output.Assignments))
 	}
 	if len(output.Skipped) != 1 {
 		t.Errorf("Expected 1 skipped, got %d", len(output.Skipped))
 	}
-	if output.Summary.ActionableC != 1 {
-		t.Errorf("Expected ActionableC=1, got %d", output.Summary.ActionableC)
+	if output.Summary.ActionableCount != 1 {
+		t.Errorf("Expected ActionableCount=1, got %d", output.Summary.ActionableCount)
 	}
 	if output.Summary.BlockedCount != 1 {
 		t.Errorf("Expected BlockedCount=1, got %d", output.Summary.BlockedCount)
@@ -296,5 +296,228 @@ func TestFilterCyclicBeadsEmpty(t *testing.T) {
 	// since CheckCycles requires bv to be available
 	if len(beads) != 2 {
 		t.Error("Input beads should have 2 items")
+	}
+}
+
+// ============================================================================
+// Reassignment Tests
+// ============================================================================
+
+// TestReassignDataStructure tests the ReassignData type structure
+func TestReassignDataStructure(t *testing.T) {
+	data := ReassignData{
+		BeadID:                      "bd-123",
+		BeadTitle:                   "Test bead",
+		Pane:                        4,
+		AgentType:                   "codex",
+		AgentName:                   "test_codex",
+		Status:                      "assigned",
+		PromptSent:                  true,
+		AssignedAt:                  "2026-01-19T12:00:00Z",
+		PreviousPane:                2,
+		PreviousAgent:               "test_claude",
+		PreviousAgentType:           "claude",
+		PreviousStatus:              "working",
+		FileReservationsTransferred: true,
+	}
+
+	if data.BeadID != "bd-123" {
+		t.Errorf("Expected BeadID 'bd-123', got %q", data.BeadID)
+	}
+	if data.Pane != 4 {
+		t.Errorf("Expected Pane 4, got %d", data.Pane)
+	}
+	if data.PreviousPane != 2 {
+		t.Errorf("Expected PreviousPane 2, got %d", data.PreviousPane)
+	}
+	if data.AgentType != "codex" {
+		t.Errorf("Expected AgentType 'codex', got %q", data.AgentType)
+	}
+	if data.PreviousAgentType != "claude" {
+		t.Errorf("Expected PreviousAgentType 'claude', got %q", data.PreviousAgentType)
+	}
+	if !data.FileReservationsTransferred {
+		t.Error("Expected FileReservationsTransferred to be true")
+	}
+}
+
+// TestReassignErrorStructure tests the ReassignError type structure
+func TestReassignErrorStructure(t *testing.T) {
+	err := ReassignError{
+		Code:    "TARGET_BUSY",
+		Message: "pane 4 already has assignment bd-abc",
+		Details: map[string]interface{}{
+			"current_bead":   "bd-abc",
+			"current_status": "working",
+		},
+	}
+
+	if err.Code != "TARGET_BUSY" {
+		t.Errorf("Expected Code 'TARGET_BUSY', got %q", err.Code)
+	}
+	if err.Details["current_bead"] != "bd-abc" {
+		t.Errorf("Expected current_bead 'bd-abc', got %v", err.Details["current_bead"])
+	}
+}
+
+// TestReassignEnvelopeSuccessStructure tests the success envelope structure
+func TestReassignEnvelopeSuccessStructure(t *testing.T) {
+	envelope := ReassignEnvelope{
+		Command:    "assign",
+		Subcommand: "reassign",
+		Session:    "myproject",
+		Timestamp:  "2026-01-19T12:00:00Z",
+		Success:    true,
+		Data: &ReassignData{
+			BeadID:            "bd-123",
+			BeadTitle:         "Test bead",
+			Pane:              4,
+			AgentType:         "codex",
+			PreviousPane:      2,
+			PreviousAgentType: "claude",
+		},
+		Warnings: []string{},
+	}
+
+	if envelope.Command != "assign" {
+		t.Errorf("Expected Command 'assign', got %q", envelope.Command)
+	}
+	if envelope.Subcommand != "reassign" {
+		t.Errorf("Expected Subcommand 'reassign', got %q", envelope.Subcommand)
+	}
+	if !envelope.Success {
+		t.Error("Expected Success to be true")
+	}
+	if envelope.Data == nil {
+		t.Error("Expected Data to be non-nil")
+	}
+	if envelope.Error != nil {
+		t.Error("Expected Error to be nil for success case")
+	}
+}
+
+// TestReassignEnvelopeErrorStructure tests the error envelope structure
+func TestReassignEnvelopeErrorStructure(t *testing.T) {
+	envelope := ReassignEnvelope{
+		Command:    "assign",
+		Subcommand: "reassign",
+		Session:    "myproject",
+		Timestamp:  "2026-01-19T12:00:00Z",
+		Success:    false,
+		Data:       nil,
+		Warnings:   []string{},
+		Error: &ReassignError{
+			Code:    "NOT_ASSIGNED",
+			Message: "bead bd-xyz does not have an active assignment",
+		},
+	}
+
+	if envelope.Success {
+		t.Error("Expected Success to be false")
+	}
+	if envelope.Data != nil {
+		t.Error("Expected Data to be nil for error case")
+	}
+	if envelope.Error == nil {
+		t.Error("Expected Error to be non-nil for error case")
+	}
+	if envelope.Error.Code != "NOT_ASSIGNED" {
+		t.Errorf("Expected Error.Code 'NOT_ASSIGNED', got %q", envelope.Error.Code)
+	}
+}
+
+// TestMakeReassignErrorEnvelope tests the error envelope helper function
+func TestMakeReassignErrorEnvelope(t *testing.T) {
+	tests := []struct {
+		name    string
+		session string
+		code    string
+		message string
+		details map[string]interface{}
+	}{
+		{
+			name:    "basic error",
+			session: "test-session",
+			code:    "NOT_ASSIGNED",
+			message: "bead not found",
+			details: nil,
+		},
+		{
+			name:    "error with details",
+			session: "test-session",
+			code:    "TARGET_BUSY",
+			message: "pane is busy",
+			details: map[string]interface{}{
+				"current_bead":   "bd-999",
+				"current_status": "working",
+			},
+		},
+		{
+			name:    "no idle agent error",
+			session: "myproject",
+			code:    "NO_IDLE_AGENT",
+			message: "no idle codex agents available",
+			details: map[string]interface{}{
+				"agent_type": "codex",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			envelope := makeReassignErrorEnvelope(tc.session, tc.code, tc.message, tc.details)
+
+			if envelope.Command != "assign" {
+				t.Errorf("Expected Command 'assign', got %q", envelope.Command)
+			}
+			if envelope.Subcommand != "reassign" {
+				t.Errorf("Expected Subcommand 'reassign', got %q", envelope.Subcommand)
+			}
+			if envelope.Session != tc.session {
+				t.Errorf("Expected Session %q, got %q", tc.session, envelope.Session)
+			}
+			if envelope.Success {
+				t.Error("Expected Success to be false")
+			}
+			if envelope.Error == nil {
+				t.Fatal("Expected Error to be non-nil")
+			}
+			if envelope.Error.Code != tc.code {
+				t.Errorf("Expected Error.Code %q, got %q", tc.code, envelope.Error.Code)
+			}
+			if envelope.Error.Message != tc.message {
+				t.Errorf("Expected Error.Message %q, got %q", tc.message, envelope.Error.Message)
+			}
+			if tc.details != nil {
+				for k, v := range tc.details {
+					if envelope.Error.Details[k] != v {
+						t.Errorf("Expected Details[%q]=%v, got %v", k, v, envelope.Error.Details[k])
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestReassignErrorCodes tests the documented error codes
+func TestReassignErrorCodes(t *testing.T) {
+	// These are the documented error codes from the bead spec
+	errorCodes := []string{
+		"NOT_ASSIGNED",   // Bead doesn't have an active assignment
+		"TARGET_BUSY",    // Target pane already has an assignment
+		"PANE_NOT_FOUND", // Target pane doesn't exist
+		"NO_IDLE_AGENT",  // No idle agent of specified type
+		"INVALID_ARGS",   // Invalid arguments
+		"STORE_ERROR",    // Assignment store error
+		"TMUX_ERROR",     // Tmux error
+		"REASSIGN_ERROR", // Reassignment operation error
+	}
+
+	// Verify each code can be used in an envelope
+	for _, code := range errorCodes {
+		envelope := makeReassignErrorEnvelope("test", code, "test message", nil)
+		if envelope.Error.Code != code {
+			t.Errorf("Error code %q not preserved in envelope", code)
+		}
 	}
 }

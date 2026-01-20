@@ -19,4 +19,7 @@ func init() {
 
 	// Register S2P adapter (Source to Prompt)
 	Register(NewS2PAdapter())
+
+	// Register JFP adapter (JeffreysPrompts CLI - prompt library)
+	Register(NewJFPAdapter())
 }

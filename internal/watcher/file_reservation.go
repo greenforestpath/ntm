@@ -121,6 +121,15 @@ func WithConflictCallback(cb ConflictCallback) FileReservationWatcherOption {
 	}
 }
 
+// WithCaptureLines sets the number of lines to capture for pattern detection.
+func WithCaptureLines(lines int) FileReservationWatcherOption {
+	return func(w *FileReservationWatcher) {
+		if lines > 0 {
+			w.captureLines = lines
+		}
+	}
+}
+
 // NewFileReservationWatcher creates a new FileReservationWatcher.
 func NewFileReservationWatcher(opts ...FileReservationWatcherOption) *FileReservationWatcher {
 	w := &FileReservationWatcher{

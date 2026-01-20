@@ -166,15 +166,17 @@ type SessionListItem struct {
 // StatusResponse is the output format for status command
 type StatusResponse struct {
 	TimestampedResponse
-	Session          string               `json:"session"`
-	Exists           bool                 `json:"exists"`
-	Attached         bool                 `json:"attached"`
-	WorkingDirectory string               `json:"working_directory"`
-	Panes            []PaneResponse       `json:"panes"`
-	AgentCounts      AgentCountsResponse  `json:"agent_counts"`
-	AgentMail        *AgentMailStatus     `json:"agent_mail,omitempty"`
-	Assignments      []AssignmentResponse `json:"assignments,omitempty"`
-	AssignmentStats  *AssignmentStats     `json:"assignment_stats,omitempty"`
+	Session             string               `json:"session"`
+	Exists              bool                 `json:"exists"`
+	Attached            bool                 `json:"attached"`
+	WorkingDirectory    string               `json:"working_directory"`
+	Panes               []PaneResponse       `json:"panes"`
+	AgentCounts         AgentCountsResponse  `json:"agent_counts"`
+	AgentMail           *AgentMailStatus     `json:"agent_mail,omitempty"`
+	Assignments         []AssignmentResponse `json:"assignments,omitempty"`
+	AssignmentStats     *AssignmentStats     `json:"assignment_stats,omitempty"`
+	AssignmentFilters   *AssignmentFilters   `json:"assignment_filters,omitempty"`
+	AssignmentSummary   *AssignmentSummary   `json:"assignment_summary,omitempty"`
 }
 
 // AgentMailStatus represents Agent Mail integration status for a session
@@ -267,4 +269,29 @@ type AssignmentStats struct {
 	Completed  int `json:"completed"`
 	Failed     int `json:"failed"`
 	Reassigned int `json:"reassigned"`
+}
+
+// AssignmentFilters represents active filters on assignment output
+type AssignmentFilters struct {
+	Status    string `json:"status,omitempty"`
+	AgentType string `json:"agent_type,omitempty"`
+	Pane      *int   `json:"pane,omitempty"`
+}
+
+// AssignmentStatsByAgent contains per-agent-type stats
+type AssignmentStatsByAgent struct {
+	AgentType string `json:"agent_type"`
+	Total     int    `json:"total"`
+	Working   int    `json:"working"`
+	Completed int    `json:"completed"`
+	Failed    int    `json:"failed"`
+}
+
+// AssignmentSummary provides comprehensive summary statistics
+type AssignmentSummary struct {
+	Total          int                      `json:"total"`
+	ByStatus       map[string]int           `json:"by_status"`
+	ByAgent        []AssignmentStatsByAgent `json:"by_agent"`
+	CompletionRate float64                  `json:"completion_rate"`
+	AvgDurationSec float64                  `json:"avg_duration_seconds,omitempty"`
 }

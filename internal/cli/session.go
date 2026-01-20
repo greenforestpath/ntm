@@ -22,6 +22,16 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 )
 
+// statusOptions holds configuration for the status command
+type statusOptions struct {
+	tags            []string
+	showAssignments bool
+	filterStatus    string
+	filterAgent     string
+	filterPane      int
+	showSummary     bool
+}
+
 func newAttachCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "attach <session-name>",
@@ -250,6 +260,10 @@ func runList(tags []string) error {
 func newStatusCmd() *cobra.Command {
 	var tags []string
 	var showAssignments bool
+	var filterStatus string
+	var filterAgent string
+	var filterPane int
+	var showSummary bool
 	cmd := &cobra.Command{
 		Use:   "status <session-name>",
 		Short: "Show detailed status of a session",
@@ -259,21 +273,43 @@ func newStatusCmd() *cobra.Command {
 - Session directory
 - Bead assignments (with --assignments flag)
 
+Assignment Filtering (requires --assignments):
+  --status=<status>  Filter by: assigned, working, completed, failed, reassigned
+  --agent=<type>     Filter by: claude, codex, gemini
+  --pane=<n>         Filter by pane number
+  --summary          Show aggregated statistics only
+
 Examples:
   ntm status myproject
   ntm status myproject --tag=frontend
-  ntm status myproject --assignments`,
+  ntm status myproject --assignments
+  ntm status myproject --assignments --status=working
+  ntm status myproject --assignments --agent=claude
+  ntm status myproject --assignments --status=failed --agent=codex
+  ntm status myproject --assignments --summary`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runStatus(cmd.OutOrStdout(), args[0], tags, showAssignments)
+			opts := statusOptions{
+				tags:            tags,
+				showAssignments: showAssignments,
+				filterStatus:    filterStatus,
+				filterAgent:     filterAgent,
+				filterPane:      filterPane,
+				showSummary:     showSummary,
+			}
+			return runStatus(cmd.OutOrStdout(), args[0], opts)
 		},
 	}
 	cmd.Flags().StringSliceVar(&tags, "tag", nil, "filter panes by tag")
 	cmd.Flags().BoolVar(&showAssignments, "assignments", false, "show bead-to-agent assignments")
+	cmd.Flags().StringVar(&filterStatus, "status", "", "filter assignments by status (assigned, working, completed, failed, reassigned)")
+	cmd.Flags().StringVar(&filterAgent, "agent", "", "filter assignments by agent type (claude, codex, gemini)")
+	cmd.Flags().IntVar(&filterPane, "pane", -1, "filter assignments by pane number")
+	cmd.Flags().BoolVar(&showSummary, "summary", false, "show assignment summary statistics only")
 	return cmd
 }
 
-func runStatus(w io.Writer, session string, tags []string, showAssignments bool) error {
+func runStatus(w io.Writer, session string, opts statusOptions) error {
 	// Helper for JSON error output
 	outputError := func(err error) error {
 		if IsJSONOutput() {
@@ -304,10 +340,10 @@ func runStatus(w io.Writer, session string, tags []string, showAssignments bool)
 	}
 
 	// Filter panes by tag
-	if len(tags) > 0 {
+	if len(opts.tags) > 0 {
 		var filtered []tmux.Pane
 		for _, p := range panes {
-			if HasAnyTag(p.Tags, tags) {
+			if HasAnyTag(p.Tags, opts.tags) {
 				filtered = append(filtered, p)
 			}
 		}
@@ -331,9 +367,10 @@ func runStatus(w io.Writer, session string, tags []string, showAssignments bool)
 		}
 	}
 
-	// Load assignments if requested
+	// Load assignments if requested (or if filtering/summary requires them)
 	var assignmentStore *assignment.AssignmentStore
-	if showAssignments {
+	needAssignments := opts.showAssignments || opts.filterStatus != "" || opts.filterAgent != "" || opts.filterPane >= 0 || opts.showSummary
+	if needAssignments {
 		assignmentStore, _ = assignment.LoadStore(session)
 	}
 
@@ -379,7 +416,7 @@ func runStatus(w io.Writer, session string, tags []string, showAssignments bool)
 		}
 
 		// Add assignments if requested
-		if showAssignments && assignmentStore != nil {
+		if opts.showAssignments && assignmentStore != nil {
 			assignments := assignmentStore.List()
 			for _, a := range assignments {
 				assignResp := output.AssignmentResponse{
@@ -634,7 +671,7 @@ func runStatus(w io.Writer, session string, tags []string, showAssignments bool)
 	}
 
 	// Assignments section (only if requested)
-	if showAssignments && assignmentStore != nil {
+	if opts.showAssignments && assignmentStore != nil {
 		assignColor := colorize(t.Peach)
 		beadIcon := "◆"
 

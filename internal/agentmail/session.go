@@ -256,3 +256,150 @@ func IsNameTakenError(err error) bool {
 		strings.Contains(errStr, "name taken") ||
 		strings.Contains(errStr, "already registered")
 }
+
+// SessionAgentRegistry stores the mapping of pane titles/IDs to Agent Mail agent names
+// for a session. This enables message routing and reservation management across
+// session restarts.
+type SessionAgentRegistry struct {
+	SessionName string            `json:"session_name"`
+	ProjectKey  string            `json:"project_key"`
+	Agents      map[string]string `json:"agents"`       // pane_title -> agent_name
+	PaneIDMap   map[string]string `json:"pane_id_map"`  // pane_id -> agent_name (backup)
+	RegisteredAt time.Time        `json:"registered_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+}
+
+// NewSessionAgentRegistry creates a new empty registry.
+func NewSessionAgentRegistry(sessionName, projectKey string) *SessionAgentRegistry {
+	now := time.Now()
+	return &SessionAgentRegistry{
+		SessionName:  sessionName,
+		ProjectKey:   projectKey,
+		Agents:       make(map[string]string),
+		PaneIDMap:    make(map[string]string),
+		RegisteredAt: now,
+		UpdatedAt:    now,
+	}
+}
+
+// registryPath returns the path to the session's agent registry file.
+func registryPath(sessionName, projectKey string) string {
+	base := filepath.Join(getSessionsBaseDir(), sessionName)
+	if projectKey != "" {
+		slug := ProjectSlugFromPath(projectKey)
+		if slug == "" {
+			slug = sanitizeSessionName(projectKey)
+		}
+		base = filepath.Join(base, slug)
+	}
+	return filepath.Join(base, "agent_registry.json")
+}
+
+// LoadSessionAgentRegistry loads the agent registry for a session, if it exists.
+// Returns nil without error if no registry exists.
+func LoadSessionAgentRegistry(sessionName, projectKey string) (*SessionAgentRegistry, error) {
+	path := registryPath(sessionName, projectKey)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading agent registry: %w", err)
+	}
+
+	var registry SessionAgentRegistry
+	if err := json.Unmarshal(data, &registry); err != nil {
+		return nil, fmt.Errorf("parsing agent registry: %w", err)
+	}
+
+	// Validate project key matches
+	if projectKey != "" && registry.ProjectKey != projectKey {
+		return nil, nil
+	}
+
+	return &registry, nil
+}
+
+// SaveSessionAgentRegistry saves the agent registry for a session.
+func SaveSessionAgentRegistry(registry *SessionAgentRegistry) error {
+	if registry == nil {
+		return fmt.Errorf("cannot save nil registry")
+	}
+
+	path := registryPath(registry.SessionName, registry.ProjectKey)
+	dir := filepath.Dir(path)
+
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("creating registry directory: %w", err)
+	}
+
+	registry.UpdatedAt = time.Now()
+
+	data, err := json.MarshalIndent(registry, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling agent registry: %w", err)
+	}
+
+	if err := util.AtomicWriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("writing agent registry: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteSessionAgentRegistry removes the agent registry for a session.
+func DeleteSessionAgentRegistry(sessionName, projectKey string) error {
+	path := registryPath(sessionName, projectKey)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("deleting agent registry: %w", err)
+	}
+	return nil
+}
+
+// AddAgent adds a pane -> agent name mapping to the registry.
+func (r *SessionAgentRegistry) AddAgent(paneTitle, paneID, agentName string) {
+	if r.Agents == nil {
+		r.Agents = make(map[string]string)
+	}
+	if r.PaneIDMap == nil {
+		r.PaneIDMap = make(map[string]string)
+	}
+	r.Agents[paneTitle] = agentName
+	if paneID != "" {
+		r.PaneIDMap[paneID] = agentName
+	}
+}
+
+// GetAgentByTitle returns the agent name for a pane title.
+func (r *SessionAgentRegistry) GetAgentByTitle(paneTitle string) (string, bool) {
+	if r == nil || r.Agents == nil {
+		return "", false
+	}
+	name, ok := r.Agents[paneTitle]
+	return name, ok
+}
+
+// GetAgentByID returns the agent name for a pane ID.
+func (r *SessionAgentRegistry) GetAgentByID(paneID string) (string, bool) {
+	if r == nil || r.PaneIDMap == nil {
+		return "", false
+	}
+	name, ok := r.PaneIDMap[paneID]
+	return name, ok
+}
+
+// GetAgent tries to find an agent by title first, then by ID.
+func (r *SessionAgentRegistry) GetAgent(paneTitle, paneID string) (string, bool) {
+	if name, ok := r.GetAgentByTitle(paneTitle); ok {
+		return name, true
+	}
+	return r.GetAgentByID(paneID)
+}
+
+// Count returns the number of registered agents.
+func (r *SessionAgentRegistry) Count() int {
+	if r == nil || r.Agents == nil {
+		return 0
+	}
+	return len(r.Agents)
+}

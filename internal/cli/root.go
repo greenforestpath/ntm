@@ -88,6 +88,13 @@ Shell Integration:
 				// Use defaults if config loading fails
 				cfg = config.Default()
 			}
+
+			// Run automatic temp file cleanup if enabled
+			MaybeRunStartupCleanup(
+				cfg.Cleanup.AutoCleanOnStartup,
+				cfg.Cleanup.MaxAgeHours,
+				cfg.Cleanup.Verbose,
+			)
 		}
 		return nil
 	},
@@ -159,89 +166,45 @@ Shell Integration:
 			}
 			return
 		}
+		// TODO: These robot functions are commented out in robot.go pending BV adapter implementation
 		if robotForecast != "" {
-			if err := robot.PrintForecast(robotForecast); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
+			robot.PrintRobotUnavailable("forecast", "BV forecast analysis not yet implemented", "v2.1.0", "Use bv --robot-forecast directly")
 			return
 		}
 		if robotSuggest {
-			if err := robot.PrintSuggest(); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
+			robot.PrintRobotUnavailable("suggest", "BV hygiene suggestions not yet implemented", "v2.1.0", "Use bv --robot-suggest directly")
 			return
 		}
 		if robotImpact != "" {
-			if err := robot.PrintImpact(robotImpact); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
+			robot.PrintRobotUnavailable("impact", "BV impact analysis not yet implemented", "v2.1.0", "Use bv --robot-impact directly")
 			return
 		}
 		if robotSearch != "" {
-			if err := robot.PrintSearch(robotSearch); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
+			robot.PrintRobotUnavailable("search", "BV semantic search not yet implemented", "v2.1.0", "Use bv --robot-search directly")
 			return
 		}
 		if robotLabelAttention {
-			opts := robot.LabelAttentionOptions{
-				Limit: robotAttentionLimit,
-			}
-			if err := robot.PrintLabelAttention(opts); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
+			robot.PrintRobotUnavailable("label-attention", "BV label attention ranking not yet implemented", "v2.1.0", "Use bv --robot-label-attention directly")
 			return
 		}
 		if robotLabelFlow {
-			if err := robot.PrintLabelFlow(); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
+			robot.PrintRobotUnavailable("label-flow", "BV label flow analysis not yet implemented", "v2.1.0", "Use bv --robot-label-flow directly")
 			return
 		}
 		if robotLabelHealth {
-			if err := robot.PrintLabelHealth(); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
+			robot.PrintRobotUnavailable("label-health", "BV label health analysis not yet implemented", "v2.1.0", "Use bv --robot-label-health directly")
 			return
 		}
 		if robotFileBeads != "" {
-			opts := robot.FileBeadsOptions{
-				FilePath: robotFileBeads,
-				Limit:    robotFileBeadsLimit,
-			}
-			if err := robot.PrintFileBeads(opts); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
+			robot.PrintRobotUnavailable("file-beads", "File beads analysis not yet implemented", "v2.1.0", "Use bv --robot-file-beads directly")
 			return
 		}
 		if robotFileHotspots {
-			opts := robot.FileHotspotsOptions{
-				Limit: robotHotspotsLimit,
-			}
-			if err := robot.PrintFileHotspots(opts); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
+			robot.PrintRobotUnavailable("file-hotspots", "File hotspots analysis not yet implemented", "v2.1.0", "Use bv --robot-file-hotspots directly")
 			return
 		}
 		if robotFileRelations != "" {
-			opts := robot.FileRelationsOptions{
-				FilePath:  robotFileRelations,
-				Limit:     robotRelationsLimit,
-				Threshold: robotRelationsThreshold,
-			}
-			if err := robot.PrintFileRelations(opts); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
+			robot.PrintRobotUnavailable("file-relations", "File relations analysis not yet implemented", "v2.1.0", "Use bv --robot-file-relations directly")
 			return
 		}
 		if robotDashboard {
@@ -1443,6 +1406,7 @@ func init() {
 		newZoomCmd(),
 		newDashboardCmd(),
 		newWatchCmd(),
+		newGetAllSessionTextCmd(),
 
 		// Output management
 		newCopyCmd(),
@@ -1458,6 +1422,7 @@ func init() {
 		newCheckpointCmd(),
 		newRollbackCmd(),
 		newSessionPersistCmd(),
+		newHandoffCmd(),
 
 		// Utilities
 		newPaletteCmd(),
@@ -1470,6 +1435,7 @@ func init() {
 		newHooksCmd(),
 		newHealthCmd(),
 		newDoctorCmd(),
+		newCleanupCmd(),
 		newSafetyCmd(),
 		newPolicyCmd(),
 		newGuardsCmd(),

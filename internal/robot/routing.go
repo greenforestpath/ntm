@@ -383,6 +383,31 @@ func (s *AgentScorer) GetAgentNameForPane(paneID string) (string, bool) {
 	return name, ok
 }
 
+// LoadAgentMappingFromRegistry loads the pane->agent name mapping from the
+// persisted SessionAgentRegistry. This enables session restart recovery of
+// agent identities. Returns the number of agents loaded, or 0 if no registry exists.
+func (s *AgentScorer) LoadAgentMappingFromRegistry(sessionName, projectKey string) int {
+	registry, err := agentmail.LoadSessionAgentRegistry(sessionName, projectKey)
+	if err != nil || registry == nil {
+		return 0
+	}
+
+	// Merge the registry mappings into the scorer's agent mapping
+	// Both by pane title and by pane ID
+	if registry.Agents != nil {
+		for paneTitle, agentName := range registry.Agents {
+			s.MapPaneToAgent(paneTitle, agentName)
+		}
+	}
+	if registry.PaneIDMap != nil {
+		for paneID, agentName := range registry.PaneIDMap {
+			s.MapPaneToAgent(paneID, agentName)
+		}
+	}
+
+	return registry.Count()
+}
+
 // CheckReservationWarning checks if any files in the prompt have reservations
 // and returns a warning if the selected agent doesn't hold them.
 func (s *AgentScorer) CheckReservationWarning(prompt string, selectedPaneID string) *ReservationWarning {

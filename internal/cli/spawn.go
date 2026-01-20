@@ -14,11 +14,11 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/cm"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/gemini"
-	"github.com/Dicklesworthstone/ntm/internal/git"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
@@ -822,6 +822,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 	type launchedAgent struct {
 		paneID        string
 		paneIndex     int
+		paneTitle     string // e.g., "myproject__cc_1"
 		agentType     string
 		model         string // alias
 		resolvedModel string // full name
@@ -871,6 +872,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 	if effectiveStaggerMode != "none" && effectiveStaggerMode != "" && opts.Prompt != "" {
 		spawnState = NewSpawnState(spawnCtx.BatchID, int(staggerInterval.Seconds()), len(opts.Agents))
 	}
+	isStaggered := effectiveStaggerMode != "none" && effectiveStaggerMode != "" && staggerInterval > 0
 
 	// Resolve CASS context if enabled
 	var cassContext string
@@ -893,60 +895,20 @@ func spawnSessionLogic(opts SpawnOptions) error {
 	}
 
 	// Build recovery context if enabled (smart session recovery)
-	var recoveryPrompt string
+	// Note: rc is kept as a pointer so we can format per-agent-type in the goroutines
+	var rc *RecoveryContext
 	if cfg.SessionRecovery.Enabled && cfg.SessionRecovery.AutoInjectOnSpawn {
 		ctx, cancelCtx := context.WithTimeout(context.Background(), 5*time.Second)
-		rc, err := buildRecoveryContext(ctx, opts.Session, dir, cfg.SessionRecovery)
+		var err error
+		rc, err = buildRecoveryContext(ctx, opts.Session, dir, cfg.SessionRecovery)
 		cancelCtx()
 		if err == nil && rc != nil {
-			recoveryPrompt = FormatRecoveryPrompt(rc)
-			if !IsJSONOutput() && recoveryPrompt != "" {
-				fmt.Println("✓ Recovery context prepared for session")
-			}
-		}
-	}
-
-	// Git worktree isolation setup
-	var worktreeManager *git.WorktreeManager
-	agentWorktrees := make(map[string]string) // agentKey -> worktree path
-	if opts.UseWorktrees {
-		if !IsJSONOutput() {
-			steps.Start("Setting up git worktree isolation")
-		}
-
-		wm, err := git.NewWorktreeManager(dir)
-		if err != nil {
-			if !IsJSONOutput() {
-				steps.Fail()
-			}
-			return outputError(fmt.Errorf("failed to initialize worktree manager: %w", err))
-		}
-		worktreeManager = wm
-
-		// Pre-provision worktrees for all agents
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-
-		for _, agent := range opts.Agents {
-			agentKey := fmt.Sprintf("%s_%d", string(agent.Type), agent.Index)
-			sessionID := opts.Session
-
-			worktree, err := worktreeManager.ProvisionWorktree(ctx, agentKey, sessionID)
-			if err != nil {
+			// Check if there's meaningful content by testing with a dummy type
+			if FormatRecoveryPrompt(rc, AgentTypeClaude) != "" {
 				if !IsJSONOutput() {
-					steps.Fail()
+					fmt.Println("✓ Recovery context prepared for session")
 				}
-				return outputError(fmt.Errorf("failed to provision worktree for %s: %w", agentKey, err))
 			}
-
-			agentWorktrees[agentKey] = worktree.Path
-			if !IsJSONOutput() {
-				fmt.Printf("  ✓ Worktree for %s: %s\n", agentKey, worktree.Path)
-			}
-		}
-
-		if !IsJSONOutput() {
-			steps.Success()
 		}
 	}
 
@@ -1031,7 +993,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 
 		// Update pane title with profile name if assigned
 		if personaName != "" {
-			title := tmux.FormatPaneName(opts.Session, string(agent.Type), agent.Index, personaName)
+			title = tmux.FormatPaneName(opts.Session, string(agent.Type), agent.Index, personaName)
 			if err := tmux.SetPaneTitle(pane.ID, title); err != nil {
 				if !IsJSONOutput() {
 					fmt.Printf("⚠ Warning: could not update pane title with profile name: %v\n", err)
@@ -1065,8 +1027,8 @@ func spawnSessionLogic(opts SpawnOptions) error {
 
 		// Calculate stagger delay for this agent (used for spawn context)
 		var promptDelay time.Duration
-		if opts.StaggerEnabled && opts.Stagger > 0 {
-			promptDelay = time.Duration(staggerAgentIdx) * opts.Stagger
+		if isStaggered {
+			promptDelay = time.Duration(staggerAgentIdx) * staggerInterval
 		}
 
 		// Create agent-specific spawn context with order (1-based) and stagger delay
@@ -1141,12 +1103,16 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			}
 
 			// Inject recovery prompt if available (smart session recovery)
-			if recoveryPrompt != "" {
-				// Small delay to let agent initialize
-				time.Sleep(300 * time.Millisecond)
-				if err := tmux.SendKeys(paneID, recoveryPrompt, true); err != nil {
-					if !IsJSONOutput() {
-						fmt.Printf("⚠ Warning: failed to inject recovery context for agent %d: %v\n", idx, err)
+			// Format per-agent-type to handle shell escaping for Codex
+			if rc != nil {
+				recoveryPrompt := FormatRecoveryPrompt(rc, agentType)
+				if recoveryPrompt != "" {
+					// Small delay to let agent initialize
+					time.Sleep(300 * time.Millisecond)
+					if err := tmux.SendKeys(paneID, recoveryPrompt, true); err != nil {
+						if !IsJSONOutput() {
+							fmt.Printf("⚠ Warning: failed to inject recovery context for agent %d: %v\n", idx, err)
+						}
 					}
 				}
 			}
@@ -1154,7 +1120,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 
 			// Inject user prompt if provided (Immediate delivery only)
 			// Staggered delivery is handled by the main thread's staggerWg logic
-			if opts.Prompt != "" && (!opts.StaggerEnabled || opts.Stagger <= 0) {
+			if opts.Prompt != "" && !isStaggered {
 				time.Sleep(200 * time.Millisecond)
 
 				// Combine CASS context with user prompt
@@ -1172,7 +1138,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		}(pane.ID, agent.Index, agent.Type, agent)
 
 		// Schedule staggered prompt delivery with spawn context annotation
-		if opts.StaggerEnabled && opts.Stagger > 0 && opts.Prompt != "" {
+		if isStaggered && opts.Prompt != "" {
 			pID := pane.ID
 			pTitle := title
 			// Combine CASS context with user prompt for staggered delivery
@@ -1221,6 +1187,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		launchedAgents = append(launchedAgents, launchedAgent{
 			paneID:        pane.ID,
 			paneIndex:     pane.Index,
+			paneTitle:     title,
 			agentType:     string(agent.Type),
 			model:         agent.Model,
 			resolvedModel: resolvedModel,
@@ -1326,12 +1293,14 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			for i, agent := range launchedAgents {
 				spawnedAgents[i] = spawnedAgentInfo{
 					paneIndex:     agent.paneIndex,
+					paneID:        agent.paneID,
+					paneTitle:     agent.paneTitle,
 					agentType:     agent.agentType,
 					model:         agent.model,
 					resolvedModel: agent.resolvedModel,
 				}
 			}
-			agentMailStatus = registerSpawnedAgents(dir, spawnedAgents)
+			agentMailStatus = registerSpawnedAgents(dir, opts.Session, spawnedAgents)
 		}
 
 		spawnResponse := &output.SpawnResponse{
@@ -1419,12 +1388,14 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		for i, agent := range launchedAgents {
 			spawnedAgents[i] = spawnedAgentInfo{
 				paneIndex:     agent.paneIndex,
+				paneID:        agent.paneID,
+				paneTitle:     agent.paneTitle,
 				agentType:     agent.agentType,
 				model:         agent.model,
 				resolvedModel: agent.resolvedModel,
 			}
 		}
-		_ = registerSpawnedAgents(dir, spawnedAgents) // Ignore result in non-JSON mode
+		_ = registerSpawnedAgents(dir, opts.Session, spawnedAgents) // Ignore result in non-JSON mode
 	}
 
 	// Run post-spawn hooks
@@ -1599,6 +1570,8 @@ func registerSessionAgent(sessionName, workingDir string) {
 // spawnedAgentInfo holds agent info for registration with Agent Mail.
 type spawnedAgentInfo struct {
 	paneIndex     int
+	paneID        string
+	paneTitle     string
 	agentType     string
 	model         string
 	resolvedModel string
@@ -1607,7 +1580,7 @@ type spawnedAgentInfo struct {
 // registerSpawnedAgents registers each spawned agent with Agent Mail and returns status.
 // This function implements graceful degradation - Agent Mail unavailability does not
 // cause spawn to fail. Returns nil if Agent Mail is not available or disabled.
-func registerSpawnedAgents(workingDir string, agents []spawnedAgentInfo) *output.AgentMailSpawnStatus {
+func registerSpawnedAgents(workingDir, sessionName string, agents []spawnedAgentInfo) *output.AgentMailSpawnStatus {
 	// Check if Agent Mail integration is enabled
 	if cfg != nil && !cfg.AgentMail.Enabled {
 		return nil
@@ -1638,6 +1611,9 @@ func registerSpawnedAgents(workingDir string, agents []spawnedAgentInfo) *output
 		Available: true,
 		AgentMap:  make(map[string]string),
 	}
+
+	// Create registry for persistence
+	registry := agentmail.NewSessionAgentRegistry(sessionName, workingDir)
 
 	// Ensure project exists
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1681,8 +1657,21 @@ func registerSpawnedAgents(workingDir string, agents []spawnedAgentInfo) *output
 
 		status.AgentsRegistered++
 		status.AgentMap[fmt.Sprintf("%d", agent.paneIndex)] = registered.Name
+
+		// Add to registry for persistence
+		registry.AddAgent(agent.paneTitle, agent.paneID, registered.Name)
+
 		if !IsJSONOutput() {
 			output.PrintInfof("Registered agent pane %d as %s", agent.paneIndex, registered.Name)
+		}
+	}
+
+	// Persist the registry for session restart recovery
+	if registry.Count() > 0 {
+		if err := agentmail.SaveSessionAgentRegistry(registry); err != nil {
+			if !IsJSONOutput() {
+				output.PrintWarningf("Failed to persist agent registry: %v", err)
+			}
 		}
 	}
 
@@ -1730,8 +1719,14 @@ func getMemoryContext(projectName, task string) string {
 	}
 
 	// Query CM for context with limits from config
-	maxRules := 10   // Default limit for rules
-	maxSnippets := 3 // Default limit for history snippets
+	maxRules := cfg.SessionRecovery.MaxCMRules
+	maxSnippets := cfg.SessionRecovery.MaxCMSnippets
+	if maxRules == 0 {
+		maxRules = 10 // Fallback default
+	}
+	if maxSnippets == 0 {
+		maxSnippets = 3 // Fallback default
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1858,6 +1853,23 @@ func buildRecoveryContext(ctx context.Context, sessionName, workingDir string, r
 			}
 		}()
 	}
+
+	// Load latest checkpoint if available
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		cp, err := loadRecoveryCheckpoint(sessionName)
+		mu.Lock()
+		defer mu.Unlock()
+		if err != nil {
+			// Checkpoints are optional; only log if debug
+			if cfg != nil && cfg.FileReservation.Debug {
+				errs = append(errs, fmt.Sprintf("checkpoint: %v", err))
+			}
+		} else if cp != nil {
+			rc.Checkpoint = cp
+		}
+	}()
 
 	wg.Wait()
 
@@ -2014,6 +2026,27 @@ func loadRecoveryCMMemories(ctx context.Context, workingDir string) (*RecoveryCM
 	return memories, nil
 }
 
+// loadRecoveryCheckpoint loads the latest checkpoint for a session.
+func loadRecoveryCheckpoint(sessionName string) (*RecoveryCheckpoint, error) {
+	storage := checkpoint.NewStorage()
+	cp, err := storage.GetLatest(sessionName)
+	if err != nil {
+		return nil, err
+	}
+	if cp == nil {
+		return nil, nil
+	}
+
+	return &RecoveryCheckpoint{
+		ID:          cp.ID,
+		Name:        cp.Name,
+		Description: cp.Description,
+		CreatedAt:   cp.CreatedAt,
+		PaneCount:   cp.PaneCount,
+		HasGitPatch: cp.HasGitPatch(),
+	}, nil
+}
+
 // estimateRecoveryTokens estimates the token count of a recovery context.
 // Uses a simple heuristic: ~4 characters per token.
 func estimateRecoveryTokens(rc *RecoveryContext) int {
@@ -2022,6 +2055,11 @@ func estimateRecoveryTokens(rc *RecoveryContext) int {
 	}
 
 	chars := 0
+
+	// Count checkpoint
+	if rc.Checkpoint != nil {
+		chars += len(rc.Checkpoint.Name) + len(rc.Checkpoint.Description)
+	}
 
 	// Count beads
 	for _, b := range rc.Beads {
@@ -2125,9 +2163,20 @@ func generateRecoverySummary(rc *RecoveryContext) string {
 // FormatRecoveryPrompt formats the full recovery context as a prompt injection.
 // This combines beads, Agent Mail messages, file reservations, and CM memories
 // into a single markdown section for agent injection.
-func FormatRecoveryPrompt(rc *RecoveryContext) string {
+// The agentType parameter controls formatting: Codex agents need brackets escaped
+// because zsh interprets [] as glob patterns.
+func FormatRecoveryPrompt(rc *RecoveryContext, agentType AgentType) string {
 	if rc == nil {
 		return ""
+	}
+
+	// escapeForShell escapes brackets for Codex agents where zsh interprets [] as globs
+	escapeForShell := func(s string) string {
+		if agentType == AgentTypeCodex {
+			s = strings.ReplaceAll(s, "[", "\\[")
+			s = strings.ReplaceAll(s, "]", "\\]")
+		}
+		return s
 	}
 
 	// Check if there's any meaningful content
@@ -2151,7 +2200,9 @@ func FormatRecoveryPrompt(rc *RecoveryContext) string {
 		sb.WriteString("## Your Previous Work\n")
 
 		if len(rc.Beads) > 0 {
-			sb.WriteString(fmt.Sprintf("- You were working on: [%s] %s\n", rc.Beads[0].ID, rc.Beads[0].Title))
+			sb.WriteString(fmt.Sprintf("- You were working on: %s %s\n",
+				escapeForShell("["+rc.Beads[0].ID+"]"),
+				escapeForShell(rc.Beads[0].Title)))
 		}
 
 		if rc.Checkpoint != nil {
@@ -2199,15 +2250,24 @@ func FormatRecoveryPrompt(rc *RecoveryContext) string {
 		sb.WriteString("## Current Task Status\n")
 
 		for _, bead := range rc.CompletedBeads {
-			sb.WriteString(fmt.Sprintf("- [x] Completed: [%s] %s\n", bead.ID, bead.Title))
+			sb.WriteString(fmt.Sprintf("- %s Completed: %s %s\n",
+				escapeForShell("[x]"),
+				escapeForShell("["+bead.ID+"]"),
+				escapeForShell(bead.Title)))
 		}
 
 		for _, bead := range rc.Beads {
-			sb.WriteString(fmt.Sprintf("- [ ] In progress: [%s] %s\n", bead.ID, bead.Title))
+			sb.WriteString(fmt.Sprintf("- %s In progress: %s %s\n",
+				escapeForShell("[ ]"),
+				escapeForShell("["+bead.ID+"]"),
+				escapeForShell(bead.Title)))
 		}
 
 		for _, bead := range rc.BlockedBeads {
-			sb.WriteString(fmt.Sprintf("- [ ] Blocked: [%s] %s\n", bead.ID, bead.Title))
+			sb.WriteString(fmt.Sprintf("- %s Blocked: %s %s\n",
+				escapeForShell("[ ]"),
+				escapeForShell("["+bead.ID+"]"),
+				escapeForShell(bead.Title)))
 		}
 
 		sb.WriteString("\n")

@@ -37,7 +37,9 @@ type Config struct {
 	Rotation        RotationConfig        `toml:"rotation"`         // Account rotation configuration
 	GeminiSetup     GeminiSetupConfig     `toml:"gemini_setup"`     // Gemini post-spawn setup
 	ContextRotation ContextRotationConfig `toml:"context_rotation"` // Context window rotation
-	SessionRecovery SessionRecoveryConfig `toml:"recovery"`         // Smart session recovery
+	SessionRecovery SessionRecoveryConfig `toml:"recovery"`          // Smart session recovery
+	Cleanup         CleanupConfig         `toml:"cleanup"`           // Temp file cleanup configuration
+	FileReservation FileReservationConfig `toml:"file_reservation"`  // Auto file reservation via Agent Mail
 
 	// Runtime-only fields (populated by project config merging)
 	ProjectDefaults map[string]int `toml:"-"`
@@ -465,6 +467,8 @@ type SessionRecoveryConfig struct {
 	MaxRecoveryTokens   int  `toml:"max_recovery_tokens"`   // Cap recovery context size
 	AutoInjectOnSpawn   bool `toml:"auto_inject_on_spawn"`  // Send automatically on spawn
 	StaleThresholdHours int  `toml:"stale_threshold_hours"` // Ignore context older than this
+	MaxCMRules          int  `toml:"max_cm_rules"`          // Max CM rules to include (default: 10)
+	MaxCMSnippets       int  `toml:"max_cm_snippets"`       // Max CM history snippets (default: 3)
 }
 
 // DefaultSessionRecoveryConfig returns sensible defaults for session recovery.
@@ -477,7 +481,74 @@ func DefaultSessionRecoveryConfig() SessionRecoveryConfig {
 		MaxRecoveryTokens:   2000, // Token budget for recovery context
 		AutoInjectOnSpawn:   true, // Inject on spawn by default
 		StaleThresholdHours: 24,   // Consider context up to 24 hours old
+		MaxCMRules:          10,   // Max CM rules to include
+		MaxCMSnippets:       3,    // Max CM history snippets
 	}
+}
+
+// CleanupConfig holds configuration for automatic temp file cleanup.
+// NTM can accumulate temp files in /tmp from tests, atomic writes, and
+// other operations. This config controls automatic cleanup on startup.
+type CleanupConfig struct {
+	AutoCleanOnStartup bool `toml:"auto_clean_on_startup"` // Clean stale temp files on startup
+	MaxAgeHours        int  `toml:"max_age_hours"`         // Hours before a temp file is considered stale
+	Verbose            bool `toml:"verbose"`               // Log cleanup operations
+}
+
+// DefaultCleanupConfig returns sensible defaults for temp file cleanup.
+func DefaultCleanupConfig() CleanupConfig {
+	return CleanupConfig{
+		AutoCleanOnStartup: true, // Clean old temp files on startup
+		MaxAgeHours:        24,   // Consider files older than 24h as stale
+		Verbose:            false,
+	}
+}
+
+// FileReservationConfig holds configuration for automatic file reservation via Agent Mail.
+// When enabled, NTM monitors pane output for file edits and automatically reserves
+// those files in Agent Mail, preventing other agents from conflicting edits.
+type FileReservationConfig struct {
+	Enabled               bool `toml:"enabled"`                   // Master toggle for auto file reservation
+	AutoReserve           bool `toml:"auto_reserve"`              // Automatically reserve on edit detection
+	AutoReleaseIdleMin    int  `toml:"auto_release_idle_minutes"` // Release reservations after this idle time
+	NotifyOnConflict      bool `toml:"notify_on_conflict"`        // Show notification when conflict detected
+	ExtendOnActivity      bool `toml:"extend_on_activity"`        // Extend TTL while agent is actively editing
+	DefaultTTLMin         int  `toml:"default_ttl_minutes"`       // Default TTL for reservations
+	PollIntervalSec       int  `toml:"poll_interval_seconds"`     // How often to poll pane output for edits
+	CaptureLinesForDetect int  `toml:"capture_lines"`             // Lines of output to scan for file edits
+	Debug                 bool `toml:"debug"`                     // Enable debug logging
+}
+
+// DefaultFileReservationConfig returns sensible defaults for file reservation.
+func DefaultFileReservationConfig() FileReservationConfig {
+	return FileReservationConfig{
+		Enabled:               true,  // Enabled by default (when Agent Mail is available)
+		AutoReserve:           true,  // Automatically reserve detected edits
+		AutoReleaseIdleMin:    10,    // Release after 10 minutes of inactivity
+		NotifyOnConflict:      true,  // Notify user on conflicts
+		ExtendOnActivity:      true,  // Extend TTL while actively editing
+		DefaultTTLMin:         15,    // 15-minute reservation TTL
+		PollIntervalSec:       10,    // Poll every 10 seconds
+		CaptureLinesForDetect: 100,   // Scan last 100 lines for file patterns
+		Debug:                 false, // Debug logging disabled by default
+	}
+}
+
+// ValidateFileReservationConfig validates the file reservation configuration.
+func ValidateFileReservationConfig(cfg *FileReservationConfig) error {
+	if cfg.AutoReleaseIdleMin < 1 && cfg.AutoReleaseIdleMin != 0 {
+		return fmt.Errorf("auto_release_idle_minutes must be 0 (disabled) or at least 1, got %d", cfg.AutoReleaseIdleMin)
+	}
+	if cfg.DefaultTTLMin < 1 {
+		return fmt.Errorf("default_ttl_minutes must be at least 1, got %d", cfg.DefaultTTLMin)
+	}
+	if cfg.PollIntervalSec < 1 {
+		return fmt.Errorf("poll_interval_seconds must be at least 1, got %d", cfg.PollIntervalSec)
+	}
+	if cfg.CaptureLinesForDetect < 10 {
+		return fmt.Errorf("capture_lines must be at least 10, got %d", cfg.CaptureLinesForDetect)
+	}
+	return nil
 }
 
 // PaletteCmd represents a command in the palette
@@ -625,7 +696,8 @@ func DefaultProjectsBase() string {
 		}
 		return filepath.Join(home, "Developer")
 	}
-	return "/data/projects"
+	// Linux/other: use /tmp to avoid polluting project directories
+	return os.TempDir()
 }
 
 // findPaletteMarkdown searches for a command_palette.md file in standard locations
@@ -789,6 +861,8 @@ func Default() *Config {
 		GeminiSetup:     DefaultGeminiSetupConfig(),
 		ContextRotation: DefaultContextRotationConfig(),
 		SessionRecovery: DefaultSessionRecoveryConfig(),
+		Cleanup:         DefaultCleanupConfig(),
+		FileReservation: DefaultFileReservationConfig(),
 	}
 
 	// Try to load palette from markdown file
