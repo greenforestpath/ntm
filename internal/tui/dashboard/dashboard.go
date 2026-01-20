@@ -1438,6 +1438,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.healthMessage = fmt.Sprintf("Selected: %s", msg.Hit.Title)
 		return m, tea.Batch(cmds...)
 
+	case panels.ReplayMsg:
+		// Handle replay request from history panel
+		return m, m.executeReplay(msg.Entry)
+
 	case BeadsUpdateMsg:
 		if !m.acceptUpdate(refreshBeads, msg.Gen) {
 			return m, nil
@@ -2096,6 +2100,75 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Forward keyboard events to focused panels for panel-specific actions
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		// Only forward if not handled by global shortcuts above
+		switch m.focusedPanel {
+		case PanelHistory:
+			if m.historyPanel != nil {
+				var cmd tea.Cmd
+				_, cmd = m.historyPanel.Update(keyMsg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+		case PanelSidebar:
+			// For sidebar, forward to the focused sub-panel
+			if m.historyPanel != nil && m.historyPanel.IsFocused() {
+				var cmd tea.Cmd
+				_, cmd = m.historyPanel.Update(keyMsg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			} else if m.filesPanel != nil && m.filesPanel.IsFocused() {
+				var cmd tea.Cmd
+				_, cmd = m.filesPanel.Update(keyMsg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			} else if m.cassPanel != nil && m.cassPanel.IsFocused() {
+				var cmd tea.Cmd
+				_, cmd = m.cassPanel.Update(keyMsg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			} else if m.metricsPanel != nil && m.metricsPanel.IsFocused() {
+				var cmd tea.Cmd
+				_, cmd = m.metricsPanel.Update(keyMsg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+		case PanelBeads:
+			if m.beadsPanel != nil {
+				var cmd tea.Cmd
+				_, cmd = m.beadsPanel.Update(keyMsg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+		case PanelAlerts:
+			if m.alertsPanel != nil {
+				var cmd tea.Cmd
+				_, cmd = m.alertsPanel.Update(keyMsg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+		case PanelConflicts:
+			if m.conflictsPanel != nil {
+				var cmd tea.Cmd
+				_, cmd = m.conflictsPanel.Update(keyMsg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+		}
+	}
+
+	if len(cmds) > 0 {
+		return m, tea.Batch(cmds...)
+	}
 	return m, nil
 }
 
@@ -4433,6 +4506,52 @@ func (m *Model) handleConflictAction(conflict watcher.FileConflict, action watch
 
 	default:
 		return fmt.Errorf("unknown conflict action: %v", action)
+	}
+}
+
+// executeReplay executes a replay of a history entry
+func (m Model) executeReplay(entry history.HistoryEntry) tea.Cmd {
+	return func() tea.Msg {
+		// Create a new history entry for the replay
+		replayEntry := history.NewEntry(m.session, entry.Targets, entry.Prompt, history.SourceReplay)
+
+		// Set template if the original entry used one
+		if entry.Template != "" {
+			replayEntry.Template = entry.Template
+		}
+
+		// Append to history
+		if err := history.Append(replayEntry); err != nil {
+			log.Printf("[Replay] Failed to append replay entry to history: %v", err)
+			replayEntry.SetError(err)
+		} else {
+			                       // Execute the replay using tmux client
+			                       client := tmux.DefaultClient
+			
+                       // Parse targets - for now, replay to the same targets as the original entry
+                       // In the future, we could show a dialog to let user choose new targets
+                       for _, targetStr := range entry.Targets {
+                               target := fmt.Sprintf("%s:%s", m.session, targetStr)
+                               if err := client.SendKeys(target, entry.Prompt, true); err != nil {
+                                       log.Printf("[Replay] Failed to send to target %s: %v", targetStr, err)
+                                       replayEntry.SetError(fmt.Errorf("failed to send to target %s: %w", targetStr, err))
+                               }
+                       }
+
+			// If no errors occurred, mark as successful
+			if replayEntry.Error == "" {
+				replayEntry.SetSuccess()
+			}
+		}
+
+		// Return a message to update the status
+		return struct {
+			Entry   history.HistoryEntry
+			Success bool
+		}{
+			Entry:   *replayEntry,
+			Success: replayEntry.Success,
+		}
 	}
 }
 

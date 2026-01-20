@@ -44,6 +44,10 @@ var (
 	assignForce      bool   // Force assignment even if pane busy
 	assignIgnoreDeps bool   // Ignore dependency checks
 	assignPrompt     string // Custom prompt for direct assignment
+
+	// Clear assignment flags
+	assignClear     string // Clear specific bead assignments (comma-separated)
+	assignClearPane int    // Clear all assignments for a pane (-1 = disabled)
 )
 
 // assignAgentInfo holds information about an agent pane for assignment matching
@@ -84,6 +88,14 @@ Direct Pane Assignment:
   ntm assign myproject --pane=0 --beads=bd-123 --force  # Force even if busy
   ntm assign myproject --pane=2 --beads=bd-123 --ignore-deps  # Skip dep checks
 
+Clear Assignments:
+  Use --clear to remove assignment from agents and release file reservations.
+  Use --clear-pane to clear all assignments for a specific pane (agent crashed).
+
+  ntm assign myproject --clear bd-xyz             # Clear single assignment
+  ntm assign myproject --clear bd-xyz,bd-abc      # Clear multiple assignments
+  ntm assign myproject --clear-pane=3             # Clear all assignments for pane 3
+
 Examples:
   ntm assign myproject                         # Show assignment recommendations
   ntm assign myproject --auto                  # Execute assignments without confirmation
@@ -95,7 +107,9 @@ Examples:
   ntm assign myproject --agent=codex           # Only assign to Codex agents
   ntm assign myproject --template=impl         # Use impl prompt template
   ntm assign myproject --json                  # Output as JSON
-  ntm assign myproject --dry-run               # Preview without executing`,
+  ntm assign myproject --dry-run               # Preview without executing
+  ntm assign myproject --clear bd-123          # Clear assignment for bead bd-123
+  ntm assign myproject --clear-pane=3          # Clear all assignments for pane 3`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runAssign,
 	}
@@ -129,6 +143,10 @@ Examples:
 	cmd.Flags().BoolVar(&assignIgnoreDeps, "ignore-deps", false, "Ignore dependency checks for assignment")
 	cmd.Flags().StringVar(&assignPrompt, "prompt", "", "Custom prompt for direct assignment")
 
+	// Clear assignment flags
+	cmd.Flags().StringVar(&assignClear, "clear", "", "Clear specific bead assignments (comma-separated bead IDs)")
+	cmd.Flags().IntVar(&assignClearPane, "clear-pane", -1, "Clear all assignments for a pane (use when agent crashed)")
+
 	return cmd
 }
 
@@ -152,6 +170,11 @@ func runAssign(cmd *cobra.Command, args []string) error {
 	}
 	res.ExplainIfInferred(cmd.ErrOrStderr())
 	session = res.Session
+
+	// Handle clear operations first
+	if assignClear != "" || assignClearPane >= 0 {
+		return runClearAssignments(cmd, session)
+	}
 
 	// Check if bv is available
 	if !bv.IsInstalled() {
@@ -282,6 +305,10 @@ type AssignCommandOptions struct {
 	Force      bool   // Force assignment even if pane busy
 	IgnoreDeps bool   // Ignore dependency checks
 	Prompt     string // Custom prompt for direct assignment
+
+	// Clear assignment options
+	Clear     string // Clear specific bead assignments (comma-separated)
+	ClearPane int    // Clear all assignments for a pane (-1 = disabled)
 }
 
 // AssignOutputEnhanced is the enhanced output structure matching the spec
@@ -1407,6 +1434,344 @@ func expandPromptTemplate(beadID, title, templateName, templateFile string) stri
 	result = strings.ReplaceAll(result, "{TITLE}", title)
 
 	return result
+}
+
+// ============================================================================
+// Clear Assignments - --clear and --clear-pane functionality
+// ============================================================================
+
+// ClearAssignmentResult represents the result of clearing assignments
+type ClearAssignmentResult struct {
+	BeadID           string   `json:"bead_id"`
+	Pane             int      `json:"pane"`
+	AgentType        string   `json:"agent_type"`
+	Success          bool     `json:"success"`
+	Error            string   `json:"error,omitempty"`
+	FilesReleased    []string `json:"files_released,omitempty"`
+	AssignmentFound  bool     `json:"assignment_found"`
+}
+
+// ClearAllResult represents the result of clearing all assignments for a pane
+type ClearAllResult struct {
+	Pane             int                      `json:"pane"`
+	AgentType        string                   `json:"agent_type"`
+	ClearedBeads     []ClearAssignmentResult  `json:"cleared_beads"`
+	Success          bool                     `json:"success"`
+	Error            string                   `json:"error,omitempty"`
+}
+
+// runClearAssignments handles --clear and --clear-pane operations
+func runClearAssignments(cmd *cobra.Command, session string) error {
+	if assignClear != "" && assignClearPane >= 0 {
+		err := fmt.Errorf("cannot use both --clear and --clear-pane at the same time")
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+		}
+		return err
+	}
+
+	if assignClear != "" {
+		return runClearSpecificBeads(cmd, session, assignClear)
+	}
+
+	if assignClearPane >= 0 {
+		return runClearPaneAssignments(cmd, session, assignClearPane)
+	}
+
+	err := fmt.Errorf("no clear operation specified")
+	if IsJSONOutput() {
+		return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+	}
+	return err
+}
+
+// runClearSpecificBeads handles --clear flag (clear specific bead assignments)
+func runClearSpecificBeads(cmd *cobra.Command, session string, clearBeads string) error {
+	beadIDs := strings.Split(clearBeads, ",")
+	for i := range beadIDs {
+		beadIDs[i] = strings.TrimSpace(beadIDs[i])
+	}
+
+	// Load assignment store
+	store, err := assignment.LoadStore(session)
+	if err != nil {
+		err = fmt.Errorf("failed to load assignment store: %w", err)
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+		}
+		return err
+	}
+
+	var results []ClearAssignmentResult
+	successCount := 0
+
+	for _, beadID := range beadIDs {
+		result := ClearAssignmentResult{
+			BeadID: beadID,
+		}
+
+		// Find the assignment
+		assignments := store.GetAll()
+		var foundAssignment *assignment.Assignment
+		for _, a := range assignments {
+			if a.BeadID == beadID && a.Status != "completed" {
+				foundAssignment = &a
+				break
+			}
+		}
+
+		if foundAssignment == nil {
+			result.Success = false
+			result.Error = "assignment not found or already completed"
+			result.AssignmentFound = false
+		} else {
+			result.Pane = foundAssignment.Pane
+			result.AgentType = foundAssignment.AgentType
+			result.AssignmentFound = true
+
+			// Release file reservations via Agent Mail
+			releasedFiles, releaseErr := releaseFileReservations(session, beadID, foundAssignment.AgentName)
+			if releaseErr != nil && assignVerbose {
+				fmt.Fprintf(os.Stderr, "[CLEAR] Warning: could not release file reservations for %s: %v\n", beadID, releaseErr)
+			}
+			result.FilesReleased = releasedFiles
+
+			// Clear the assignment in the store
+			store.Remove(beadID)
+			result.Success = true
+			successCount++
+		}
+
+		results = append(results, result)
+	}
+
+	// Output results
+	if IsJSONOutput() {
+		resp := struct {
+			output.TimestampedResponse
+			Results      []ClearAssignmentResult `json:"results"`
+			SuccessCount int                     `json:"success_count"`
+			TotalCount   int                     `json:"total_count"`
+		}{
+			TimestampedResponse: output.NewTimestamped(),
+			Results:             results,
+			SuccessCount:        successCount,
+			TotalCount:          len(beadIDs),
+		}
+		return json.NewEncoder(os.Stdout).Encode(resp)
+	}
+
+	// Text output
+	if !assignQuiet {
+		fmt.Printf("Cleared %d of %d bead assignments:\n\n", successCount, len(beadIDs))
+		for _, result := range results {
+			if result.Success {
+				fmt.Printf("  ✓ %s (pane %d, %s)\n", result.BeadID, result.Pane, result.AgentType)
+				if len(result.FilesReleased) > 0 {
+					fmt.Printf("    Released files: %v\n", result.FilesReleased)
+				}
+			} else {
+				fmt.Printf("  ✗ %s: %s\n", result.BeadID, result.Error)
+			}
+		}
+	}
+
+	return nil
+}
+
+// runClearPaneAssignments handles --clear-pane flag (clear all assignments for a pane)
+func runClearPaneAssignments(cmd *cobra.Command, session string, pane int) error {
+	// Get panes to validate the pane exists
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		err = fmt.Errorf("failed to get panes: %w", err)
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+		}
+		return err
+	}
+
+	// Find the target pane
+	var targetPane *tmux.Pane
+	for i := range panes {
+		if panes[i].Index == pane {
+			targetPane = &panes[i]
+			break
+		}
+	}
+
+	if targetPane == nil {
+		err := fmt.Errorf("pane %d not found in session %s", pane, session)
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+		}
+		return err
+	}
+
+	agentType := detectAgentTypeFromTitle(targetPane.Title)
+
+	// Load assignment store
+	store, err := assignment.LoadStore(session)
+	if err != nil {
+		err = fmt.Errorf("failed to load assignment store: %w", err)
+		if IsJSONOutput() {
+			return json.NewEncoder(os.Stdout).Encode(output.NewError(err.Error()))
+		}
+		return err
+	}
+
+	// Find all assignments for this pane
+	assignments := store.GetAll()
+	var paneAssignments []assignment.Assignment
+	for _, a := range assignments {
+		if a.Pane == pane && a.Status != "completed" {
+			paneAssignments = append(paneAssignments, a)
+		}
+	}
+
+	result := ClearAllResult{
+		Pane:      pane,
+		AgentType: agentType,
+		Success:   true,
+	}
+
+	// Clear each assignment
+	for _, a := range paneAssignments {
+		beadResult := ClearAssignmentResult{
+			BeadID:          a.BeadID,
+			Pane:            a.Pane,
+			AgentType:       a.AgentType,
+			AssignmentFound: true,
+		}
+
+		// Release file reservations
+		releasedFiles, releaseErr := releaseFileReservations(session, a.BeadID, a.AgentName)
+		if releaseErr != nil && assignVerbose {
+			fmt.Fprintf(os.Stderr, "[CLEAR] Warning: could not release file reservations for %s: %v\n", a.BeadID, releaseErr)
+		}
+		beadResult.FilesReleased = releasedFiles
+
+		// Clear the assignment
+		store.Remove(a.BeadID)
+		beadResult.Success = true
+
+		result.ClearedBeads = append(result.ClearedBeads, beadResult)
+	}
+
+	if len(paneAssignments) == 0 {
+		result.Error = "no active assignments found for this pane"
+	}
+
+	// Output result
+	if IsJSONOutput() {
+		resp := struct {
+			output.TimestampedResponse
+			*ClearAllResult
+		}{
+			TimestampedResponse: output.NewTimestamped(),
+			ClearAllResult:      &result,
+		}
+		return json.NewEncoder(os.Stdout).Encode(resp)
+	}
+
+	// Text output
+	if !assignQuiet {
+		if len(paneAssignments) == 0 {
+			fmt.Printf("No active assignments found for pane %d (%s)\n", pane, agentType)
+		} else {
+			fmt.Printf("Cleared all assignments for pane %d (%s):\n\n", pane, agentType)
+			for _, beadResult := range result.ClearedBeads {
+				if beadResult.Success {
+					fmt.Printf("  ✓ %s\n", beadResult.BeadID)
+					if len(beadResult.FilesReleased) > 0 {
+						fmt.Printf("    Released files: %v\n", beadResult.FilesReleased)
+					}
+				} else {
+					fmt.Printf("  ✗ %s: %s\n", beadResult.BeadID, beadResult.Error)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// releaseFileReservationsWithIDs releases file reservations using stored reservation IDs
+func releaseFileReservationsWithIDs(session, beadID, agentName string, reservationIDs []int) ([]string, error) {
+	// Get project key
+	projectKey, _ := os.Getwd()
+
+	// Create Agent Mail client
+	amClient := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
+	if !amClient.IsAvailable() {
+		return nil, nil // No error if Agent Mail isn't available
+	}
+
+	// Create a reservation manager
+	manager := assign.NewFileReservationManager(amClient, projectKey)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Release reservations by IDs
+	if len(reservationIDs) > 0 {
+		if err := manager.ReleaseForBead(ctx, agentName, reservationIDs); err != nil {
+			return nil, fmt.Errorf("failed to release reservations: %w", err)
+		}
+		if assignVerbose {
+			fmt.Fprintf(os.Stderr, "[RESERVE] Released %d reservations for %s\n", len(reservationIDs), beadID)
+		}
+		// Return the count as a string since we don't have the actual paths
+		return []string{fmt.Sprintf("%d reservations", len(reservationIDs))}, nil
+	}
+
+	return nil, nil
+}
+
+// releaseFileReservations releases file reservations for a bead via Agent Mail
+// This is used when we don't have reservation IDs stored
+func releaseFileReservations(session, beadID, agentName string) ([]string, error) {
+	// Get project key
+	projectKey, _ := os.Getwd()
+
+	// Create Agent Mail client
+	amClient := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
+	if !amClient.IsAvailable() {
+		return nil, nil // No error if Agent Mail isn't available
+	}
+
+	// Get bead details to extract file paths
+	beadTitle := getBeadTitle(beadID)
+	if beadTitle == "" {
+		if assignVerbose {
+			fmt.Fprintf(os.Stderr, "[RESERVE] No bead title found for %s, cannot determine paths to release\n", beadID)
+		}
+		return nil, nil
+	}
+
+	// Extract file paths that would have been reserved
+	paths := assign.ExtractFilePaths(beadTitle, "")
+	if len(paths) == 0 {
+		if assignVerbose {
+			fmt.Fprintf(os.Stderr, "[RESERVE] No file paths found in bead %s title, nothing to release\n", beadID)
+		}
+		return nil, nil
+	}
+
+	// Create a reservation manager
+	manager := assign.NewFileReservationManager(amClient, projectKey)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Release reservations by paths
+	if err := manager.ReleaseByPaths(ctx, agentName, paths); err != nil {
+		return nil, fmt.Errorf("failed to release reservations by paths: %w", err)
+	}
+
+	if assignVerbose {
+		fmt.Fprintf(os.Stderr, "[RESERVE] Released reservations for paths: %v (bead: %s)\n", paths, beadID)
+	}
+
+	return paths, nil
 }
 
 // ============================================================================

@@ -245,6 +245,18 @@ func (s *AssignmentStore) Get(beadID string) *Assignment {
 	return s.Assignments[beadID]
 }
 
+// GetAll returns all assignments as values
+func (s *AssignmentStore) GetAll() []Assignment {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+
+	var result []Assignment
+	for _, a := range s.Assignments {
+		result = append(result, *a)
+	}
+	return result
+}
+
 // List returns all assignments
 func (s *AssignmentStore) List() []*Assignment {
 	s.mutex.RLock()

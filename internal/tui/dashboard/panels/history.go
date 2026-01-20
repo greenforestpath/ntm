@@ -55,6 +55,11 @@ func (m *HistoryPanel) Init() tea.Cmd {
 	return nil
 }
 
+// ReplayMsg is sent when user wants to replay a history entry
+type ReplayMsg struct {
+	Entry history.HistoryEntry
+}
+
 // Update implements tea.Model
 func (m *HistoryPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !m.IsFocused() {
@@ -76,6 +81,14 @@ func (m *HistoryPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 				if m.cursor >= m.offset+m.contentHeight() {
 					m.offset = m.cursor - m.contentHeight() + 1
+				}
+			}
+		case "enter", "r":
+			// Replay selected entry
+			if len(m.entries) > 0 && m.cursor >= 0 && m.cursor < len(m.entries) {
+				selectedEntry := m.entries[m.cursor]
+				return m, func() tea.Msg {
+					return ReplayMsg{Entry: selectedEntry}
 				}
 			}
 		}
