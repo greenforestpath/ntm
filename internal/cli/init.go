@@ -285,11 +285,17 @@ func generateZsh(cfg *config.Config) string {
 
 `)
 
+	// Render agent command templates with empty vars (for basic alias usage)
+	emptyVars := config.AgentTemplateVars{}
+	claudeCmd, _ := config.GenerateAgentCommand(cfg.Agents.Claude, emptyVars)
+	codexCmd, _ := config.GenerateAgentCommand(cfg.Agents.Codex, emptyVars)
+	geminiCmd, _ := config.GenerateAgentCommand(cfg.Agents.Gemini, emptyVars)
+
 	// Agent aliases
 	b.WriteString("# Agent aliases\n")
-	b.WriteString(fmt.Sprintf("alias cc=%s\n", quoteAlias(cfg.Agents.Claude)))
-	b.WriteString(fmt.Sprintf("alias cod=%s\n", quoteAlias(cfg.Agents.Codex)))
-	b.WriteString(fmt.Sprintf("alias gmi=%s\n", quoteAlias(cfg.Agents.Gemini)))
+	b.WriteString(fmt.Sprintf("alias cc=%s\n", quoteAlias(claudeCmd)))
+	b.WriteString(fmt.Sprintf("alias cod=%s\n", quoteAlias(codexCmd)))
+	b.WriteString(fmt.Sprintf("alias gmi=%s\n", quoteAlias(geminiCmd)))
 	b.WriteString("\n")
 
 	// Command aliases
@@ -404,11 +410,17 @@ func generateBash(cfg *config.Config) string {
 
 `)
 
+	// Render agent command templates with empty vars (for basic alias usage)
+	emptyVars := config.AgentTemplateVars{}
+	claudeCmd, _ := config.GenerateAgentCommand(cfg.Agents.Claude, emptyVars)
+	codexCmd, _ := config.GenerateAgentCommand(cfg.Agents.Codex, emptyVars)
+	geminiCmd, _ := config.GenerateAgentCommand(cfg.Agents.Gemini, emptyVars)
+
 	// Agent aliases
 	b.WriteString("# Agent aliases\n")
-	b.WriteString(fmt.Sprintf("alias cc=%s\n", quoteAlias(cfg.Agents.Claude)))
-	b.WriteString(fmt.Sprintf("alias cod=%s\n", quoteAlias(cfg.Agents.Codex)))
-	b.WriteString(fmt.Sprintf("alias gmi=%s\n", quoteAlias(cfg.Agents.Gemini)))
+	b.WriteString(fmt.Sprintf("alias cc=%s\n", quoteAlias(claudeCmd)))
+	b.WriteString(fmt.Sprintf("alias cod=%s\n", quoteAlias(codexCmd)))
+	b.WriteString(fmt.Sprintf("alias gmi=%s\n", quoteAlias(geminiCmd)))
 	b.WriteString("\n")
 
 	// Command aliases
@@ -477,11 +489,17 @@ func generateFish(cfg *config.Config) string {
 
 `)
 
+	// Render agent command templates with empty vars (for basic alias usage)
+	emptyVars := config.AgentTemplateVars{}
+	claudeCmd, _ := config.GenerateAgentCommand(cfg.Agents.Claude, emptyVars)
+	codexCmd, _ := config.GenerateAgentCommand(cfg.Agents.Codex, emptyVars)
+	geminiCmd, _ := config.GenerateAgentCommand(cfg.Agents.Gemini, emptyVars)
+
 	// Agent aliases
 	b.WriteString("# Agent aliases\n")
-	b.WriteString(fmt.Sprintf("alias cc %s\n", quoteAlias(cfg.Agents.Claude)))
-	b.WriteString(fmt.Sprintf("alias cod %s\n", quoteAlias(cfg.Agents.Codex)))
-	b.WriteString(fmt.Sprintf("alias gmi %s\n", quoteAlias(cfg.Agents.Gemini)))
+	b.WriteString(fmt.Sprintf("alias cc %s\n", quoteAlias(claudeCmd)))
+	b.WriteString(fmt.Sprintf("alias cod %s\n", quoteAlias(codexCmd)))
+	b.WriteString(fmt.Sprintf("alias gmi %s\n", quoteAlias(geminiCmd)))
 	b.WriteString("\n")
 
 	// Command abbreviations
