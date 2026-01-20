@@ -262,15 +262,16 @@ func TestExpireStale(t *testing.T) {
 	ctx := context.Background()
 
 	// Create an approval with short expiry
+	// Use 50ms expiry to be robust across CI environments (macOS can be slower)
 	engine.Request(ctx, RequestParams{
 		Action:      "test_action",
 		Resource:    "test_resource",
 		RequestedBy: "requester",
-		ExpiresIn:   1 * time.Millisecond,
+		ExpiresIn:   50 * time.Millisecond,
 	})
 
-	// Wait for expiry
-	time.Sleep(10 * time.Millisecond)
+	// Wait for expiry - use 100ms to ensure expiry even with CI scheduling delays
+	time.Sleep(100 * time.Millisecond)
 
 	// Expire stale
 	count, err := engine.ExpireStale(ctx)
