@@ -27,6 +27,7 @@ type Config struct {
 	Tmux               TmuxConfig            `toml:"tmux"`
 	Robot              RobotConfig           `toml:"robot"`
 	AgentMail          AgentMailConfig       `toml:"agent_mail"`
+	Integrations       IntegrationsConfig    `toml:"integrations"`
 	Models             ModelsConfig          `toml:"models"`
 	Alerts             AlertsConfig          `toml:"alerts"`
 	Checkpoints        CheckpointsConfig     `toml:"checkpoints"`
@@ -44,6 +45,7 @@ type Config struct {
 	FileReservation    FileReservationConfig `toml:"file_reservation"` // Auto file reservation via Agent Mail
 	Memory             MemoryConfig          `toml:"memory"`           // CASS Memory (cm) integration
 	Assign             AssignConfig          `toml:"assign"`           // Assignment strategy configuration
+	Integrations       IntegrationsConfig    `toml:"integrations"`     // External tool integrations (CAAM, etc.)
 
 	// Runtime-only fields (populated by project config merging)
 	ProjectDefaults map[string]int `toml:"-"`
@@ -603,6 +605,49 @@ func ValidateMemoryConfig(cfg *MemoryConfig) error {
 	return nil
 }
 
+// ValidateDCGConfig validates the DCG integration configuration.
+func ValidateDCGConfig(cfg *DCGConfig) error {
+	if cfg == nil {
+		return nil
+	}
+
+	if cfg.BinaryPath != "" {
+		path := ExpandHome(cfg.BinaryPath)
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("binary_path: %w", err)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("binary_path: %q is a directory", path)
+		}
+	}
+
+	if cfg.AuditLog != "" {
+		auditPath := ExpandHome(cfg.AuditLog)
+		dir := filepath.Dir(auditPath)
+		info, err := os.Stat(dir)
+		if err != nil {
+			return fmt.Errorf("audit_log: %w", err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("audit_log: %q is not a directory", dir)
+		}
+		if !dirWritable(info) {
+			return fmt.Errorf("audit_log: directory not writable: %s", dir)
+		}
+	}
+
+	return nil
+}
+
+func dirWritable(info os.FileInfo) bool {
+	if info == nil {
+		return false
+	}
+	mode := info.Mode().Perm()
+	return mode&0200 != 0 || mode&0020 != 0 || mode&0002 != 0
+}
+
 // PaletteCmd represents a command in the palette
 type PaletteCmd struct {
 	Key      string   `toml:"key"`
@@ -634,6 +679,22 @@ type AgentMailConfig struct {
 	ProgramName  string `toml:"program_name"`  // Program identifier for registration
 }
 
+// IntegrationsConfig holds external tool integration settings.
+type IntegrationsConfig struct {
+	DCG  DCGConfig  `toml:"dcg"`
+	CAAM CAAMConfig `toml:"caam"` // CAAM (Coding Agent Account Manager) integration
+}
+
+// DCGConfig holds configuration for the DCG (destructive_commit_guard) integration.
+type DCGConfig struct {
+	Enabled         bool     `toml:"enabled"`
+	BinaryPath      string   `toml:"binary_path"`
+	CustomBlocklist []string `toml:"custom_blocklist"`
+	CustomWhitelist []string `toml:"custom_whitelist"`
+	AuditLog        string   `toml:"audit_log"`
+	AllowOverride   bool     `toml:"allow_override"`
+}
+
 // AssignConfig holds configuration for the ntm assign command
 type AssignConfig struct {
 	Strategy string `toml:"strategy"` // Default strategy: balanced, speed, quality, dependency, round-robin
@@ -656,6 +717,58 @@ func IsValidStrategy(strategy string) bool {
 func DefaultAssignConfig() AssignConfig {
 	return AssignConfig{
 		Strategy: "balanced",
+	}
+}
+
+// DefaultIntegrationsConfig returns sensible defaults for integrations.
+func DefaultIntegrationsConfig() IntegrationsConfig {
+	return IntegrationsConfig{
+		DCG: DCGConfig{
+			Enabled:         false,
+			BinaryPath:      "",
+			CustomBlocklist: nil,
+			CustomWhitelist: nil,
+			AuditLog:        "",
+			AllowOverride:   true,
+		},
+	}
+}
+
+// IntegrationsConfig holds configuration for external tool integrations.
+// These are tools that NTM can optionally integrate with for enhanced functionality.
+type IntegrationsConfig struct {
+	CAAM CAAMConfig `toml:"caam"` // CAAM (Coding Agent Account Manager) integration
+}
+
+// CAAMConfig holds configuration for CAAM (Coding Agent Account Manager) integration.
+// CAAM provides automatic account rotation when rate limits are hit.
+type CAAMConfig struct {
+	Enabled           bool     `toml:"enabled"`             // Enable CAAM account management
+	BinaryPath        string   `toml:"binary_path"`         // Path to caam binary (optional, defaults to PATH lookup)
+	AutoRotate        bool     `toml:"auto_rotate"`         // Enable automatic account rotation on rate limit
+	Providers         []string `toml:"providers"`           // Providers to manage (empty = all available)
+	RateLimitPatterns []string `toml:"rate_limit_patterns"` // Custom rate limit detection patterns
+	AccountCooldown   int      `toml:"account_cooldown"`    // Cooldown before retrying same account (seconds)
+	AlertThreshold    int      `toml:"alert_threshold"`     // Alert threshold (percentage of limit)
+}
+
+// DefaultCAAMConfig returns sensible defaults for CAAM integration.
+func DefaultCAAMConfig() CAAMConfig {
+	return CAAMConfig{
+		Enabled:           true,                                  // Enabled by default (when caam is available)
+		BinaryPath:        "",                                    // Default to PATH lookup
+		AutoRotate:        true,                                  // Auto-rotate on rate limit by default
+		Providers:         []string{"claude", "openai", "gemini"}, // Manage all major providers
+		RateLimitPatterns: nil,                                   // Use built-in patterns
+		AccountCooldown:   300,                                   // 5 minute cooldown
+		AlertThreshold:    80,                                    // Alert at 80% of limit
+	}
+}
+
+// DefaultIntegrationsConfig returns sensible defaults for external integrations.
+func DefaultIntegrationsConfig() IntegrationsConfig {
+	return IntegrationsConfig{
+		CAAM: DefaultCAAMConfig(),
 	}
 }
 
@@ -927,6 +1040,7 @@ func Default() *Config {
 			AutoRegister: true,
 			ProgramName:  "ntm",
 		},
+		Integrations:   DefaultIntegrationsConfig(),
 		Models:          DefaultModels(),
 		Alerts:          DefaultAlertsConfig(),
 		Checkpoints:     DefaultCheckpointsConfig(),
@@ -944,6 +1058,7 @@ func Default() *Config {
 		FileReservation: DefaultFileReservationConfig(),
 		Memory:          DefaultMemoryConfig(),
 		Assign:          DefaultAssignConfig(),
+		Integrations:    DefaultIntegrationsConfig(),
 	}
 
 	// Try to load palette from markdown file
@@ -1422,6 +1537,36 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "program_name = %q\n", cfg.AgentMail.ProgramName)
 	fmt.Fprintln(w)
 
+	fmt.Fprintln(w, "[integrations]")
+	fmt.Fprintln(w, "# External tool integrations (dcg, caam, caut, etc.)")
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[integrations.dcg]")
+	fmt.Fprintln(w, "# Destructive Command Guard (dcg) settings")
+	fmt.Fprintf(w, "enabled = %t\n", cfg.Integrations.DCG.Enabled)
+	if cfg.Integrations.DCG.BinaryPath != "" {
+		fmt.Fprintf(w, "binary_path = %q\n", cfg.Integrations.DCG.BinaryPath)
+	} else {
+		fmt.Fprintln(w, "# binary_path = \"\"  # Auto-detect from PATH")
+	}
+	if len(cfg.Integrations.DCG.CustomBlocklist) > 0 {
+		fmt.Fprintf(w, "custom_blocklist = %s\n", renderTOMLStringArray(cfg.Integrations.DCG.CustomBlocklist))
+	} else {
+		fmt.Fprintln(w, "custom_blocklist = []")
+	}
+	if len(cfg.Integrations.DCG.CustomWhitelist) > 0 {
+		fmt.Fprintf(w, "custom_whitelist = %s\n", renderTOMLStringArray(cfg.Integrations.DCG.CustomWhitelist))
+	} else {
+		fmt.Fprintln(w, "custom_whitelist = []")
+	}
+	if cfg.Integrations.DCG.AuditLog != "" {
+		fmt.Fprintf(w, "audit_log = %q\n", cfg.Integrations.DCG.AuditLog)
+	} else {
+		fmt.Fprintln(w, "# audit_log = \"~/.ntm/dcg_audit.log\"")
+	}
+	fmt.Fprintf(w, "allow_override = %t\n", cfg.Integrations.DCG.AllowOverride)
+	fmt.Fprintln(w)
+
 	// Write models configuration
 	fmt.Fprintln(w, "[models]")
 	fmt.Fprintln(w, "# Default models when no specifier given")
@@ -1883,6 +2028,30 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 		case "auto_register":
 			return cfg.AgentMail.AutoRegister, nil
 		}
+	case "integrations":
+		if len(parts) < 2 {
+			return cfg.Integrations, nil
+		}
+		switch parts[1] {
+		case "dcg":
+			if len(parts) < 3 {
+				return cfg.Integrations.DCG, nil
+			}
+			switch parts[2] {
+			case "enabled":
+				return cfg.Integrations.DCG.Enabled, nil
+			case "binary_path":
+				return cfg.Integrations.DCG.BinaryPath, nil
+			case "custom_blocklist":
+				return cfg.Integrations.DCG.CustomBlocklist, nil
+			case "custom_whitelist":
+				return cfg.Integrations.DCG.CustomWhitelist, nil
+			case "audit_log":
+				return cfg.Integrations.DCG.AuditLog, nil
+			case "allow_override":
+				return cfg.Integrations.DCG.AllowOverride, nil
+			}
+		}
 	case "alerts":
 		if len(parts) < 2 {
 			return cfg.Alerts, nil
@@ -2049,6 +2218,14 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("agent_mail.url", defaults.AgentMail.URL, cfg.AgentMail.URL)
 	addDiff("agent_mail.auto_register", defaults.AgentMail.AutoRegister, cfg.AgentMail.AutoRegister)
 
+	// Integrations (DCG)
+	addDiff("integrations.dcg.enabled", defaults.Integrations.DCG.Enabled, cfg.Integrations.DCG.Enabled)
+	addDiff("integrations.dcg.binary_path", defaults.Integrations.DCG.BinaryPath, cfg.Integrations.DCG.BinaryPath)
+	addDiff("integrations.dcg.custom_blocklist", defaults.Integrations.DCG.CustomBlocklist, cfg.Integrations.DCG.CustomBlocklist)
+	addDiff("integrations.dcg.custom_whitelist", defaults.Integrations.DCG.CustomWhitelist, cfg.Integrations.DCG.CustomWhitelist)
+	addDiff("integrations.dcg.audit_log", defaults.Integrations.DCG.AuditLog, cfg.Integrations.DCG.AuditLog)
+	addDiff("integrations.dcg.allow_override", defaults.Integrations.DCG.AllowOverride, cfg.Integrations.DCG.AllowOverride)
+
 	// Alerts
 	addDiff("alerts.enabled", defaults.Alerts.Enabled, cfg.Alerts.Enabled)
 	addDiff("alerts.agent_stuck_minutes", defaults.Alerts.AgentStuckMinutes, cfg.Alerts.AgentStuckMinutes)
@@ -2109,6 +2286,11 @@ func Validate(cfg *Config) []error {
 	// Validate health monitoring
 	if err := ValidateHealthConfig(&cfg.Health); err != nil {
 		errs = append(errs, fmt.Errorf("health: %w", err))
+	}
+
+	// Validate DCG integration config
+	if err := ValidateDCGConfig(&cfg.Integrations.DCG); err != nil {
+		errs = append(errs, fmt.Errorf("integrations.dcg: %w", err))
 	}
 
 	// Validate projects_base if set

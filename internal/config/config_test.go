@@ -482,7 +482,7 @@ func TestPrint(t *testing.T) {
 		t.Fatalf("Print failed: %v", err)
 	}
 	output := buf.String()
-	for _, section := range []string{"[agents]", "[tmux]", "[agent_mail]", "[models]", "[[palette]]"} {
+	for _, section := range []string{"[agents]", "[tmux]", "[agent_mail]", "[integrations.dcg]", "[models]", "[[palette]]"} {
 		if !strings.Contains(output, section) {
 			t.Errorf("Expected output to contain %s", section)
 		}
@@ -1391,6 +1391,32 @@ func TestHealthConfigGetValue(t *testing.T) {
 	}
 }
 
+func TestDCGConfigGetValue(t *testing.T) {
+	cfg := Default()
+
+	tests := []struct {
+		path string
+		want interface{}
+	}{
+		{"integrations.dcg.enabled", false},
+		{"integrations.dcg.binary_path", ""},
+		{"integrations.dcg.audit_log", ""},
+		{"integrations.dcg.allow_override", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got, err := GetValue(cfg, tt.path)
+			if err != nil {
+				t.Fatalf("GetValue(%q) error = %v", tt.path, err)
+			}
+			if got != tt.want {
+				t.Errorf("GetValue(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCASSContextDefaults(t *testing.T) {
 	cfg := Default()
 
@@ -1784,6 +1810,34 @@ func TestCASSContextValidation(t *testing.T) {
 	}
 }
 
+func TestDCGConfigValidation(t *testing.T) {
+	cfg := Config{
+		Integrations: IntegrationsConfig{
+			DCG: DCGConfig{
+				BinaryPath: "/no/such/dcg",
+			},
+		},
+		Tmux:            TmuxConfig{DefaultPanes: 1},
+		ContextRotation: DefaultContextRotationConfig(),
+		Health:          DefaultHealthConfig(),
+	}
+
+	errs := Validate(&cfg)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for invalid dcg binary_path")
+	}
+	found := false
+	for _, err := range errs {
+		if strings.Contains(err.Error(), "integrations.dcg") && strings.Contains(err.Error(), "binary_path") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected error mentioning integrations.dcg binary_path, got %v", errs)
+	}
+}
+
 func TestCASSContextGetValue(t *testing.T) {
 	cfg := Default()
 
@@ -2137,5 +2191,88 @@ func TestAssignConfigDefaultInFullConfig(t *testing.T) {
 
 	if cfg.Assign.Strategy != "balanced" {
 		t.Errorf("Expected default strategy 'balanced' in full config, got %q", cfg.Assign.Strategy)
+	}
+}
+
+func TestDefaultCAAMConfig(t *testing.T) {
+	cfg := DefaultCAAMConfig()
+
+	if !cfg.Enabled {
+		t.Error("Expected CAAM to be enabled by default")
+	}
+	if cfg.BinaryPath != "" {
+		t.Errorf("Expected empty binary path (PATH lookup), got %q", cfg.BinaryPath)
+	}
+	if !cfg.AutoRotate {
+		t.Error("Expected AutoRotate to be enabled by default")
+	}
+	if len(cfg.Providers) != 3 {
+		t.Errorf("Expected 3 default providers, got %d", len(cfg.Providers))
+	}
+	if cfg.AccountCooldown != 300 {
+		t.Errorf("Expected 300s account cooldown, got %d", cfg.AccountCooldown)
+	}
+	if cfg.AlertThreshold != 80 {
+		t.Errorf("Expected 80%% alert threshold, got %d", cfg.AlertThreshold)
+	}
+}
+
+func TestDefaultIntegrationsConfig(t *testing.T) {
+	cfg := DefaultIntegrationsConfig()
+
+	// Verify CAAM config is properly nested
+	if !cfg.CAAM.Enabled {
+		t.Error("Expected CAAM integration to be enabled by default")
+	}
+	if !cfg.CAAM.AutoRotate {
+		t.Error("Expected CAAM AutoRotate to be enabled by default")
+	}
+}
+
+func TestIntegrationsConfigInFullConfig(t *testing.T) {
+	cfg := Default()
+
+	// Verify integrations config is present and properly initialized
+	if !cfg.Integrations.CAAM.Enabled {
+		t.Error("Expected CAAM to be enabled in full config default")
+	}
+	if cfg.Integrations.CAAM.AccountCooldown != 300 {
+		t.Errorf("Expected 300s cooldown in full config, got %d", cfg.Integrations.CAAM.AccountCooldown)
+	}
+}
+
+func TestCAAMConfigFromTOML(t *testing.T) {
+	configContent := `
+[integrations.caam]
+enabled = false
+binary_path = "/usr/local/bin/caam"
+auto_rotate = false
+providers = ["claude"]
+account_cooldown = 600
+alert_threshold = 90
+`
+	configPath := createTempConfig(t, configContent)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if cfg.Integrations.CAAM.Enabled {
+		t.Error("Expected CAAM to be disabled")
+	}
+	if cfg.Integrations.CAAM.BinaryPath != "/usr/local/bin/caam" {
+		t.Errorf("Expected binary path '/usr/local/bin/caam', got %q", cfg.Integrations.CAAM.BinaryPath)
+	}
+	if cfg.Integrations.CAAM.AutoRotate {
+		t.Error("Expected AutoRotate to be disabled")
+	}
+	if len(cfg.Integrations.CAAM.Providers) != 1 || cfg.Integrations.CAAM.Providers[0] != "claude" {
+		t.Errorf("Expected single 'claude' provider, got %v", cfg.Integrations.CAAM.Providers)
+	}
+	if cfg.Integrations.CAAM.AccountCooldown != 600 {
+		t.Errorf("Expected 600s cooldown, got %d", cfg.Integrations.CAAM.AccountCooldown)
+	}
+	if cfg.Integrations.CAAM.AlertThreshold != 90 {
+		t.Errorf("Expected 90%% threshold, got %d", cfg.Integrations.CAAM.AlertThreshold)
 	}
 }
