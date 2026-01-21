@@ -1,9 +1,12 @@
 package robot
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestValidProbeMethods(t *testing.T) {
@@ -1425,4 +1428,221 @@ func TestProbeMethodStringConversion(t *testing.T) {
 	if string(ProbeMethodInterruptTest) != "interrupt_test" {
 		t.Errorf("ProbeMethodInterruptTest = %q", ProbeMethodInterruptTest)
 	}
+}
+
+// =============================================================================
+// Mock Tmux Client
+// =============================================================================
+
+type MockTmuxClient struct {
+	CaptureOutput   string
+	CaptureError    error
+	SendKeysError   error
+	InterruptError  error
+	SessionExistsVal bool
+	Panes           []tmux.Pane
+	PanesError      error
+	
+	// Call counters
+	CaptureCount    int
+	SendKeysCount   int
+	InterruptCount  int
+}
+
+func (m *MockTmuxClient) CaptureForStatusDetection(target string) (string, error) {
+	m.CaptureCount++
+	return m.CaptureOutput, m.CaptureError
+}
+
+func (m *MockTmuxClient) CapturePaneOutput(target string, lines int) (string, error) {
+	m.CaptureCount++
+	return m.CaptureOutput, m.CaptureError
+}
+
+func (m *MockTmuxClient) SendKeys(target, keys string, enter bool) error {
+	m.SendKeysCount++
+	return m.SendKeysError
+}
+
+func (m *MockTmuxClient) SendInterrupt(target string) error {
+	m.InterruptCount++
+	return m.InterruptError
+}
+
+func (m *MockTmuxClient) SessionExists(name string) bool {
+	return m.SessionExistsVal
+}
+
+func (m *MockTmuxClient) GetPanes(session string) ([]tmux.Pane, error) {
+	return m.Panes, m.PanesError
+}
+
+// Helper to reset and inject mock
+func setupMock(t *testing.T) *MockTmuxClient {
+	mock := &MockTmuxClient{
+		SessionExistsVal: true,
+		Panes: []tmux.Pane{{ID: "0", Index: 0}},
+	}
+	original := CurrentTmuxClient
+	CurrentTmuxClient = mock
+	t.Cleanup(func() {
+		CurrentTmuxClient = original
+	})
+	return mock
+}
+
+// =============================================================================
+// Capture Tests with Mock
+// =============================================================================
+
+func TestCapturePaneBaseline_Success(t *testing.T) {
+	mock := setupMock(t)
+	mock.CaptureOutput = "test content"
+
+	baseline, err := CapturePaneBaseline("test:0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if baseline.Content != "test content" {
+		t.Errorf("content = %q, want %q", baseline.Content, "test content")
+	}
+	if baseline.LineCount != 1 {
+		t.Errorf("line count = %d, want 1", baseline.LineCount)
+	}
+}
+
+func TestCapturePaneBaseline_Empty(t *testing.T) {
+	mock := setupMock(t)
+	mock.CaptureOutput = ""
+
+	baseline, err := CapturePaneBaseline("test:0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if baseline.Content != "" {
+		t.Errorf("content = %q, want empty", baseline.Content)
+	}
+	if baseline.LineCount != 0 {
+		t.Errorf("line count = %d, want 0", baseline.LineCount)
+	}
+}
+
+func TestCapturePaneBaseline_Failure(t *testing.T) {
+	mock := setupMock(t)
+	mock.CaptureError = fmt.Errorf("tmux error")
+
+	_, err := CapturePaneBaseline("test:0")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "baseline capture failed") {
+		t.Errorf("error = %q, want 'baseline capture failed'", err.Error())
+	}
+}
+
+// =============================================================================
+// Probe Execution Tests with Mock
+// =============================================================================
+
+func TestProbeKeystrokeEcho_Responsive(t *testing.T) {
+	// First capture (baseline)
+	// Second capture (current) - different content
+	// Since we can't easily change mock output between calls in this simple mock,
+	// we assume the implementation calls Capture twice. 
+	// We need a smarter mock that returns sequence of outputs.
+	
+	// Improving mock for this test
+	mockSeq := &MockTmuxClientSequence{
+		Outputs: []string{"baseline", "changed output"},
+	}
+	original := CurrentTmuxClient
+	CurrentTmuxClient = mockSeq
+	t.Cleanup(func() { CurrentTmuxClient = original })
+
+	result := probeKeystrokeEcho("test:0", 100*time.Millisecond)
+
+	if !result.Responsive {
+		t.Error("expected responsive result")
+	}
+	if result.Confidence != ProbeConfidenceHigh {
+		t.Errorf("confidence = %s, want High", result.Confidence)
+	}
+	if mockSeq.SendKeysCount != 2 { // Space + Backspace
+		t.Errorf("SendKeysCount = %d, want 2", mockSeq.SendKeysCount)
+	}
+}
+
+func TestProbeKeystrokeEcho_Unresponsive(t *testing.T) {
+	mock := setupMock(t)
+	mock.CaptureOutput = "static content"
+
+	result := probeKeystrokeEcho("test:0", 50*time.Millisecond)
+
+	if result.Responsive {
+		t.Error("expected unresponsive result")
+	}
+	if result.Confidence != ProbeConfidenceMedium {
+		t.Errorf("confidence = %s, want Medium", result.Confidence)
+	}
+	if result.Recommendation != ProbeRecommendationLikelyStuck {
+		t.Errorf("recommendation = %s, want LikelyStuck", result.Recommendation)
+	}
+}
+
+func TestProbeInterruptTest_Responsive(t *testing.T) {
+	mockSeq := &MockTmuxClientSequence{
+		Outputs: []string{"baseline", "changed output"},
+	}
+	original := CurrentTmuxClient
+	CurrentTmuxClient = mockSeq
+	t.Cleanup(func() { CurrentTmuxClient = original })
+
+	result := probeInterruptTest("test:0", 100*time.Millisecond)
+
+	if !result.Responsive {
+		t.Error("expected responsive result")
+	}
+	if mockSeq.InterruptCount != 1 {
+		t.Errorf("InterruptCount = %d, want 1", mockSeq.InterruptCount)
+	}
+}
+
+func TestProbeInterruptTest_Unresponsive(t *testing.T) {
+	mock := setupMock(t)
+	mock.CaptureOutput = "static content"
+
+	result := probeInterruptTest("test:0", 50*time.Millisecond)
+
+	if result.Responsive {
+		t.Error("expected unresponsive result")
+	}
+	if result.Confidence != ProbeConfidenceHigh {
+		t.Errorf("confidence = %s, want High", result.Confidence)
+	}
+	if result.Recommendation != ProbeRecommendationDefinitelyStuck {
+		t.Errorf("recommendation = %s, want DefinitelyStuck", result.Recommendation)
+	}
+}
+
+// Mock with sequential outputs
+type MockTmuxClientSequence struct {
+	MockTmuxClient
+	Outputs []string
+	CallIndex int
+}
+
+func (m *MockTmuxClientSequence) CaptureForStatusDetection(target string) (string, error) {
+	m.CaptureCount++
+	if m.CallIndex < len(m.Outputs) {
+		out := m.Outputs[m.CallIndex]
+		m.CallIndex++
+		return out, nil
+	}
+	// Return last output if exhausted
+	if len(m.Outputs) > 0 {
+		return m.Outputs[len(m.Outputs)-1], nil
+	}
+	return "", nil
 }

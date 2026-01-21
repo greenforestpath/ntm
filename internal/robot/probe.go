@@ -9,6 +9,48 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
+// TmuxClient defines the interface for tmux operations needed by probe.
+// This allows mocking for tests.
+type TmuxClient interface {
+	CaptureForStatusDetection(target string) (string, error)
+	CapturePaneOutput(target string, lines int) (string, error)
+	SendKeys(target, keys string, enter bool) error
+	SendInterrupt(target string) error
+	SessionExists(name string) bool
+	GetPanes(session string) ([]tmux.Pane, error)
+}
+
+// defaultTmuxClient wraps the tmux package functions to implement TmuxClient.
+type defaultTmuxClient struct{}
+
+func (c *defaultTmuxClient) CaptureForStatusDetection(target string) (string, error) {
+	return tmux.CaptureForStatusDetection(target)
+}
+
+func (c *defaultTmuxClient) CapturePaneOutput(target string, lines int) (string, error) {
+	return tmux.CapturePaneOutput(target, lines)
+}
+
+func (c *defaultTmuxClient) SendKeys(target, keys string, enter bool) error {
+	return tmux.SendKeys(target, keys, enter)
+}
+
+func (c *defaultTmuxClient) SendInterrupt(target string) error {
+	return tmux.SendInterrupt(target)
+}
+
+func (c *defaultTmuxClient) SessionExists(name string) bool {
+	return tmux.SessionExists(name)
+}
+
+func (c *defaultTmuxClient) GetPanes(session string) ([]tmux.Pane, error) {
+	return tmux.GetPanes(session)
+}
+
+// CurrentTmuxClient is the client used for tmux operations.
+// Tests can replace this with a mock.
+var CurrentTmuxClient TmuxClient = &defaultTmuxClient{}
+
 // =============================================================================
 // Robot Probe Command (bd-1cu1f)
 // =============================================================================
@@ -154,7 +196,7 @@ type PaneChange struct {
 // The target format is "session:window.pane" (e.g., "myproject:1.0").
 func CapturePaneBaseline(target string) (*PaneBaseline, error) {
 	// Use status detection line budget since probes need quick captures
-	content, err := tmux.CaptureForStatusDetection(target)
+	content, err := CurrentTmuxClient.CaptureForStatusDetection(target)
 	if err != nil {
 		return nil, fmt.Errorf("baseline capture failed: %w", err)
 	}
@@ -170,7 +212,7 @@ func CapturePaneBaseline(target string) (*PaneBaseline, error) {
 // CapturePaneBaselineWithLines captures baseline with a custom line count.
 // Use this when you need more or fewer lines than the default.
 func CapturePaneBaselineWithLines(target string, lines int) (*PaneBaseline, error) {
-	content, err := tmux.CapturePaneOutput(target, lines)
+	content, err := CurrentTmuxClient.CapturePaneOutput(target, lines)
 	if err != nil {
 		return nil, fmt.Errorf("baseline capture failed: %w", err)
 	}
@@ -310,11 +352,11 @@ func probeKeystrokeEcho(target string, timeout time.Duration) ProbeResult {
 	// 2. Send non-disruptive probe: space followed by backspace
 	// This is safer than null byte as it works in most shells and is visible feedback
 	probeStart := time.Now()
-	if err := tmux.SendKeys(target, " ", false); err != nil {
+	if err := CurrentTmuxClient.SendKeys(target, " ", false); err != nil {
 		result.Reasoning = fmt.Sprintf("failed to send probe space: %v", err)
 		return result
 	}
-	if err := tmux.SendKeys(target, "BSpace", false); err != nil {
+	if err := CurrentTmuxClient.SendKeys(target, "BSpace", false); err != nil {
 		result.Reasoning = fmt.Sprintf("failed to send probe backspace: %v", err)
 		return result
 	}
@@ -385,7 +427,7 @@ func probeInterruptTest(target string, timeout time.Duration) ProbeResult {
 
 	// 2. Send interrupt signal (Ctrl-C)
 	probeStart := time.Now()
-	if err := tmux.SendInterrupt(target); err != nil {
+	if err := CurrentTmuxClient.SendInterrupt(target); err != nil {
 		result.Reasoning = fmt.Sprintf("failed to send interrupt: %v", err)
 		return result
 	}
@@ -492,7 +534,7 @@ func PrintProbe(opts ProbeOptions) error {
 	}
 
 	// Check if session exists
-	if !tmux.SessionExists(opts.Session) {
+	if !CurrentTmuxClient.SessionExists(opts.Session) {
 		output.Success = false
 		output.Error = fmt.Sprintf("session '%s' not found", opts.Session)
 		output.ErrorCode = ErrCodeSessionNotFound
@@ -501,7 +543,7 @@ func PrintProbe(opts ProbeOptions) error {
 	}
 
 	// Get pane info to verify it exists
-	panes, err := tmux.GetPanes(opts.Session)
+	panes, err := CurrentTmuxClient.GetPanes(opts.Session)
 	if err != nil {
 		output.Success = false
 		output.Error = fmt.Sprintf("failed to get pane info: %v", err)
