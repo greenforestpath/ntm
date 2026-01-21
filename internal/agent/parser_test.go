@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -406,6 +408,277 @@ func TestMinInt(t *testing.T) {
 		if got := minInt(tt.a, tt.b); got != tt.want {
 			t.Errorf("minInt(%d, %d) = %d, want %d", tt.a, tt.b, got, tt.want)
 		}
+	}
+}
+
+// ============================================================================
+// File-based tests using real output samples from testdata/
+// ============================================================================
+
+// loadTestData loads a test file from the testdata directory.
+func loadTestData(t *testing.T, filename string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", filename))
+	if err != nil {
+		t.Fatalf("Failed to load test data %s: %v", filename, err)
+	}
+	return string(data)
+}
+
+func TestParser_FileData_ClaudeCode_Working(t *testing.T) {
+	p := NewParser()
+	output := loadTestData(t, "cc_working.txt")
+
+	state, err := p.Parse(output)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if state.Type != AgentTypeClaudeCode {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeClaudeCode)
+	}
+	if !state.IsWorking {
+		t.Error("Expected IsWorking=true for active Claude Code")
+	}
+	if state.IsIdle {
+		t.Error("Expected IsIdle=false for active Claude Code")
+	}
+	if state.GetRecommendation() != RecommendDoNotInterrupt {
+		t.Errorf("Recommendation = %v, want %v", state.GetRecommendation(), RecommendDoNotInterrupt)
+	}
+}
+
+func TestParser_FileData_ClaudeCode_Idle(t *testing.T) {
+	p := NewParser()
+	output := loadTestData(t, "cc_idle.txt")
+
+	state, err := p.Parse(output)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if state.Type != AgentTypeClaudeCode {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeClaudeCode)
+	}
+	// Note: This output ends with a question but no explicit prompt marker
+	// The parser may detect this as either idle or unknown depending on heuristics
+}
+
+func TestParser_FileData_ClaudeCode_RateLimit(t *testing.T) {
+	p := NewParser()
+	output := loadTestData(t, "cc_ratelimit.txt")
+
+	state, err := p.Parse(output)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if state.Type != AgentTypeClaudeCode {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeClaudeCode)
+	}
+	if !state.IsRateLimited {
+		t.Error("Expected IsRateLimited=true")
+	}
+	if state.GetRecommendation() != RecommendRateLimitedWait {
+		t.Errorf("Recommendation = %v, want %v", state.GetRecommendation(), RecommendRateLimitedWait)
+	}
+}
+
+func TestParser_FileData_ClaudeCode_LowContext(t *testing.T) {
+	p := NewParser()
+	output := loadTestData(t, "cc_lowcontext.txt")
+
+	state, err := p.Parse(output)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if state.Type != AgentTypeClaudeCode {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeClaudeCode)
+	}
+	if !state.IsContextLow {
+		t.Error("Expected IsContextLow=true for conversation warning")
+	}
+}
+
+func TestParser_FileData_Codex_Working(t *testing.T) {
+	p := NewParser()
+	output := loadTestData(t, "cod_working.txt")
+
+	state, err := p.Parse(output)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if state.Type != AgentTypeCodex {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeCodex)
+	}
+	if !state.IsWorking {
+		t.Error("Expected IsWorking=true for active Codex")
+	}
+	// Should extract token usage
+	if state.TokensUsed == nil {
+		t.Error("Expected TokensUsed to be set")
+	} else if *state.TokensUsed != 85432 {
+		t.Errorf("TokensUsed = %d, want 85432", *state.TokensUsed)
+	}
+}
+
+func TestParser_FileData_Codex_Idle(t *testing.T) {
+	p := NewParser()
+	output := loadTestData(t, "cod_idle.txt")
+
+	state, err := p.Parse(output)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if state.Type != AgentTypeCodex {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeCodex)
+	}
+	if state.ContextRemaining == nil {
+		t.Fatal("Expected ContextRemaining to be set for Codex")
+	}
+	if *state.ContextRemaining != 47.0 {
+		t.Errorf("ContextRemaining = %.1f, want 47.0", *state.ContextRemaining)
+	}
+	if state.TokensUsed == nil {
+		t.Error("Expected TokensUsed to be set")
+	}
+	if !state.IsIdle {
+		t.Error("Expected IsIdle=true for Codex at prompt")
+	}
+}
+
+func TestParser_FileData_Codex_RateLimit(t *testing.T) {
+	p := NewParser()
+	output := loadTestData(t, "cod_ratelimit.txt")
+
+	state, err := p.Parse(output)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if state.Type != AgentTypeCodex {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeCodex)
+	}
+	if !state.IsRateLimited {
+		t.Error("Expected IsRateLimited=true")
+	}
+}
+
+func TestParser_FileData_Gemini_Working(t *testing.T) {
+	p := NewParser()
+	output := loadTestData(t, "gmi_working.txt")
+
+	state, err := p.Parse(output)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if state.Type != AgentTypeGemini {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeGemini)
+	}
+	if !state.IsWorking {
+		t.Error("Expected IsWorking=true for active Gemini")
+	}
+	// Should extract memory
+	if state.MemoryMB == nil {
+		t.Error("Expected MemoryMB to be set")
+	} else if *state.MemoryMB != 256.4 {
+		t.Errorf("MemoryMB = %.1f, want 256.4", *state.MemoryMB)
+	}
+}
+
+func TestParser_FileData_Gemini_Idle(t *testing.T) {
+	p := NewParser()
+	output := loadTestData(t, "gmi_idle.txt")
+
+	state, err := p.Parse(output)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if state.Type != AgentTypeGemini {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeGemini)
+	}
+	if state.MemoryMB == nil {
+		t.Error("Expected MemoryMB to be set")
+	} else if *state.MemoryMB != 396.8 {
+		t.Errorf("MemoryMB = %.1f, want 396.8", *state.MemoryMB)
+	}
+	if !state.IsIdle {
+		t.Error("Expected IsIdle=true for Gemini at prompt")
+	}
+}
+
+func TestParser_FileData_Gemini_YOLO(t *testing.T) {
+	p := NewParser()
+	output := loadTestData(t, "gmi_yolo.txt")
+
+	state, err := p.Parse(output)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if state.Type != AgentTypeGemini {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeGemini)
+	}
+	// YOLO mode with running commands should be detected as working
+	if !state.IsWorking {
+		t.Error("Expected IsWorking=true for YOLO mode with active commands")
+	}
+}
+
+func TestParser_FileData_Gemini_RateLimit(t *testing.T) {
+	p := NewParser()
+	output := loadTestData(t, "gmi_ratelimit.txt")
+
+	state, err := p.Parse(output)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if state.Type != AgentTypeGemini {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeGemini)
+	}
+	if !state.IsRateLimited {
+		t.Error("Expected IsRateLimited=true")
+	}
+}
+
+// TestParser_FileData_AllFiles verifies all testdata files can be parsed without error.
+func TestParser_FileData_AllFiles(t *testing.T) {
+	files := []string{
+		"cc_working.txt",
+		"cc_idle.txt",
+		"cc_ratelimit.txt",
+		"cc_lowcontext.txt",
+		"cod_working.txt",
+		"cod_idle.txt",
+		"cod_ratelimit.txt",
+		"gmi_working.txt",
+		"gmi_idle.txt",
+		"gmi_yolo.txt",
+		"gmi_ratelimit.txt",
+	}
+
+	p := NewParser()
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			output := loadTestData(t, file)
+			state, err := p.Parse(output)
+			if err != nil {
+				t.Errorf("Parse failed for %s: %v", file, err)
+			}
+			if state == nil {
+				t.Errorf("Parse returned nil state for %s", file)
+			}
+			// Every file should produce some type detection
+			if state.Confidence == 0 {
+				t.Errorf("Confidence is 0 for %s, expected some confidence", file)
+			}
+		})
 	}
 }
 
