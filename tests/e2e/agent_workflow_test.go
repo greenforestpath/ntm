@@ -257,6 +257,126 @@ codex = "bash"
 	}
 }
 
+// TestSpawnAssignE2E validates the spawn --assign combined workflow.
+func TestSpawnAssignE2E(t *testing.T) {
+	testutil.RequireE2E(t)
+	testutil.RequireTmux(t)
+	testutil.RequireNTMBinary(t)
+	requireBr(t)
+	ensureBDShim(t)
+
+	logger := testutil.NewTestLogger(t, t.TempDir())
+	sessionName := fmt.Sprintf("ntm_spawn_assign_%d", time.Now().UnixNano())
+
+	projectsBase := t.TempDir()
+	projectDir := filepath.Join(projectsBase, sessionName)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("failed to create project directory: %v", err)
+	}
+
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "config.toml")
+	configContent := fmt.Sprintf(`
+projects_base = %q
+
+[agents]
+claude = "bash"
+codex = "bash"
+gemini = "bash"
+`, projectsBase)
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	runCmd(t, projectDir, "br", "init")
+	beadIDs := make(map[string]struct{})
+	for i := 0; i < 4; i++ {
+		id := createBead(t, projectDir, fmt.Sprintf("Spawn assign bead %d", i+1))
+		beadIDs[id] = struct{}{}
+	}
+	runCmd(t, projectDir, "br", "sync", "--flush-only")
+
+	t.Cleanup(func() {
+		logger.LogSection("Teardown: Killing test session")
+		_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	})
+
+	logger.LogSection("Step 1: Spawn with --assign")
+	out, err := logger.Exec(
+		"ntm",
+		"--config", configPath,
+		"spawn", sessionName,
+		"--cc=2",
+		"--no-user",
+		"--assign",
+		"--strategy=round-robin",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("spawn --assign failed: %v", err)
+	}
+
+	var result struct {
+		Spawn *struct {
+			Session     string `json:"session"`
+			AgentCounts struct {
+				Claude int `json:"claude"`
+				Codex  int `json:"codex"`
+				Gemini int `json:"gemini"`
+				User   int `json:"user"`
+				Total  int `json:"total"`
+			} `json:"agent_counts"`
+		} `json:"spawn"`
+		Assign *struct {
+			Strategy    string `json:"strategy"`
+			Assignments []struct {
+				BeadID string `json:"bead_id"`
+				Pane   int    `json:"pane"`
+			} `json:"assignments"`
+			Summary struct {
+				AssignedCount int `json:"assigned_count"`
+			} `json:"summary"`
+		} `json:"assign"`
+	}
+
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("failed to parse spawn --assign JSON: %v\nOutput: %s", err, string(out))
+	}
+	if result.Spawn == nil {
+		t.Fatalf("spawn response missing in output: %s", string(out))
+	}
+	if result.Spawn.Session != sessionName {
+		t.Fatalf("spawn session = %q, expected %q", result.Spawn.Session, sessionName)
+	}
+	if result.Spawn.AgentCounts.Claude < 2 {
+		t.Fatalf("expected at least 2 Claude agents, got %d", result.Spawn.AgentCounts.Claude)
+	}
+
+	if result.Assign == nil {
+		t.Fatalf("assign response missing in output: %s", string(out))
+	}
+	if result.Assign.Strategy != "round-robin" {
+		t.Fatalf("assign strategy = %q, expected round-robin", result.Assign.Strategy)
+	}
+	if len(result.Assign.Assignments) < 2 {
+		t.Fatalf("expected at least 2 assignments, got %d", len(result.Assign.Assignments))
+	}
+	if result.Assign.Summary.AssignedCount < 2 {
+		t.Fatalf("expected assigned_count >= 2, got %d", result.Assign.Summary.AssignedCount)
+	}
+
+	for _, assignment := range result.Assign.Assignments {
+		if _, ok := beadIDs[assignment.BeadID]; !ok {
+			t.Fatalf("assignment bead_id %q not found in created beads", assignment.BeadID)
+		}
+		if assignment.Pane <= 0 {
+			t.Fatalf("assignment pane must be positive, got %d", assignment.Pane)
+		}
+	}
+
+	logger.Log("PASS: spawn --assign result validated")
+}
+
 // TestAgentWorkflowKillForce tests force-killing a session.
 func TestAgentWorkflowKillForce(t *testing.T) {
 	testutil.RequireE2E(t)
