@@ -27,6 +27,7 @@ import (
 	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/history"
+	"github.com/Dicklesworthstone/ntm/internal/integrations/pt"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
 	"github.com/Dicklesworthstone/ntm/internal/status"
@@ -164,6 +165,12 @@ type HealthUpdateMsg struct {
 	Err    error
 }
 
+// PTHealthStatesMsg is sent when process_triage health states are fetched
+type PTHealthStatesMsg struct {
+	States map[string]*pt.AgentState
+	Gen    uint64
+}
+
 // RoutingUpdateMsg is sent when routing scores are fetched
 type RoutingUpdateMsg struct {
 	Scores map[string]RoutingScore // keyed by pane ID
@@ -271,6 +278,7 @@ const (
 	refreshRouting
 	refreshDCG
 	refreshPendingRotations
+	refreshPTHealth
 	refreshSourceCount
 )
 
@@ -343,6 +351,7 @@ type Model struct {
 	scanDisabled        bool // User toggled UBS scanning off
 	fetchingSpawn       bool
 	spawnActive         bool // Whether a spawn is currently active (for adaptive polling)
+	fetchingPTHealth    bool // Whether we're currently fetching process_triage health states
 
 	// Coalescing/cancellation for user-triggered refreshes
 	sessionFetchPending bool
@@ -439,6 +448,9 @@ type Model struct {
 	fileChanges   []tracker.RecordedFileChange
 	cassContext   []cass.SearchHit
 	routingScores map[string]RoutingScore // keyed by pane ID
+
+	// Process triage health states (from pt.HealthMonitor)
+	healthStates map[string]*pt.AgentState // pane -> health state
 
 	// Pending rotation confirmations
 	pendingRotations     []*ctxmon.PendingRotation
@@ -768,6 +780,7 @@ func (m Model) Init() tea.Cmd {
 		m.fetchCheckpointStatus(),
 		m.fetchHandoffCmd(),
 		m.fetchDCGStatus(),
+		m.fetchPendingRotations(),
 		m.subscribeToConfig(),
 	)
 }
@@ -1944,6 +1957,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Spawn just completed - switch back to idle rate
 				m.spawnRefreshInterval = SpawnIdleRefreshInterval
 			}
+		}
+		return m, nil
+
+	case PTHealthStatesMsg:
+		if !m.acceptUpdate(refreshPTHealth, msg.Gen) {
+			return m, nil
+		}
+		m.fetchingPTHealth = false
+		if msg.States != nil {
+			m.healthStates = msg.States
+			m.markUpdated(refreshPTHealth, time.Now())
 		}
 		return m, nil
 
@@ -3957,7 +3981,7 @@ func (m Model) renderPaneGrid() string {
 	// In grid mode (used below Split threshold), show more detail when card width allows it.
 	showExtendedInfo := cardWidth >= 24
 
-	rows := BuildPaneTableRows(m.panes, m.agentStatuses, m.paneStatus, &m.beadsSummary, m.fileChanges, m.animTick, t)
+	rows := BuildPaneTableRows(m.panes, m.agentStatuses, m.paneStatus, &m.beadsSummary, m.fileChanges, m.healthStates, m.animTick, t)
 	if summary := activitySummaryLine(rows, t); summary != "" {
 		lines = append(lines, "  "+summary)
 	}
@@ -4885,8 +4909,8 @@ func (m Model) renderPaneList(width int) string {
 	// Header row
 	lines = append(lines, RenderTableHeader(dims, t))
 
-	// Pane rows (hydrated with status, beads, file changes, with per-agent border colors)
-	rows := BuildPaneTableRows(m.panes, m.agentStatuses, m.paneStatus, &m.beadsSummary, m.fileChanges, m.animTick, t)
+	// Pane rows (hydrated with status, beads, file changes, health states, with per-agent border colors)
+	rows := BuildPaneTableRows(m.panes, m.agentStatuses, m.paneStatus, &m.beadsSummary, m.fileChanges, m.healthStates, m.animTick, t)
 	if summary := activitySummaryLine(rows, t); summary != "" {
 		lines = append(lines, " "+summary)
 	}
