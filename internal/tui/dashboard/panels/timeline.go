@@ -30,8 +30,9 @@ func timelineConfig() PanelConfig {
 
 // TimelineData holds the data for the timeline panel
 type TimelineData struct {
-	Events []state.AgentEvent
-	Stats  state.TimelineStats
+	Events  []state.AgentEvent
+	Markers []state.TimelineMarker
+	Stats   state.TimelineStats
 }
 
 // TimelinePanel displays agent state changes as horizontal timeline bars
@@ -47,16 +48,22 @@ type TimelinePanel struct {
 	timeOffset   time.Duration // Offset from now (negative = past)
 	zoomLevel    int           // Zoom level (0 = default, positive = zoomed in)
 	selectedTime time.Time     // Time position for details
+
+	// Marker navigation
+	markerIndex    int                  // Currently selected marker index (-1 = none)
+	selectedMarker *state.TimelineMarker // Currently selected marker for overlay
+	showOverlay    bool                  // Whether to show marker details overlay
 }
 
 // NewTimelinePanel creates a new timeline panel
 func NewTimelinePanel() *TimelinePanel {
 	return &TimelinePanel{
-		PanelBase:  NewPanelBase(timelineConfig()),
-		theme:      theme.Current(),
-		timeWindow: 30 * time.Minute, // Default 30 minute window
-		timeOffset: 0,
-		zoomLevel:  0,
+		PanelBase:   NewPanelBase(timelineConfig()),
+		theme:       theme.Current(),
+		timeWindow:  30 * time.Minute, // Default 30 minute window
+		timeOffset:  0,
+		zoomLevel:   0,
+		markerIndex: -1, // No marker selected initially
 	}
 }
 
@@ -77,6 +84,11 @@ type TimelineSelectMsg struct {
 	State   state.TimelineState
 }
 
+// MarkerSelectMsg is sent when user selects a marker for details
+type MarkerSelectMsg struct {
+	Marker state.TimelineMarker
+}
+
 // Update implements tea.Model
 func (m *TimelinePanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !m.IsFocused() {
@@ -87,6 +99,17 @@ func (m *TimelinePanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Handle overlay close first
+		if m.showOverlay {
+			switch msg.String() {
+			case "esc", "q":
+				m.showOverlay = false
+				m.selectedMarker = nil
+				return m, nil
+			}
+			return m, nil // Consume all keys while overlay is shown
+		}
+
 		switch msg.String() {
 		case "up", "k":
 			if m.cursor > 0 {
@@ -122,8 +145,26 @@ func (m *TimelinePanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "n":
 			// Jump to now
 			m.timeOffset = 0
+		case "tab":
+			// Navigate to next marker
+			m.selectNextMarker()
+		case "shift+tab":
+			// Navigate to previous marker
+			m.selectPrevMarker()
+		case "m":
+			// Jump to first marker in view
+			m.selectFirstMarkerInView()
 		case "enter":
-			// Select current position for details
+			// If marker is selected, show details overlay
+			if m.markerIndex >= 0 && m.markerIndex < len(m.data.Markers) {
+				marker := m.data.Markers[m.markerIndex]
+				m.selectedMarker = &marker
+				m.showOverlay = true
+				return m, func() tea.Msg {
+					return MarkerSelectMsg{Marker: marker}
+				}
+			}
+			// Otherwise select current position for details
 			if len(agents) > 0 && m.cursor >= 0 && m.cursor < len(agents) {
 				agentID := agents[m.cursor]
 				now := time.Now()
@@ -137,6 +178,10 @@ func (m *TimelinePanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		case "esc":
+			// Clear marker selection
+			m.markerIndex = -1
+			m.selectedMarker = nil
 		}
 	}
 	return m, nil
@@ -188,9 +233,29 @@ func (m *TimelinePanel) Keybindings() []Keybinding {
 			Action:      "jump_now",
 		},
 		{
+			Key:         key.NewBinding(key.WithKeys("tab"), key.WithHelp("Tab", "next marker")),
+			Description: "Navigate to next marker",
+			Action:      "next_marker",
+		},
+		{
+			Key:         key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("S-Tab", "prev marker")),
+			Description: "Navigate to previous marker",
+			Action:      "prev_marker",
+		},
+		{
+			Key:         key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "first marker")),
+			Description: "Jump to first marker in view",
+			Action:      "first_marker",
+		},
+		{
 			Key:         key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "details")),
-			Description: "View event details",
+			Description: "View marker/event details",
 			Action:      "details",
+		},
+		{
+			Key:         key.NewBinding(key.WithKeys("esc"), key.WithHelp("Esc", "close/clear")),
+			Description: "Close overlay or clear selection",
+			Action:      "close",
 		},
 	}
 }
@@ -295,6 +360,14 @@ func (m *TimelinePanel) View() string {
 			Foreground(m.agentColor(agentID)).
 			Width(labelWidth)
 
+		// Render marker row above the timeline bar (only if there are markers)
+		markersForAgent := m.getMarkersForAgentInWindow(agentID, windowStart, windowEnd)
+		if len(markersForAgent) > 0 {
+			markerRow := m.renderMarkerRow(agentID, windowStart, windowEnd, barWidth-2)
+			markerLine := strings.Repeat(" ", labelWidth+2) + markerRow
+			content.WriteString(markerLine + "\n")
+		}
+
 		// Render timeline bar
 		bar := m.renderTimelineBar(agentID, windowStart, windowEnd, barWidth)
 
@@ -310,7 +383,49 @@ func (m *TimelinePanel) View() string {
 	indicator := m.renderIndicator(windowStart, windowEnd, w-4)
 	content.WriteString(indicator)
 
-	return boxStyle.Render(FitToHeight(content.String(), h-4))
+	// Render marker count if there are visible markers
+	visibleMarkers := m.getVisibleMarkers()
+	if len(visibleMarkers) > 0 {
+		markerHint := lipgloss.NewStyle().
+			Foreground(t.Overlay).
+			Italic(true).
+			Render(fmt.Sprintf(" | %d markers (Tab to navigate)", len(visibleMarkers)))
+		content.WriteString(markerHint)
+	}
+
+	mainContent := boxStyle.Render(FitToHeight(content.String(), h-4))
+
+	// Render overlay on top if shown
+	if m.showOverlay && m.selectedMarker != nil {
+		overlay := m.renderOverlay(w, h)
+		// Center the overlay
+		overlayLines := strings.Split(overlay, "\n")
+		mainLines := strings.Split(mainContent, "\n")
+
+		// Calculate vertical position (centered)
+		overlayStartY := (len(mainLines) - len(overlayLines)) / 2
+		if overlayStartY < 0 {
+			overlayStartY = 0
+		}
+
+		// Merge overlay onto main content
+		for i, overlayLine := range overlayLines {
+			targetLine := overlayStartY + i
+			if targetLine < len(mainLines) {
+				// Center horizontally
+				overlayWidth := lipgloss.Width(overlayLine)
+				mainWidth := lipgloss.Width(mainLines[targetLine])
+				padLeft := (mainWidth - overlayWidth) / 2
+				if padLeft < 0 {
+					padLeft = 0
+				}
+				mainLines[targetLine] = strings.Repeat(" ", padLeft) + overlayLine
+			}
+		}
+		mainContent = strings.Join(mainLines, "\n")
+	}
+
+	return mainContent
 }
 
 // Helper methods
@@ -600,4 +715,257 @@ func (m *TimelinePanel) windowForZoom() time.Duration {
 func (m *TimelinePanel) scrollStep() time.Duration {
 	// Scroll by 1/6 of the current window
 	return m.timeWindow / 6
+}
+
+// Marker navigation helpers
+
+func (m *TimelinePanel) selectNextMarker() {
+	visibleMarkers := m.getVisibleMarkers()
+	if len(visibleMarkers) == 0 {
+		return
+	}
+
+	if m.markerIndex < 0 {
+		m.markerIndex = 0
+	} else if m.markerIndex < len(visibleMarkers)-1 {
+		m.markerIndex++
+	}
+}
+
+func (m *TimelinePanel) selectPrevMarker() {
+	visibleMarkers := m.getVisibleMarkers()
+	if len(visibleMarkers) == 0 {
+		return
+	}
+
+	if m.markerIndex < 0 {
+		m.markerIndex = len(visibleMarkers) - 1
+	} else if m.markerIndex > 0 {
+		m.markerIndex--
+	}
+}
+
+func (m *TimelinePanel) selectFirstMarkerInView() {
+	visibleMarkers := m.getVisibleMarkers()
+	if len(visibleMarkers) > 0 {
+		m.markerIndex = 0
+	}
+}
+
+func (m *TimelinePanel) getVisibleMarkers() []state.TimelineMarker {
+	now := time.Now()
+	windowEnd := now.Add(m.timeOffset)
+	windowStart := windowEnd.Add(-m.timeWindow)
+
+	var visible []state.TimelineMarker
+	for _, marker := range m.data.Markers {
+		if (marker.Timestamp.After(windowStart) || marker.Timestamp.Equal(windowStart)) &&
+			(marker.Timestamp.Before(windowEnd) || marker.Timestamp.Equal(windowEnd)) {
+			visible = append(visible, marker)
+		}
+	}
+
+	// Sort by timestamp
+	sort.Slice(visible, func(i, j int) bool {
+		return visible[i].Timestamp.Before(visible[j].Timestamp)
+	})
+
+	return visible
+}
+
+// Marker rendering helpers
+
+func (m *TimelinePanel) markerColor(mt state.MarkerType) lipgloss.Color {
+	t := m.theme
+	switch mt {
+	case state.MarkerPrompt:
+		return t.Blue
+	case state.MarkerCompletion:
+		return t.Green
+	case state.MarkerError:
+		return t.Red
+	case state.MarkerStart:
+		return t.Teal
+	case state.MarkerStop:
+		return t.Peach
+	default:
+		return t.Overlay
+	}
+}
+
+func (m *TimelinePanel) renderMarkerRow(agentID string, windowStart, windowEnd time.Time, width int) string {
+	t := m.theme
+	var row strings.Builder
+
+	// Get markers for this agent in the time window
+	markers := m.getMarkersForAgentInWindow(agentID, windowStart, windowEnd)
+
+	// Calculate time per character
+	duration := windowEnd.Sub(windowStart)
+	charDuration := duration / time.Duration(width)
+
+	// Create a map of positions to markers for clustering
+	positionMarkers := make(map[int][]state.TimelineMarker)
+	for _, marker := range markers {
+		pos := int(marker.Timestamp.Sub(windowStart) / charDuration)
+		if pos < 0 {
+			pos = 0
+		}
+		if pos >= width {
+			pos = width - 1
+		}
+		positionMarkers[pos] = append(positionMarkers[pos], marker)
+	}
+
+	// Render each position
+	for i := 0; i < width; i++ {
+		markersAtPos := positionMarkers[i]
+		if len(markersAtPos) == 0 {
+			row.WriteString(" ")
+		} else if len(markersAtPos) == 1 {
+			// Single marker
+			marker := markersAtPos[0]
+			symbol := marker.Type.Symbol()
+			color := m.markerColor(marker.Type)
+
+			// Highlight if selected
+			isSelected := m.isMarkerSelected(marker)
+			style := lipgloss.NewStyle().Foreground(color)
+			if isSelected {
+				style = style.Bold(true).Background(t.Surface1)
+			}
+			row.WriteString(style.Render(symbol))
+		} else {
+			// Clustered markers - show count or special symbol
+			// Use the most important marker type (error > completion > prompt > start/stop)
+			priority := m.highestPriorityMarker(markersAtPos)
+			color := m.markerColor(priority.Type)
+			symbol := "●" // Cluster indicator
+			if len(markersAtPos) > 9 {
+				symbol = "◉"
+			}
+			style := lipgloss.NewStyle().Foreground(color).Bold(true)
+			row.WriteString(style.Render(symbol))
+		}
+	}
+
+	return row.String()
+}
+
+func (m *TimelinePanel) getMarkersForAgentInWindow(agentID string, start, end time.Time) []state.TimelineMarker {
+	var result []state.TimelineMarker
+	for _, marker := range m.data.Markers {
+		if marker.AgentID == agentID &&
+			(marker.Timestamp.After(start) || marker.Timestamp.Equal(start)) &&
+			(marker.Timestamp.Before(end) || marker.Timestamp.Equal(end)) {
+			result = append(result, marker)
+		}
+	}
+	return result
+}
+
+func (m *TimelinePanel) isMarkerSelected(marker state.TimelineMarker) bool {
+	if m.markerIndex < 0 {
+		return false
+	}
+	visibleMarkers := m.getVisibleMarkers()
+	if m.markerIndex >= len(visibleMarkers) {
+		return false
+	}
+	return visibleMarkers[m.markerIndex].ID == marker.ID
+}
+
+func (m *TimelinePanel) highestPriorityMarker(markers []state.TimelineMarker) state.TimelineMarker {
+	// Priority: error > completion > prompt > start > stop
+	priority := map[state.MarkerType]int{
+		state.MarkerError:      5,
+		state.MarkerCompletion: 4,
+		state.MarkerPrompt:     3,
+		state.MarkerStart:      2,
+		state.MarkerStop:       1,
+	}
+
+	best := markers[0]
+	bestPri := priority[best.Type]
+	for _, m := range markers[1:] {
+		if priority[m.Type] > bestPri {
+			best = m
+			bestPri = priority[m.Type]
+		}
+	}
+	return best
+}
+
+func (m *TimelinePanel) renderOverlay(width, height int) string {
+	if !m.showOverlay || m.selectedMarker == nil {
+		return ""
+	}
+
+	t := m.theme
+	marker := m.selectedMarker
+
+	// Calculate overlay dimensions
+	overlayWidth := width - 8
+	if overlayWidth > 60 {
+		overlayWidth = 60
+	}
+	if overlayWidth < 30 {
+		overlayWidth = 30
+	}
+
+	overlayHeight := 8
+	if len(marker.Message) > 50 {
+		overlayHeight = 10
+	}
+
+	// Build overlay content
+	var content strings.Builder
+
+	// Header with marker type
+	typeStyle := lipgloss.NewStyle().
+		Foreground(m.markerColor(marker.Type)).
+		Bold(true)
+	content.WriteString(typeStyle.Render(marker.Type.Symbol()+" "+string(marker.Type)) + "\n\n")
+
+	// Timestamp
+	timeStyle := lipgloss.NewStyle().Foreground(t.Subtext)
+	content.WriteString(timeStyle.Render("Time: ") + marker.Timestamp.Format("15:04:05") + "\n")
+
+	// Agent
+	content.WriteString(timeStyle.Render("Agent: ") + marker.AgentID + "\n")
+
+	// Message (if present)
+	if marker.Message != "" {
+		content.WriteString("\n")
+		msgStyle := lipgloss.NewStyle().Foreground(t.Text)
+		msg := marker.Message
+		if len(msg) > 100 {
+			msg = msg[:97] + "..."
+		}
+		content.WriteString(msgStyle.Render(msg) + "\n")
+	}
+
+	// Details (if present)
+	if len(marker.Details) > 0 {
+		content.WriteString("\n")
+		for k, v := range marker.Details {
+			content.WriteString(timeStyle.Render(k+": ") + v + "\n")
+		}
+	}
+
+	// Footer hint
+	content.WriteString("\n")
+	hintStyle := lipgloss.NewStyle().Foreground(t.Overlay).Italic(true)
+	content.WriteString(hintStyle.Render("Press Esc to close"))
+
+	// Wrap in box
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.Primary).
+		Background(t.Base).
+		Padding(1, 2).
+		Width(overlayWidth).
+		MaxHeight(overlayHeight)
+
+	return boxStyle.Render(content.String())
 }

@@ -3,6 +3,7 @@
 package state
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -27,6 +28,70 @@ const (
 // String returns the string representation of TimelineState.
 func (s TimelineState) String() string {
 	return string(s)
+}
+
+// MarkerType represents the type of discrete event marker on the timeline.
+type MarkerType string
+
+const (
+	// MarkerPrompt indicates a prompt was sent to the agent (▶).
+	MarkerPrompt MarkerType = "prompt"
+	// MarkerCompletion indicates the agent finished a task (✓).
+	MarkerCompletion MarkerType = "completion"
+	// MarkerError indicates an error occurred (✗).
+	MarkerError MarkerType = "error"
+	// MarkerStart indicates session/agent start (◆).
+	MarkerStart MarkerType = "start"
+	// MarkerStop indicates session/agent stop (◆).
+	MarkerStop MarkerType = "stop"
+)
+
+// String returns the string representation of MarkerType.
+func (m MarkerType) String() string {
+	return string(m)
+}
+
+// Symbol returns the Unicode symbol for the marker type.
+func (m MarkerType) Symbol() string {
+	switch m {
+	case MarkerPrompt:
+		return "▶"
+	case MarkerCompletion:
+		return "✓"
+	case MarkerError:
+		return "✗"
+	case MarkerStart, MarkerStop:
+		return "◆"
+	default:
+		return "•"
+	}
+}
+
+// TimelineMarker represents a discrete event marker on the timeline.
+type TimelineMarker struct {
+	// ID uniquely identifies the marker.
+	ID string `json:"id"`
+
+	// AgentID identifies which agent this marker belongs to.
+	AgentID string `json:"agent_id"`
+
+	// SessionID is the session this marker belongs to.
+	SessionID string `json:"session_id"`
+
+	// Type is the kind of marker event.
+	Type MarkerType `json:"type"`
+
+	// Timestamp is when the event occurred.
+	Timestamp time.Time `json:"timestamp"`
+
+	// Message contains details about the event.
+	// For prompts: first N chars of the prompt text.
+	// For errors: error message.
+	// For start/stop: reason if any.
+	Message string `json:"message,omitempty"`
+
+	// Details contains additional metadata about the event.
+	Details map[string]string `json:"details,omitempty"`
 }
 
 // IsTerminal returns true if the state is a terminal state (stopped/error).
@@ -104,9 +169,12 @@ type TimelineTracker struct {
 	config    TimelineConfig
 	timelines map[string]*agentTimeline // keyed by agentID
 	allEvents []AgentEvent              // all events in chronological order
+	markers   []TimelineMarker          // discrete event markers
+	markerSeq int                       // sequence number for marker IDs
 
 	// Callbacks for state change notifications
 	onStateChange []func(event AgentEvent)
+	onMarkerAdd   []func(marker TimelineMarker)
 
 	// Background pruning
 	stopPrune chan struct{}
@@ -502,6 +570,142 @@ func (t *TimelineTracker) GetStateTransitions(agentID string) map[string]int {
 	}
 
 	return transitions
+}
+
+// AddMarker adds a discrete event marker to the timeline.
+// Returns the marker with its assigned ID.
+func (t *TimelineTracker) AddMarker(marker TimelineMarker) TimelineMarker {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Ensure timestamp is set
+	if marker.Timestamp.IsZero() {
+		marker.Timestamp = time.Now()
+	}
+
+	// Assign unique ID if not set
+	if marker.ID == "" {
+		t.markerSeq++
+		marker.ID = fmt.Sprintf("m%d", t.markerSeq)
+	}
+
+	t.markers = append(t.markers, marker)
+
+	// Notify callbacks
+	callbacks := make([]func(TimelineMarker), len(t.onMarkerAdd))
+	copy(callbacks, t.onMarkerAdd)
+
+	t.mu.Unlock()
+	for _, cb := range callbacks {
+		cb(marker)
+	}
+	t.mu.Lock()
+
+	return marker
+}
+
+// GetMarkers returns all markers within the given time range.
+// If since is zero, uses retention cutoff. If until is zero, uses now.
+func (t *TimelineTracker) GetMarkers(since, until time.Time) []TimelineMarker {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if since.IsZero() {
+		since = time.Now().Add(-t.config.RetentionDuration)
+	}
+	if until.IsZero() {
+		until = time.Now()
+	}
+
+	result := make([]TimelineMarker, 0, len(t.markers))
+	for _, m := range t.markers {
+		if (m.Timestamp.After(since) || m.Timestamp.Equal(since)) &&
+			(m.Timestamp.Before(until) || m.Timestamp.Equal(until)) {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
+// GetMarkersForAgent returns markers for a specific agent within the time range.
+func (t *TimelineTracker) GetMarkersForAgent(agentID string, since, until time.Time) []TimelineMarker {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if since.IsZero() {
+		since = time.Now().Add(-t.config.RetentionDuration)
+	}
+	if until.IsZero() {
+		until = time.Now()
+	}
+
+	result := make([]TimelineMarker, 0)
+	for _, m := range t.markers {
+		if m.AgentID == agentID &&
+			(m.Timestamp.After(since) || m.Timestamp.Equal(since)) &&
+			(m.Timestamp.Before(until) || m.Timestamp.Equal(until)) {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
+// GetMarkersForSession returns markers for all agents in a session within the time range.
+func (t *TimelineTracker) GetMarkersForSession(sessionID string, since, until time.Time) []TimelineMarker {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if since.IsZero() {
+		since = time.Now().Add(-t.config.RetentionDuration)
+	}
+	if until.IsZero() {
+		until = time.Now()
+	}
+
+	result := make([]TimelineMarker, 0)
+	for _, m := range t.markers {
+		if m.SessionID == sessionID &&
+			(m.Timestamp.After(since) || m.Timestamp.Equal(since)) &&
+			(m.Timestamp.Before(until) || m.Timestamp.Equal(until)) {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
+// OnMarkerAdd registers a callback to be called when a marker is added.
+func (t *TimelineTracker) OnMarkerAdd(callback func(marker TimelineMarker)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onMarkerAdd = append(t.onMarkerAdd, callback)
+}
+
+// PruneMarkers removes markers older than the retention duration.
+func (t *TimelineTracker) PruneMarkers() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	cutoff := time.Now().Add(-t.config.RetentionDuration)
+	pruned := 0
+
+	newMarkers := make([]TimelineMarker, 0, len(t.markers))
+	for _, m := range t.markers {
+		if m.Timestamp.After(cutoff) {
+			newMarkers = append(newMarkers, m)
+		} else {
+			pruned++
+		}
+	}
+	t.markers = newMarkers
+
+	return pruned
+}
+
+// ClearMarkers removes all markers.
+func (t *TimelineTracker) ClearMarkers() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.markers = make([]TimelineMarker, 0)
 }
 
 // StateFromAgentStatus converts an AgentStatus to TimelineState.
