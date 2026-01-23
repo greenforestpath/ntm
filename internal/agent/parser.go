@@ -156,17 +156,33 @@ func (p *parserImpl) detectStateFlags(output string, state *AgentState) {
 	state.IsRateLimited = p.detectRateLimit(output, state.Type)
 	if state.IsRateLimited {
 		state.LimitIndicators = p.collectLimitIndicators(output, state.Type)
+		// If rate limited, we are effectively blocked, so clear other flags
+		state.IsWorking = false
+		state.IsIdle = false
+		state.IsInError = p.detectError(output, state.Type)
+		return
 	}
 
-	// Working detection (DO NOT INTERRUPT when true)
-	state.IsWorking = p.detectWorking(output, state.Type)
-	if state.IsWorking {
+	// Idle detection
+	// We check this BEFORE trusting IsWorking, because IsWorking patterns
+	// (like "testing", "running") might still be present in the scrollback
+	// even after the agent has finished and printed a prompt.
+	state.IsIdle = p.detectIdle(output, state.Type)
+
+	// Working detection
+	// We always run this to collect indicators for debugging/confidence
+	rawIsWorking := p.detectWorking(output, state.Type)
+	if rawIsWorking {
 		state.WorkIndicators = p.collectWorkIndicators(output, state.Type)
 	}
 
-	// Idle detection (only if not working and not rate limited)
-	if !state.IsWorking && !state.IsRateLimited {
-		state.IsIdle = p.detectIdle(output, state.Type)
+	// Conflict resolution: Prompt beats substring heuristics
+	// If we see a definitive prompt at the end (IsIdle), we are not working,
+	// regardless of what keywords appear in the scrollback.
+	if state.IsIdle {
+		state.IsWorking = false
+	} else {
+		state.IsWorking = rawIsWorking
 	}
 
 	// Error detection
