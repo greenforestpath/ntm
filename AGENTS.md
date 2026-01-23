@@ -86,6 +86,21 @@ When unsure of an API, look up current docs (late-2025) rather than guessing.
 
 ---
 
+### Robot Mode API Design
+
+NTM provides a JSON API for AI agents via `--robot-*` flags. When working on or using this API:
+
+- **Design principles** are documented in `docs/robot-api-design.md` — read it first
+- **Key patterns**:
+  - Global commands: bool flags (`--robot-status`)
+  - Session-scoped: `=SESSION` syntax (`--robot-send=myproject`)
+  - Modifiers: unprefixed global flags (`--limit`, `--since`, `--type`)
+- **Deprecation**: Old prefixed flags (e.g., `--cass-limit`) remain for backward compatibility but canonical unprefixed forms are preferred
+- **Quick reference**: `ntm --robot-help`
+- **Machine-readable schema**: `ntm --robot-capabilities`
+
+---
+
 ## MCP Agent Mail — Multi-Agent Coordination
 
 Agent Mail is already available as an MCP server; do not treat it as a CLI you must shell out to. MCP Agent Mail *should* be available to you as an MCP server; if it's not, then flag to the user. They might need to start Agent Mail using the `am` alias or by running `cd "<directory_where_they_installed_agent_mail>/mcp_agent_mail" && bash scripts/run_server_with_token.sh` if the alias isn't available or isn't working.
