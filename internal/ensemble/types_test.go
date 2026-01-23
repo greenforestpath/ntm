@@ -1,6 +1,7 @@
 package ensemble
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -748,3 +749,282 @@ func TestEnsemble_Validate(t *testing.T) {
 		t.Error("ensemble with nonexistent mode should fail validation")
 	}
 }
+
+func TestModeTier_IsValid(t *testing.T) {
+	tests := []struct {
+		tier  ModeTier
+		valid bool
+	}{
+		{TierCore, true},
+		{TierAdvanced, true},
+		{TierExperimental, true},
+		{ModeTier(""), false},
+		{ModeTier("unknown"), false},
+		{ModeTier("Core"), false}, // case-sensitive
+	}
+
+	for _, tt := range tests {
+		if got := tt.tier.IsValid(); got != tt.valid {
+			t.Errorf("ModeTier(%q).IsValid() = %v, want %v", tt.tier, got, tt.valid)
+		}
+	}
+}
+
+func TestModeTier_String(t *testing.T) {
+	if got := TierCore.String(); got != "core" {
+		t.Errorf("TierCore.String() = %q, want %q", got, "core")
+	}
+	if got := TierAdvanced.String(); got != "advanced" {
+		t.Errorf("TierAdvanced.String() = %q, want %q", got, "advanced")
+	}
+}
+
+func TestModeCategory_CategoryLetter(t *testing.T) {
+	tests := []struct {
+		cat    ModeCategory
+		letter string
+	}{
+		{CategoryFormal, "A"},
+		{CategoryAmpliative, "B"},
+		{CategoryUncertainty, "C"},
+		{CategoryVagueness, "D"},
+		{CategoryChange, "E"},
+		{CategoryCausal, "F"},
+		{CategoryPractical, "G"},
+		{CategoryStrategic, "H"},
+		{CategoryDialectical, "I"},
+		{CategoryModal, "J"},
+		{CategoryDomain, "K"},
+		{CategoryMeta, "L"},
+		{ModeCategory("invalid"), ""},
+	}
+
+	for _, tt := range tests {
+		if got := tt.cat.CategoryLetter(); got != tt.letter {
+			t.Errorf("ModeCategory(%q).CategoryLetter() = %q, want %q", tt.cat, got, tt.letter)
+		}
+	}
+}
+
+func TestCategoryFromLetter(t *testing.T) {
+	tests := []struct {
+		letter string
+		cat    ModeCategory
+		ok     bool
+	}{
+		{"A", CategoryFormal, true},
+		{"B", CategoryAmpliative, true},
+		{"C", CategoryUncertainty, true},
+		{"D", CategoryVagueness, true},
+		{"E", CategoryChange, true},
+		{"F", CategoryCausal, true},
+		{"G", CategoryPractical, true},
+		{"H", CategoryStrategic, true},
+		{"I", CategoryDialectical, true},
+		{"J", CategoryModal, true},
+		{"K", CategoryDomain, true},
+		{"L", CategoryMeta, true},
+		{"M", "", false},
+		{"a", "", false},
+		{"", "", false},
+	}
+
+	for _, tt := range tests {
+		cat, ok := CategoryFromLetter(tt.letter)
+		if ok != tt.ok {
+			t.Errorf("CategoryFromLetter(%q) ok = %v, want %v", tt.letter, ok, tt.ok)
+		}
+		if cat != tt.cat {
+			t.Errorf("CategoryFromLetter(%q) = %q, want %q", tt.letter, cat, tt.cat)
+		}
+	}
+}
+
+func TestValidateModeCode(t *testing.T) {
+	tests := []struct {
+		code    string
+		cat     ModeCategory
+		wantErr bool
+	}{
+		{"A1", CategoryFormal, false},
+		{"B3", CategoryAmpliative, false},
+		{"L10", CategoryMeta, false},
+		{"C99", CategoryUncertainty, false},
+		// Invalid format
+		{"", CategoryFormal, true},           // empty
+		{"a1", CategoryFormal, true},         // lowercase letter
+		{"M1", CategoryFormal, true},         // letter out of range
+		{"A", CategoryFormal, true},          // no number
+		{"AB1", CategoryFormal, true},        // two letters
+		{"1A", CategoryFormal, true},         // starts with digit
+		// Category mismatch
+		{"B1", CategoryFormal, true},         // B != A (Formal)
+		{"A1", CategoryAmpliative, true},     // A != B (Ampliative)
+		{"K5", CategoryMeta, true},           // K != L (Meta)
+	}
+
+	for _, tt := range tests {
+		err := ValidateModeCode(tt.code, tt.cat)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("ValidateModeCode(%q, %q) error = %v, wantErr %v", tt.code, tt.cat, err, tt.wantErr)
+		}
+	}
+}
+
+func TestReasoningMode_Validate_CodeAndTier(t *testing.T) {
+	base := ReasoningMode{
+		ID:        "deductive",
+		Name:      "Deductive Logic",
+		Category:  CategoryFormal,
+		ShortDesc: "Derive conclusions from premises",
+	}
+
+	// Valid with code and tier
+	withCodeTier := base
+	withCodeTier.Code = "A1"
+	withCodeTier.Tier = TierCore
+	if err := withCodeTier.Validate(); err != nil {
+		t.Errorf("mode with valid code+tier should pass: %v", err)
+	}
+
+	// Valid without code and tier (optional fields)
+	if err := base.Validate(); err != nil {
+		t.Errorf("mode without code/tier should pass: %v", err)
+	}
+
+	// Invalid code format
+	badCodeFmt := base
+	badCodeFmt.Code = "ZZ9"
+	if err := badCodeFmt.Validate(); err == nil {
+		t.Error("mode with invalid code format should fail")
+	}
+
+	// Code-category mismatch
+	mismatch := base
+	mismatch.Code = "B1" // B is Ampliative, but category is Formal
+	if err := mismatch.Validate(); err == nil {
+		t.Error("mode with code-category mismatch should fail")
+	}
+
+	// Invalid tier
+	badTier := base
+	badTier.Tier = ModeTier("unknown")
+	if err := badTier.Validate(); err == nil {
+		t.Error("mode with invalid tier should fail")
+	}
+}
+
+func TestModeCatalog_DuplicateCode(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "mode-a", Name: "Mode A", Category: CategoryFormal, ShortDesc: "Test A", Code: "A1", Tier: TierCore},
+		{ID: "mode-b", Name: "Mode B", Category: CategoryFormal, ShortDesc: "Test B", Code: "A1", Tier: TierAdvanced},
+	}
+
+	_, err := NewModeCatalog(modes, "1.0")
+	if err == nil {
+		t.Fatal("catalog with duplicate code should fail")
+	}
+	if got := err.Error(); !strings.Contains(got, "duplicate mode code") {
+		t.Errorf("error should mention duplicate code, got: %v", err)
+	}
+}
+
+func TestModeCatalog_GetModeByCode(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "deductive", Name: "Deductive", Category: CategoryFormal, ShortDesc: "Test", Code: "A1", Tier: TierCore},
+		{ID: "bayesian", Name: "Bayesian", Category: CategoryUncertainty, ShortDesc: "Test", Code: "C1", Tier: TierAdvanced},
+		{ID: "no-code", Name: "No Code", Category: CategoryMeta, ShortDesc: "Test"},
+	}
+
+	catalog, err := NewModeCatalog(modes, "1.0")
+	if err != nil {
+		t.Fatalf("failed to create catalog: %v", err)
+	}
+
+	// Lookup by code
+	m := catalog.GetModeByCode("A1")
+	if m == nil {
+		t.Fatal("GetModeByCode(A1) returned nil")
+	}
+	if m.ID != "deductive" {
+		t.Errorf("GetModeByCode(A1).ID = %q, want %q", m.ID, "deductive")
+	}
+
+	m = catalog.GetModeByCode("C1")
+	if m == nil {
+		t.Fatal("GetModeByCode(C1) returned nil")
+	}
+	if m.ID != "bayesian" {
+		t.Errorf("GetModeByCode(C1).ID = %q, want %q", m.ID, "bayesian")
+	}
+
+	// Nonexistent code
+	if catalog.GetModeByCode("Z9") != nil {
+		t.Error("GetModeByCode(Z9) should return nil")
+	}
+
+	// Empty code mode shouldn't be in byCode
+	if catalog.GetModeByCode("") != nil {
+		t.Error("GetModeByCode('') should return nil")
+	}
+}
+
+func TestModeCatalog_ListByTier(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "core1", Name: "Core 1", Category: CategoryFormal, ShortDesc: "Test", Code: "A1", Tier: TierCore},
+		{ID: "core2", Name: "Core 2", Category: CategoryAmpliative, ShortDesc: "Test", Code: "B1", Tier: TierCore},
+		{ID: "adv1", Name: "Advanced 1", Category: CategoryUncertainty, ShortDesc: "Test", Code: "C1", Tier: TierAdvanced},
+		{ID: "exp1", Name: "Exp 1", Category: CategoryMeta, ShortDesc: "Test", Code: "L1", Tier: TierExperimental},
+		{ID: "no-tier", Name: "No Tier", Category: CategoryCausal, ShortDesc: "Test"},
+	}
+
+	catalog, err := NewModeCatalog(modes, "1.0")
+	if err != nil {
+		t.Fatalf("failed to create catalog: %v", err)
+	}
+
+	core := catalog.ListByTier(TierCore)
+	if len(core) != 2 {
+		t.Errorf("ListByTier(core) count = %d, want 2", len(core))
+	}
+
+	adv := catalog.ListByTier(TierAdvanced)
+	if len(adv) != 1 {
+		t.Errorf("ListByTier(advanced) count = %d, want 1", len(adv))
+	}
+
+	exp := catalog.ListByTier(TierExperimental)
+	if len(exp) != 1 {
+		t.Errorf("ListByTier(experimental) count = %d, want 1", len(exp))
+	}
+
+	// No modes with this tier
+	empty := catalog.ListByTier(ModeTier("nonexistent"))
+	if len(empty) != 0 {
+		t.Errorf("ListByTier(nonexistent) count = %d, want 0", len(empty))
+	}
+}
+
+func TestModeCatalog_ListDefault(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "core1", Name: "Core 1", Category: CategoryFormal, ShortDesc: "Test", Code: "A1", Tier: TierCore},
+		{ID: "core2", Name: "Core 2", Category: CategoryAmpliative, ShortDesc: "Test", Code: "B1", Tier: TierCore},
+		{ID: "adv1", Name: "Advanced", Category: CategoryUncertainty, ShortDesc: "Test", Code: "C1", Tier: TierAdvanced},
+	}
+
+	catalog, err := NewModeCatalog(modes, "1.0")
+	if err != nil {
+		t.Fatalf("failed to create catalog: %v", err)
+	}
+
+	defaults := catalog.ListDefault()
+	if len(defaults) != 2 {
+		t.Errorf("ListDefault() count = %d, want 2", len(defaults))
+	}
+	for _, m := range defaults {
+		if m.Tier != TierCore {
+			t.Errorf("ListDefault() returned mode with tier %q, want %q", m.Tier, TierCore)
+		}
+	}
+}
+

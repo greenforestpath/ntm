@@ -52,6 +52,14 @@ type caamAccount struct {
 	Active bool   `json:"active"`
 }
 
+// RotationState tracks per-pane account rotation state.
+type RotationState struct {
+	CurrentAccount   string    `json:"current_account"`
+	PreviousAccounts []string  `json:"previous_accounts"`
+	RotationCount    int       `json:"rotation_count"`
+	LastRotation     time.Time `json:"last_rotation"`
+}
+
 // AccountRotator manages account rotation via caam CLI.
 type AccountRotator struct {
 	// caamPath is the path to caam binary (default: "caam").
@@ -63,8 +71,14 @@ type AccountRotator struct {
 	// CommandTimeout is the timeout for caam commands (default: 5s).
 	CommandTimeout time.Duration
 
+	// CooldownDuration is the minimum time between rotations for a pane (default: 60s).
+	CooldownDuration time.Duration
+
 	// rotationHistory tracks rotations.
 	rotationHistory []RotationRecord
+
+	// rotationStates tracks per-pane rotation state.
+	rotationStates map[string]*RotationState
 
 	// mu protects history and internal state.
 	mu sync.Mutex
@@ -77,10 +91,12 @@ type AccountRotator struct {
 // NewAccountRotator creates a new AccountRotator with default settings.
 func NewAccountRotator() *AccountRotator {
 	return &AccountRotator{
-		caamPath:        "caam",
-		Logger:          slog.Default(),
-		CommandTimeout:  5 * time.Second,
-		rotationHistory: make([]RotationRecord, 0),
+		caamPath:         "caam",
+		Logger:           slog.Default(),
+		CommandTimeout:   5 * time.Second,
+		CooldownDuration: 60 * time.Second,
+		rotationHistory:  make([]RotationRecord, 0),
+		rotationStates:   make(map[string]*RotationState),
 	}
 }
 
@@ -99,6 +115,12 @@ func (r *AccountRotator) WithLogger(logger *slog.Logger) *AccountRotator {
 // WithCommandTimeout sets the command timeout.
 func (r *AccountRotator) WithCommandTimeout(timeout time.Duration) *AccountRotator {
 	r.CommandTimeout = timeout
+	return r
+}
+
+// WithCooldown sets the minimum duration between rotations for a given pane.
+func (r *AccountRotator) WithCooldown(d time.Duration) *AccountRotator {
+	r.CooldownDuration = d
 	return r
 }
 
@@ -386,6 +408,99 @@ func (r *AccountRotator) RotationCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.rotationHistory)
+}
+
+// OnLimitHit handles a limit detection event by rotating the account for the
+// affected pane. It tracks per-pane rotation state and enforces cooldown to
+// prevent rapid rotation loops. Returns the rotation record on success, or
+// an error if rotation was skipped (cooldown active, caam unavailable, etc.).
+func (r *AccountRotator) OnLimitHit(event LimitHitEvent) (*RotationRecord, error) {
+	r.mu.Lock()
+	state := r.getOrCreateState(event.SessionPane)
+	r.mu.Unlock()
+
+	r.logger().Info("[AccountRotator] limit_hit_received",
+		"session_pane", event.SessionPane,
+		"agent_type", event.AgentType,
+		"pattern", event.Pattern,
+		"current_account", state.CurrentAccount,
+		"rotation_count", state.RotationCount)
+
+	// Check cooldown
+	if r.isCooldownActive(state) {
+		elapsed := time.Since(state.LastRotation)
+		r.logger().Warn("[AccountRotator] cooldown_active",
+			"session_pane", event.SessionPane,
+			"last_rotation", state.LastRotation,
+			"elapsed", elapsed,
+			"cooldown", r.CooldownDuration)
+		return nil, fmt.Errorf("cooldown active for pane %s: %v remaining",
+			event.SessionPane, r.CooldownDuration-elapsed)
+	}
+
+	if !r.IsAvailable() {
+		r.logger().Error("[AccountRotator] caam_unavailable_on_limit_hit",
+			"session_pane", event.SessionPane)
+		return nil, fmt.Errorf("caam CLI not available")
+	}
+
+	// Perform the rotation
+	record, err := r.SwitchAccount(event.AgentType)
+	if err != nil {
+		r.logger().Error("[AccountRotator] rotation_failed_on_limit_hit",
+			"session_pane", event.SessionPane,
+			"agent_type", event.AgentType,
+			"error", err)
+		return nil, fmt.Errorf("rotation failed: %w", err)
+	}
+
+	// Update per-pane state
+	r.mu.Lock()
+	record.SessionPane = event.SessionPane
+	if state.CurrentAccount != "" {
+		state.PreviousAccounts = append(state.PreviousAccounts, state.CurrentAccount)
+	}
+	state.CurrentAccount = record.ToAccount
+	state.RotationCount++
+	state.LastRotation = time.Now()
+	r.mu.Unlock()
+
+	r.logger().Info("[AccountRotator] rotation_complete_on_limit_hit",
+		"session_pane", event.SessionPane,
+		"from_account", record.FromAccount,
+		"to_account", record.ToAccount,
+		"total_rotations", state.RotationCount)
+
+	return record, nil
+}
+
+// GetPaneState returns the rotation state for a specific pane.
+// Returns nil if no state exists for the pane.
+func (r *AccountRotator) GetPaneState(sessionPane string) *RotationState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rotationStates[sessionPane]
+}
+
+// isCooldownActive checks whether the pane is within the cooldown window.
+func (r *AccountRotator) isCooldownActive(state *RotationState) bool {
+	if state.RotationCount == 0 {
+		return false
+	}
+	return time.Since(state.LastRotation) < r.CooldownDuration
+}
+
+// getOrCreateState returns or initializes the rotation state for a pane.
+// Caller must hold r.mu.
+func (r *AccountRotator) getOrCreateState(sessionPane string) *RotationState {
+	if state, ok := r.rotationStates[sessionPane]; ok {
+		return state
+	}
+	state := &RotationState{
+		PreviousAccounts: make([]string, 0),
+	}
+	r.rotationStates[sessionPane] = state
+	return state
 }
 
 // runCaamCommand executes a caam command and returns its output.

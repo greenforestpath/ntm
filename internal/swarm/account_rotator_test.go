@@ -359,3 +359,279 @@ func TestCaamAccountStruct(t *testing.T) {
 		t.Error("expected Active to be false")
 	}
 }
+
+func TestRotationStateStruct(t *testing.T) {
+	now := time.Now()
+	state := RotationState{
+		CurrentAccount:   "personal",
+		PreviousAccounts: []string{"work", "team"},
+		RotationCount:    2,
+		LastRotation:     now,
+	}
+
+	if state.CurrentAccount != "personal" {
+		t.Errorf("unexpected CurrentAccount: %s", state.CurrentAccount)
+	}
+	if len(state.PreviousAccounts) != 2 {
+		t.Errorf("expected 2 previous accounts, got %d", len(state.PreviousAccounts))
+	}
+	if state.RotationCount != 2 {
+		t.Errorf("expected RotationCount 2, got %d", state.RotationCount)
+	}
+	if !state.LastRotation.Equal(now) {
+		t.Errorf("unexpected LastRotation: %v", state.LastRotation)
+	}
+}
+
+func TestAccountRotatorWithCooldown(t *testing.T) {
+	rotator := NewAccountRotator()
+
+	result := rotator.WithCooldown(30 * time.Second)
+	if result != rotator {
+		t.Error("WithCooldown should return the same rotator for chaining")
+	}
+	if rotator.CooldownDuration != 30*time.Second {
+		t.Errorf("expected CooldownDuration 30s, got %v", rotator.CooldownDuration)
+	}
+}
+
+func TestAccountRotatorDefaultCooldown(t *testing.T) {
+	rotator := NewAccountRotator()
+
+	if rotator.CooldownDuration != 60*time.Second {
+		t.Errorf("expected default CooldownDuration 60s, got %v", rotator.CooldownDuration)
+	}
+}
+
+func TestAccountRotatorRotationStatesInitialized(t *testing.T) {
+	rotator := NewAccountRotator()
+
+	if rotator.rotationStates == nil {
+		t.Error("expected rotationStates to be initialized")
+	}
+	if len(rotator.rotationStates) != 0 {
+		t.Errorf("expected empty rotationStates, got %d", len(rotator.rotationStates))
+	}
+}
+
+func TestAccountRotatorGetPaneStateNil(t *testing.T) {
+	rotator := NewAccountRotator()
+
+	state := rotator.GetPaneState("nonexistent:1.1")
+	if state != nil {
+		t.Error("expected nil for non-existent pane state")
+	}
+}
+
+func TestAccountRotatorGetOrCreateState(t *testing.T) {
+	rotator := NewAccountRotator()
+
+	// First call creates new state
+	rotator.mu.Lock()
+	state := rotator.getOrCreateState("test:1.1")
+	rotator.mu.Unlock()
+
+	if state == nil {
+		t.Fatal("expected non-nil state")
+	}
+	if state.CurrentAccount != "" {
+		t.Errorf("expected empty CurrentAccount, got %q", state.CurrentAccount)
+	}
+	if state.PreviousAccounts == nil {
+		t.Error("expected PreviousAccounts to be initialized")
+	}
+	if state.RotationCount != 0 {
+		t.Errorf("expected 0 RotationCount, got %d", state.RotationCount)
+	}
+
+	// Second call returns same state
+	rotator.mu.Lock()
+	state2 := rotator.getOrCreateState("test:1.1")
+	rotator.mu.Unlock()
+
+	if state2 != state {
+		t.Error("expected same state on second call")
+	}
+
+	// Different pane gets different state
+	rotator.mu.Lock()
+	state3 := rotator.getOrCreateState("test:2.2")
+	rotator.mu.Unlock()
+
+	if state3 == state {
+		t.Error("expected different state for different pane")
+	}
+}
+
+func TestAccountRotatorIsCooldownActive(t *testing.T) {
+	rotator := NewAccountRotator().WithCooldown(1 * time.Second)
+
+	// No rotations yet - cooldown not active
+	state := &RotationState{RotationCount: 0}
+	if rotator.isCooldownActive(state) {
+		t.Error("expected cooldown inactive with 0 rotations")
+	}
+
+	// Recent rotation - cooldown active
+	state = &RotationState{
+		RotationCount: 1,
+		LastRotation:  time.Now(),
+	}
+	if !rotator.isCooldownActive(state) {
+		t.Error("expected cooldown active for recent rotation")
+	}
+
+	// Old rotation - cooldown not active
+	state = &RotationState{
+		RotationCount: 1,
+		LastRotation:  time.Now().Add(-2 * time.Second),
+	}
+	if rotator.isCooldownActive(state) {
+		t.Error("expected cooldown inactive for old rotation")
+	}
+}
+
+func TestAccountRotatorOnLimitHitCaamUnavailable(t *testing.T) {
+	rotator := NewAccountRotator().WithCaamPath("/nonexistent/caam")
+
+	event := LimitHitEvent{
+		SessionPane: "test:1.1",
+		AgentType:   "cc",
+		Pattern:     "rate limit",
+		DetectedAt:  time.Now(),
+	}
+
+	record, err := rotator.OnLimitHit(event)
+	if err == nil {
+		t.Error("expected error when caam is unavailable")
+	}
+	if record != nil {
+		t.Error("expected nil record when caam is unavailable")
+	}
+}
+
+func TestAccountRotatorOnLimitHitCooldown(t *testing.T) {
+	rotator := NewAccountRotator().
+		WithCaamPath("/nonexistent/caam").
+		WithCooldown(10 * time.Second)
+
+	// Set up state with recent rotation
+	rotator.mu.Lock()
+	state := rotator.getOrCreateState("test:1.1")
+	state.RotationCount = 1
+	state.LastRotation = time.Now()
+	rotator.mu.Unlock()
+
+	event := LimitHitEvent{
+		SessionPane: "test:1.1",
+		AgentType:   "cc",
+		Pattern:     "rate limit",
+		DetectedAt:  time.Now(),
+	}
+
+	record, err := rotator.OnLimitHit(event)
+	if err == nil {
+		t.Error("expected error when cooldown is active")
+	}
+	if record != nil {
+		t.Error("expected nil record when cooldown is active")
+	}
+	if err != nil && !contains(err.Error(), "cooldown active") {
+		t.Errorf("expected cooldown error, got: %v", err)
+	}
+}
+
+func TestAccountRotatorOnLimitHitCreatesState(t *testing.T) {
+	rotator := NewAccountRotator().WithCaamPath("/nonexistent/caam")
+
+	event := LimitHitEvent{
+		SessionPane: "newsession:3.3",
+		AgentType:   "cod",
+		Pattern:     "quota exceeded",
+		DetectedAt:  time.Now(),
+	}
+
+	// This will fail due to caam unavailable, but state should still be created
+	_, _ = rotator.OnLimitHit(event)
+
+	state := rotator.GetPaneState("newsession:3.3")
+	if state == nil {
+		t.Error("expected state to be created even on failure")
+	}
+}
+
+func TestAccountRotatorGetPaneStateAfterManualSetup(t *testing.T) {
+	rotator := NewAccountRotator()
+
+	// Set up a pane state manually
+	rotator.mu.Lock()
+	rotator.rotationStates["session:1.1"] = &RotationState{
+		CurrentAccount:   "work",
+		PreviousAccounts: []string{"personal"},
+		RotationCount:    1,
+		LastRotation:     time.Now().Add(-5 * time.Minute),
+	}
+	rotator.mu.Unlock()
+
+	state := rotator.GetPaneState("session:1.1")
+	if state == nil {
+		t.Fatal("expected non-nil state")
+	}
+	if state.CurrentAccount != "work" {
+		t.Errorf("expected CurrentAccount 'work', got %q", state.CurrentAccount)
+	}
+	if state.RotationCount != 1 {
+		t.Errorf("expected RotationCount 1, got %d", state.RotationCount)
+	}
+}
+
+func TestAccountRotatorCooldownDurationRespected(t *testing.T) {
+	rotator := NewAccountRotator().
+		WithCaamPath("/nonexistent/caam").
+		WithCooldown(50 * time.Millisecond)
+
+	// Set up state with very recent rotation
+	rotator.mu.Lock()
+	state := rotator.getOrCreateState("test:1.1")
+	state.RotationCount = 1
+	state.LastRotation = time.Now()
+	rotator.mu.Unlock()
+
+	event := LimitHitEvent{
+		SessionPane: "test:1.1",
+		AgentType:   "cc",
+		Pattern:     "rate limit",
+		DetectedAt:  time.Now(),
+	}
+
+	// Should be blocked by cooldown
+	_, err := rotator.OnLimitHit(event)
+	if err == nil || !contains(err.Error(), "cooldown active") {
+		t.Errorf("expected cooldown error, got: %v", err)
+	}
+
+	// Wait for cooldown to expire
+	time.Sleep(60 * time.Millisecond)
+
+	// Should now attempt rotation (will fail due to caam path, but not cooldown)
+	_, err = rotator.OnLimitHit(event)
+	if err == nil {
+		t.Error("expected error (caam unavailable), but not cooldown error")
+	}
+	if contains(err.Error(), "cooldown active") {
+		t.Error("cooldown should have expired")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

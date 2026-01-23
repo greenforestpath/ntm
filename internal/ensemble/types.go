@@ -69,6 +69,100 @@ func AllCategories() []ModeCategory {
 	}
 }
 
+// ModeTier represents the visibility/maturity tier of a reasoning mode.
+// Tiers control which modes appear in default listings vs advanced views.
+type ModeTier string
+
+const (
+	// TierCore modes are stable, well-tested, and shown by default.
+	TierCore ModeTier = "core"
+	// TierAdvanced modes are functional but may require more expertise.
+	TierAdvanced ModeTier = "advanced"
+	// TierExperimental modes are in development and may change.
+	TierExperimental ModeTier = "experimental"
+)
+
+// IsValid returns true if this is a known tier.
+func (t ModeTier) IsValid() bool {
+	switch t {
+	case TierCore, TierAdvanced, TierExperimental:
+		return true
+	default:
+		return false
+	}
+}
+
+// String returns the tier as a string.
+func (t ModeTier) String() string {
+	return string(t)
+}
+
+// CategoryLetter returns the single-letter code (A-L) for the category.
+// This maps to the taxonomy: A=Formal, B=Ampliative, ..., L=Meta.
+func (c ModeCategory) CategoryLetter() string {
+	switch c {
+	case CategoryFormal:
+		return "A"
+	case CategoryAmpliative:
+		return "B"
+	case CategoryUncertainty:
+		return "C"
+	case CategoryVagueness:
+		return "D"
+	case CategoryChange:
+		return "E"
+	case CategoryCausal:
+		return "F"
+	case CategoryPractical:
+		return "G"
+	case CategoryStrategic:
+		return "H"
+	case CategoryDialectical:
+		return "I"
+	case CategoryModal:
+		return "J"
+	case CategoryDomain:
+		return "K"
+	case CategoryMeta:
+		return "L"
+	default:
+		return ""
+	}
+}
+
+// CategoryFromLetter returns the ModeCategory for a given letter (A-L).
+// Returns empty string and false if the letter is not valid.
+func CategoryFromLetter(letter string) (ModeCategory, bool) {
+	switch letter {
+	case "A":
+		return CategoryFormal, true
+	case "B":
+		return CategoryAmpliative, true
+	case "C":
+		return CategoryUncertainty, true
+	case "D":
+		return CategoryVagueness, true
+	case "E":
+		return CategoryChange, true
+	case "F":
+		return CategoryCausal, true
+	case "G":
+		return CategoryPractical, true
+	case "H":
+		return CategoryStrategic, true
+	case "I":
+		return CategoryDialectical, true
+	case "J":
+		return CategoryModal, true
+	case "K":
+		return CategoryDomain, true
+	case "L":
+		return CategoryMeta, true
+	default:
+		return "", false
+	}
+}
+
 // ReasoningMode defines a named reasoning approach.
 // Each mode represents a distinct way of analyzing a problem, with
 // specific strengths, outputs, and failure modes.
@@ -77,11 +171,19 @@ type ReasoningMode struct {
 	// Must be lowercase alphanumeric with optional hyphens.
 	ID string `json:"id" toml:"id"`
 
+	// Code is the taxonomy code (e.g., "A1", "B3") mapping to the category letter
+	// and a numeric index within that category. Format: [A-L][0-9]+.
+	Code string `json:"code" toml:"code"`
+
 	// Name is the human-readable name (e.g., "Deductive Logic").
 	Name string `json:"name" toml:"name"`
 
 	// Category is the taxonomy category this mode belongs to.
 	Category ModeCategory `json:"category" toml:"category"`
+
+	// Tier indicates the maturity/visibility level (core, advanced, experimental).
+	// Core modes are shown by default; advanced and experimental require opt-in.
+	Tier ModeTier `json:"tier" toml:"tier"`
 
 	// ShortDesc is a one-line description for listings (max 80 chars).
 	ShortDesc string `json:"short_desc" toml:"short_desc"`
@@ -131,6 +233,14 @@ func (m *ReasoningMode) Validate() error {
 	}
 	if len(m.ShortDesc) > 80 {
 		return fmt.Errorf("short_desc exceeds 80 characters (got %d)", len(m.ShortDesc))
+	}
+	if m.Code != "" {
+		if err := ValidateModeCode(m.Code, m.Category); err != nil {
+			return err
+		}
+	}
+	if m.Tier != "" && !m.Tier.IsValid() {
+		return fmt.Errorf("invalid tier %q: must be core, advanced, or experimental", m.Tier)
 	}
 	return nil
 }
@@ -351,6 +461,30 @@ func ValidateModeID(id string) error {
 	return nil
 }
 
+// modeCodeRegex validates mode codes (letter A-L followed by digits).
+var modeCodeRegex = regexp.MustCompile(`^[A-L][0-9]+$`)
+
+// ValidateModeCode checks if a mode code is valid and consistent with its category.
+// Valid codes are a single letter A-L followed by one or more digits.
+// The letter must match the category's letter mapping.
+func ValidateModeCode(code string, category ModeCategory) error {
+	if code == "" {
+		return errors.New("mode code cannot be empty")
+	}
+	if !modeCodeRegex.MatchString(code) {
+		return fmt.Errorf("invalid mode code %q: must match format [A-L][0-9]+ (e.g., A1, B3)", code)
+	}
+	expectedLetter := category.CategoryLetter()
+	if expectedLetter == "" {
+		return fmt.Errorf("cannot validate code %q: category %q has no letter mapping", code, category)
+	}
+	codeLetter := string(code[0])
+	if codeLetter != expectedLetter {
+		return fmt.Errorf("mode code %q letter %q does not match category %q (expected %q)", code, codeLetter, category, expectedLetter)
+	}
+	return nil
+}
+
 // ValidatePreset checks if a preset is valid and all its modes exist.
 // This is an alias for EnsemblePreset.Validate for convenience.
 func ValidatePreset(preset EnsemblePreset, catalog []ReasoningMode) error {
@@ -362,7 +496,9 @@ func ValidatePreset(preset EnsemblePreset, catalog []ReasoningMode) error {
 type ModeCatalog struct {
 	modes   []ReasoningMode
 	byID    map[string]*ReasoningMode
+	byCode  map[string]*ReasoningMode
 	byCat   map[ModeCategory][]*ReasoningMode
+	byTier  map[ModeTier][]*ReasoningMode
 	version string
 }
 
@@ -371,7 +507,9 @@ func NewModeCatalog(modes []ReasoningMode, version string) (*ModeCatalog, error)
 	c := &ModeCatalog{
 		modes:   make([]ReasoningMode, 0, len(modes)),
 		byID:    make(map[string]*ReasoningMode),
+		byCode:  make(map[string]*ReasoningMode),
 		byCat:   make(map[ModeCategory][]*ReasoningMode),
+		byTier:  make(map[ModeTier][]*ReasoningMode),
 		version: version,
 	}
 
@@ -383,9 +521,21 @@ func NewModeCatalog(modes []ReasoningMode, version string) (*ModeCatalog, error)
 		if _, exists := c.byID[mode.ID]; exists {
 			return nil, fmt.Errorf("duplicate mode ID %q", mode.ID)
 		}
+		if mode.Code != "" {
+			if _, exists := c.byCode[mode.Code]; exists {
+				return nil, fmt.Errorf("duplicate mode code %q", mode.Code)
+			}
+		}
 		c.modes = append(c.modes, mode)
-		c.byID[mode.ID] = &c.modes[len(c.modes)-1]
-		c.byCat[mode.Category] = append(c.byCat[mode.Category], &c.modes[len(c.modes)-1])
+		ptr := &c.modes[len(c.modes)-1]
+		c.byID[mode.ID] = ptr
+		if mode.Code != "" {
+			c.byCode[mode.Code] = ptr
+		}
+		c.byCat[mode.Category] = append(c.byCat[mode.Category], ptr)
+		if mode.Tier != "" {
+			c.byTier[mode.Tier] = append(c.byTier[mode.Tier], ptr)
+		}
 	}
 
 	return c, nil
@@ -442,6 +592,26 @@ func (c *ModeCatalog) Version() string {
 // Count returns the total number of modes.
 func (c *ModeCatalog) Count() int {
 	return len(c.modes)
+}
+
+// GetModeByCode returns a mode by its taxonomy code (e.g., "A1"), or nil if not found.
+func (c *ModeCatalog) GetModeByCode(code string) *ReasoningMode {
+	return c.byCode[code]
+}
+
+// ListByTier returns all modes with the specified tier.
+func (c *ModeCatalog) ListByTier(tier ModeTier) []ReasoningMode {
+	ptrs := c.byTier[tier]
+	result := make([]ReasoningMode, len(ptrs))
+	for i, p := range ptrs {
+		result[i] = *p
+	}
+	return result
+}
+
+// ListDefault returns all core-tier modes (the default subset for UX).
+func (c *ModeCatalog) ListDefault() []ReasoningMode {
+	return c.ListByTier(TierCore)
 }
 
 // =============================================================================
