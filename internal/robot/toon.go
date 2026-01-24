@@ -40,7 +40,7 @@ func toonEncode(payload any, delimiter string) (string, error) {
 		return "", err
 	}
 
-	args := []string{}
+	args := []string{"--encode"}
 	if delimArg := toonDelimiterArg(delimiter); delimArg != "" {
 		args = append(args, "--delimiter", delimArg)
 	}
@@ -90,7 +90,7 @@ func toonBinaryPath() (string, error) {
 		}
 
 		toonBinaryErr = fmt.Errorf(
-			"toon_rust encoder not found in PATH; install tru or set TOON_TRU_BIN to the toon_rust binary path",
+			"toon_rust encoder not found in PATH; install tru or set TOON_BIN/TOON_TRU_BIN to the toon_rust binary path",
 		)
 	})
 
@@ -101,7 +101,7 @@ func toonBinaryPath() (string, error) {
 }
 
 func toonBinaryFromEnv() (string, error) {
-	for _, env := range []string{"TOON_TRU_BIN"} {
+	for _, env := range []string{"TOON_TRU_BIN", "TOON_BIN"} {
 		if val := strings.TrimSpace(os.Getenv(env)); val != "" {
 			if !isToonRustBinary(val) {
 				return "", fmt.Errorf("%s=%q does not appear to be toon_rust (expected tru)", env, val)
@@ -116,6 +116,11 @@ func isToonRustBinary(path string) bool {
 	// Distinguish toon_rust from:
 	// - system `tr` (coreutils)
 	// - the Node.js `toon` CLI (toon-format), which is not allowed here
+	base := strings.ToLower(filepathBase(path))
+	if base == "toon" || base == "toon.exe" {
+		// Never accept (or invoke) the Node.js encoder as the TOON backend.
+		return false
+	}
 	helpOut, _ := exec.Command(path, "--help").CombinedOutput()
 	helpLower := strings.ToLower(string(helpOut))
 	if strings.Contains(helpLower, "reference implementation in rust") {
@@ -124,7 +129,21 @@ func isToonRustBinary(path string) bool {
 
 	verOut, _ := exec.Command(path, "--version").CombinedOutput()
 	verLower := strings.ToLower(strings.TrimSpace(string(verOut)))
-	return strings.HasPrefix(verLower, "tru ") || strings.HasPrefix(verLower, "toon_rust ")
+	return looksLikeToonRustVersion(verLower) || strings.HasPrefix(verLower, "toon_rust ")
+}
+
+func filepathBase(path string) string {
+	path = strings.ReplaceAll(path, "\\", "/")
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		return path[i+1:]
+	}
+	return path
+}
+
+func looksLikeToonRustVersion(verLower string) bool {
+	// toon_rust prints: "tru X.Y.Z"
+	// coreutils prints: "tr (GNU coreutils) X.Y"
+	return strings.HasPrefix(verLower, "tru ") && len(verLower) >= 5 && verLower[4] >= '0' && verLower[4] <= '9'
 }
 
 func toonDelimiterArg(delimiter string) string {

@@ -501,7 +501,7 @@ index 3ab8dbc..95ad48e 100644
 -		return enc.formatFloat(v.Float()) + "\n", nil
 +
 +		toonBinaryErr = fmt.Errorf(
-+			"toon_rust encoder not found in PATH; install tru or set TOON_TRU_BIN to the toon_rust binary path",
++			"toon_rust encoder not found in PATH; install tru or set TOON_BIN/TOON_TRU_BIN to the toon_rust binary path",
 +		)
 +	})
 +
@@ -512,7 +512,7 @@ index 3ab8dbc..95ad48e 100644
 +}
 +
 +func toonBinaryFromEnv() (string, error) {
-+	for _, env := range []string{"TOON_TRU_BIN"} {
++	for _, env := range []string{"TOON_TRU_BIN", "TOON_BIN"} {
 +		if val := strings.TrimSpace(os.Getenv(env)); val != "" {
 +			if !isToonRustBinary(val) {
 +				return "", fmt.Errorf("%s=%q does not appear to be toon_rust (expected tru)", env, val)
@@ -1006,8 +1006,9 @@ index 0000000..f8aa3db
 +
 +	path, err := toonBinaryPath()
 +	if err != nil {
-+		if strings.TrimSpace(os.Getenv("TOON_TRU_BIN")) != "" {
-+			t.Fatalf("TOON_TRU_BIN env set but invalid: %v", err)
++		if strings.TrimSpace(os.Getenv("TOON_BIN")) != "" ||
++			strings.TrimSpace(os.Getenv("TOON_TRU_BIN")) != "" {
++			t.Fatalf("TOON_BIN/TOON_TRU_BIN env set but invalid: %v", err)
 +		}
 +		t.Skipf("toon_rust tru not available: %v", err)
 +	}

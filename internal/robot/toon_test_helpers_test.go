@@ -15,8 +15,9 @@ func requireToonBinary(t *testing.T) string {
 
 	path, err := toonBinaryPath()
 	if err != nil {
-		if strings.TrimSpace(os.Getenv("TOON_TRU_BIN")) != "" {
-			t.Fatalf("TOON_TRU_BIN env set but invalid: %v", err)
+		if strings.TrimSpace(os.Getenv("TOON_BIN")) != "" ||
+			strings.TrimSpace(os.Getenv("TOON_TRU_BIN")) != "" {
+			t.Fatalf("TOON_BIN/TOON_TRU_BIN env set but invalid: %v", err)
 		}
 		t.Skipf("toon_rust tru not available: %v", err)
 	}
