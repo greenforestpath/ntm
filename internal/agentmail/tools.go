@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 )
 
 // EnsureProject ensures a project exists for the given path.
@@ -583,7 +584,8 @@ func (c *Client) SendOverseerMessage(ctx context.Context, opts OverseerMessageOp
 
 	// Build URL: /mail/{project_slug}/overseer/send
 	httpBaseURL := c.httpBaseURL()
-	url := fmt.Sprintf("%s/mail/%s/overseer/send", httpBaseURL, opts.ProjectSlug)
+	// Encode path segments to ensure valid URL
+	url := fmt.Sprintf("%s/mail/%s/overseer/send", httpBaseURL, url.PathEscape(opts.ProjectSlug))
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
@@ -642,7 +644,7 @@ func (c *Client) SendOverseerMessage(ctx context.Context, opts OverseerMessageOp
 func (c *Client) ListProjectAgents(ctx context.Context, projectKey string) ([]Agent, error) {
 	// Use the MCP resource to list agents
 	// Resource URI: resource://agents/{project_key}
-	uri := fmt.Sprintf("resource://agents/%s", projectKey)
+	uri := fmt.Sprintf("resource://agents/%s", url.PathEscape(projectKey))
 
 	result, err := c.ReadResource(ctx, uri)
 	if err != nil {

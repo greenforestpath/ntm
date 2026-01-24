@@ -3595,6 +3595,183 @@ Additional context: {{context}}
 
 ---
 
+## Ensembles: Validation Rules and Examples
+
+Ensemble presets live in `~/.config/ntm/ensembles.toml` (user) and `.ntm/ensembles.toml` (project). Validation runs when presets are loaded or when you spawn an ensemble. Errors reference the exact field path.
+
+### Minimal valid example
+
+```toml
+[[ensembles]]
+name = "project-diagnosis"
+display_name = "Project Diagnosis"
+description = "Baseline health review"
+modes = [
+  { id = "deductive" },
+  { code = "A7" }, # resolves to "type-theoretic"
+]
+allow_advanced = false
+
+[synthesis]
+strategy = "consensus"
+
+[budget]
+max_tokens_per_mode = 4000
+max_total_tokens = 50000
+synthesis_reserve_tokens = 5000
+context_reserve_tokens = 5000
+```
+
+### Mode refs: id vs code
+
+- `id` must be lowercase and match `^[a-z][a-z0-9-]*$`.
+- `code` must match `[A-L][0-9]+` (e.g., `A4`) and is resolved to a mode id.
+- Exactly one of `id` or `code` is required.
+
+Invalid examples and actual messages:
+
+```toml
+modes = [{ id = "deductive", code = "A1" }]
+```
+```
+modes[0]: mode ref must specify id or code, not both
+```
+
+```toml
+modes = [{}]
+```
+```
+modes[0]: mode ref must specify either id or code
+```
+
+```toml
+modes = [{ code = "Z9" }]
+```
+```
+modes[0]: invalid mode code "Z9"
+```
+
+### Valid/invalid preset examples
+
+```toml
+[[ensembles]]
+name = "Project Diagnosis"
+description = "Bad preset name + single mode"
+modes = [{ id = "deductive" }]
+```
+```
+name: invalid mode ID "Project Diagnosis": must be lowercase, start with a letter, and contain only alphanumeric characters and hyphens
+modes: mode count must be between 2 and 10 (got 1)
+```
+
+### Strategy compatibility (manual/voting/argumentation-graph)
+
+Supported strategies:
+`manual`, `voting` (no synthesizer agent) and
+`adversarial`, `consensus`, `creative`, `analytical`, `deliberative`, `prioritized`,
+`dialectical`, `meta-reasoning`, `argumentation-graph` (require a synthesizer mode).
+
+Deprecated or unknown strategy examples:
+
+```toml
+[synthesis]
+strategy = "debate"
+```
+```
+strategy "debate" is deprecated; use "dialectical" instead
+```
+
+```toml
+[synthesis]
+strategy = "mystery"
+```
+```
+unknown synthesis strategy "mystery"; use ListStrategies() for valid options
+```
+
+Notes:
+- `argumentation-graph` uses a synthesizer mode named `argumentation`.
+- If the synthesizer mode is missing from the catalog you will see:
+  `synthesis.strategy: synthesizer mode "argumentation" not found in catalog`.
+
+### Budget validation
+
+```toml
+[budget]
+max_tokens_per_mode = 60000
+max_total_tokens = 20000
+synthesis_reserve_tokens = 15000
+context_reserve_tokens = 10000
+```
+```
+budget.max_tokens_per_mode: per-mode budget exceeds total budget
+budget: reserved tokens exceed total budget
+```
+
+```toml
+[budget]
+max_total_tokens = -1
+```
+```
+budget: budget values must be non-negative
+```
+
+Upper bounds enforced:
+- `budget.max_tokens_per_mode: per-mode budget exceeds reasonable upper bound (200000)`
+- `budget.max_total_tokens: total budget exceeds reasonable upper bound (1000000)`
+
+### Extension chains and circular detection
+
+```toml
+[[ensembles]]
+name = "child"
+extends = "missing"
+description = "Missing parent"
+modes = [{ id = "deductive" }, { id = "type-theoretic" }]
+```
+```
+extends: extended preset "missing" not found
+```
+
+```toml
+[[ensembles]]
+name = "a"
+extends = "b"
+description = "Cycle A"
+modes = [{ id = "deductive" }, { id = "type-theoretic" }]
+
+[[ensembles]]
+name = "b"
+extends = "a"
+description = "Cycle B"
+modes = [{ id = "deductive" }, { id = "type-theoretic" }]
+```
+```
+presets.a.extends: circular extension detected
+```
+
+Extension depth is capped at 3:
+```
+presets.child.extends: extension depth exceeds 3
+```
+
+### Tier gating (advanced/experimental)
+
+```toml
+[[ensembles]]
+name = "advanced-demo"
+description = "Uses an advanced mode"
+modes = [{ id = "equational" }, { id = "deductive" }]
+allow_advanced = false
+```
+```
+modes[0]: mode "equational" is tier "advanced" but allow_advanced is false
+```
+
+Set `allow_advanced = true` to include advanced/experimental modes.
+
+---
+
 ## Workflow Templates
 
 Workflow templates define multi-agent coordination patterns for common development workflows. They specify which agents to spawn, how they interact, and when to transition between workflow stages.

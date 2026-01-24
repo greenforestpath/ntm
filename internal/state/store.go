@@ -1173,6 +1173,9 @@ func (s *Store) GetBeadHistoryStats(sessionID string) (*BeadHistoryStats, error)
 		}
 		stats.FailureReasons[reason] = count
 	}
+	if err := rows3.Err(); err != nil {
+		return nil, fmt.Errorf("iterate failure reasons: %w", err)
+	}
 
 	return stats, nil
 }

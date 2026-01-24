@@ -1173,15 +1173,16 @@ For machine-readable schema:    ntm --robot-capabilities
 	fmt.Println(help)
 }
 
-// PrintStatus outputs machine-readable status
-func PrintStatus() error {
+// GetStatus collects machine-readable status.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetStatus() (*StatusOutput, error) {
 	wd := mustGetwd()
 	cfg, err := config.LoadMerged(wd, config.DefaultPath())
 	if err != nil {
 		cfg = config.Default()
 	}
 
-	output := StatusOutput{
+	output := &StatusOutput{
 		RobotResponse: NewRobotResponse(true),
 		GeneratedAt:   time.Now().UTC(),
 		System: SystemInfo{
@@ -1204,7 +1205,7 @@ func PrintStatus() error {
 	sessions, err := tmux.ListSessions()
 	if err != nil {
 		// tmux not running is not an error for status
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	for _, sess := range sessions {
@@ -1315,9 +1316,19 @@ func PrintStatus() error {
 	}
 
 	// Include recent file changes (best-effort, bounded).
-	appendFileChanges(&output)
-	appendConflicts(&output)
+	appendFileChanges(output)
+	appendConflicts(output)
 
+	return output, nil
+}
+
+// PrintStatus outputs machine-readable status.
+// This is a thin wrapper around GetStatus() for CLI output.
+func PrintStatus() error {
+	output, err := GetStatus()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -1852,17 +1863,21 @@ func getGraphMetrics() *GraphMetrics {
 	return metrics
 }
 
-// PrintVersion outputs version as JSON
-func PrintVersion() error {
-	info := struct {
-		Version   string `json:"version"`
-		Commit    string `json:"commit"`
-		BuildDate string `json:"build_date"`
-		BuiltBy   string `json:"built_by"`
-		GoVersion string `json:"go_version"`
-		OS        string `json:"os"`
-		Arch      string `json:"arch"`
-	}{
+// VersionOutput represents the output for --robot-version
+type VersionOutput struct {
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	BuildDate string `json:"build_date"`
+	BuiltBy   string `json:"built_by"`
+	GoVersion string `json:"go_version"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
+}
+
+// GetVersion returns version information.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetVersion() (*VersionOutput, error) {
+	return &VersionOutput{
 		Version:   Version,
 		Commit:    Commit,
 		BuildDate: Date,
@@ -1870,15 +1885,25 @@ func PrintVersion() error {
 		GoVersion: runtime.Version(),
 		OS:        runtime.GOOS,
 		Arch:      runtime.GOARCH,
-	}
-	return encodeJSON(info)
+	}, nil
 }
 
-// PrintSessions outputs minimal session list
-func PrintSessions() error {
+// PrintVersion outputs version as JSON.
+// This is a thin wrapper around GetVersion() for CLI output.
+func PrintVersion() error {
+	output, err := GetVersion()
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
+// GetSessions returns a minimal session list.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetSessions() ([]SessionInfo, error) {
 	sessions, err := tmux.ListSessions()
 	if err != nil {
-		return encodeJSON([]SessionInfo{})
+		return []SessionInfo{}, nil
 	}
 
 	output := make([]SessionInfo, 0, len(sessions))
@@ -1890,12 +1915,23 @@ func PrintSessions() error {
 			Windows:  sess.Windows,
 		})
 	}
+	return output, nil
+}
+
+// PrintSessions outputs minimal session list.
+// This is a thin wrapper around GetSessions() for CLI output.
+func PrintSessions() error {
+	output, err := GetSessions()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintPlan outputs an execution plan
-func PrintPlan() error {
-	plan := PlanOutput{
+// GetPlan generates an execution plan.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetPlan() (*PlanOutput, error) {
+	plan := &PlanOutput{
 		RobotResponse: NewRobotResponse(true),
 		GeneratedAt:   time.Now().UTC(),
 		Actions:       []PlanAction{},
@@ -1911,7 +1947,7 @@ func PrintPlan() error {
 			Command:     "brew install tmux",
 			Description: "Install tmux using Homebrew (macOS)",
 		})
-		return encodeJSON(plan)
+		return plan, nil
 	}
 
 	// Check for existing sessions
@@ -1970,7 +2006,17 @@ func PrintPlan() error {
 		plan.Recommendation = fmt.Sprintf("Work on high-impact bead: %s", plan.BeadActions[0].Title)
 	}
 
-	return encodeJSON(plan)
+	return plan, nil
+}
+
+// PrintPlan outputs an execution plan.
+// This is a thin wrapper around GetPlan() for CLI output.
+func PrintPlan() error {
+	output, err := GetPlan()
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
 }
 
 // getBeadRecommendations returns recommended bead actions from bv priority analysis

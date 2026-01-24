@@ -44,8 +44,9 @@ var categoryOrder = []string{
 	"utility",
 }
 
-// PrintCapabilities outputs robot mode capabilities as JSON
-func PrintCapabilities() error {
+// GetCapabilities collects robot mode capabilities.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetCapabilities() (*CapabilitiesOutput, error) {
 	commands := buildCommandRegistry()
 
 	// Sort commands by category then name for stable output
@@ -56,13 +57,21 @@ func PrintCapabilities() error {
 		return commands[i].Name < commands[j].Name
 	})
 
-	output := CapabilitiesOutput{
+	return &CapabilitiesOutput{
 		RobotResponse: NewRobotResponse(true),
 		Version:       Version,
 		Commands:      commands,
 		Categories:    categoryOrder,
-	}
+	}, nil
+}
 
+// PrintCapabilities outputs robot mode capabilities as JSON.
+// This is a thin wrapper around GetCapabilities() for CLI output.
+func PrintCapabilities() error {
+	output, err := GetCapabilities()
+	if err != nil {
+		return err
+	}
 	return outputJSON(output)
 }
 

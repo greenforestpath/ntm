@@ -19,7 +19,7 @@ func TestResolveEnsembleConfig_PresetOverrides(t *testing.T) {
 		},
 		Budget: BudgetConfig{
 			MaxTokensPerMode: 1111,
-			MaxTotalTokens:   2222,
+			MaxTotalTokens:   50000,
 		},
 	}
 	registry := NewEnsembleRegistry([]EnsemblePreset{preset}, catalog)
@@ -51,8 +51,8 @@ func TestResolveEnsembleConfig_PresetOverrides(t *testing.T) {
 	if resolved.budget.MaxTokensPerMode != 3333 {
 		t.Fatalf("budget MaxTokensPerMode = %d, want 3333", resolved.budget.MaxTokensPerMode)
 	}
-	if resolved.budget.MaxTotalTokens != 2222 {
-		t.Fatalf("budget MaxTotalTokens = %d, want 2222", resolved.budget.MaxTotalTokens)
+	if resolved.budget.MaxTotalTokens != 50000 {
+		t.Fatalf("budget MaxTotalTokens = %d, want 50000", resolved.budget.MaxTotalTokens)
 	}
 }
 
@@ -179,6 +179,6 @@ func TestBuildPaneTargetMap_UsesTitleAndID(t *testing.T) {
 		t.Fatalf("target for pane-1 = %q, want %q", targets["pane-1"], "%1")
 	}
 	if targets["%2"] != "%2" {
-		t.Fatalf("target for %2 = %q, want %q", targets["%2"], "%2")
+		t.Fatalf("target for %%2 = %q, want %q", targets["%2"], "%2")
 	}
 }

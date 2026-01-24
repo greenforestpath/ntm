@@ -92,20 +92,20 @@ func (p *parserImpl) detectByPatternFrequency(output string) AgentType {
 	scores := make(map[AgentType]int)
 
 	// Check working patterns (they're the most frequent indicators)
-	if matchAny(output, ccWorkingPatterns) {
-		scores[AgentTypeClaudeCode]++
-	}
-	if matchAny(output, codWorkingPatterns) {
-		scores[AgentTypeCodex]++
-	}
-	if matchAny(output, gmiWorkingPatterns) {
-		scores[AgentTypeGemini]++
-	}
+	// We count the number of matching patterns for better granularity
+	scores[AgentTypeClaudeCode] = len(collectMatches(output, ccWorkingPatterns))
+	scores[AgentTypeCodex] = len(collectMatches(output, codWorkingPatterns))
+	scores[AgentTypeGemini] = len(collectMatches(output, gmiWorkingPatterns))
 
-	// Find highest scoring type
+	// Find highest scoring type with deterministic tie-breaking
+	// Priority: Claude > Codex > Gemini
+	priority := []AgentType{AgentTypeClaudeCode, AgentTypeCodex, AgentTypeGemini}
+
 	var maxType AgentType = AgentTypeUnknown
 	var maxScore int
-	for t, score := range scores {
+
+	for _, t := range priority {
+		score := scores[t]
 		if score > maxScore {
 			maxScore = score
 			maxType = t
