@@ -237,15 +237,13 @@ func TestTOONRendererRenderSimpleObject(t *testing.T) {
 	r := NewTOONRenderer()
 	payload := map[string]string{"key": "value"}
 
+	requireToonBinary(t)
 	output, err := r.Render(payload)
 	if err != nil {
 		t.Fatalf("TOON Render() error: %v", err)
 	}
 
-	// Output should contain the key-value pair
-	if !strings.Contains(output, "key:") || !strings.Contains(output, "value") {
-		t.Errorf("TOON output missing expected content: %q", output)
-	}
+	assertToonDecodesToPayload(t, output, payload)
 }
 
 func TestTOONRendererRenderArray(t *testing.T) {
@@ -256,41 +254,32 @@ func TestTOONRendererRenderArray(t *testing.T) {
 			{"id": 1, "name": "Alice"},
 			{"id": 2, "name": "Bob"},
 		}
+		requireToonBinary(t)
 		output, err := r.Render(payload)
 		if err != nil {
 			t.Fatalf("TOON Render() error: %v", err)
 		}
-		// Should have tabular header with field names
-		if !strings.Contains(output, "[2]{") {
-			t.Errorf("TOON output missing array header: %q", output)
-		}
-		// Should contain field names (alphabetically sorted)
-		if !strings.Contains(output, "id") || !strings.Contains(output, "name") {
-			t.Errorf("TOON output missing field names: %q", output)
-		}
+		assertToonDecodesToPayload(t, output, payload)
 	})
 
 	t.Run("primitive array", func(t *testing.T) {
 		payload := []int{1, 2, 3}
+		requireToonBinary(t)
 		output, err := r.Render(payload)
 		if err != nil {
 			t.Fatalf("TOON Render() error: %v", err)
 		}
-		// Should have inline format
-		if !strings.Contains(output, "[3]:") {
-			t.Errorf("TOON output missing array inline format: %q", output)
-		}
+		assertToonDecodesToPayload(t, output, payload)
 	})
 
 	t.Run("empty array", func(t *testing.T) {
 		payload := []string{}
+		requireToonBinary(t)
 		output, err := r.Render(payload)
 		if err != nil {
 			t.Fatalf("TOON Render() error: %v", err)
 		}
-		if strings.TrimSpace(output) != "[]" {
-			t.Errorf("TOON empty array output = %q, want %q", output, "[]")
-		}
+		assertToonDecodesToPayload(t, output, payload)
 	})
 }
 
@@ -298,33 +287,31 @@ func TestTOONRendererRenderPrimitives(t *testing.T) {
 	r := NewTOONRenderer()
 
 	tests := []struct {
-		name     string
-		payload  interface{}
-		expected string
+		name    string
+		payload interface{}
 	}{
-		{"nil", nil, "null\n"},
-		{"true", true, "true\n"},
-		{"false", false, "false\n"},
-		{"int", 42, "42\n"},
-		{"float", 3.14, "3.14\n"},
-		{"string identifier", "hello", "hello\n"},
-		{"string with spaces", "hello world", "\"hello world\"\n"},
+		{"nil", nil},
+		{"true", true},
+		{"false", false},
+		{"int", 42},
+		{"float", 3.14},
+		{"string identifier", "hello"},
+		{"string with spaces", "hello world"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			requireToonBinary(t)
 			output, err := r.Render(tc.payload)
 			if err != nil {
 				t.Fatalf("TOON Render() error: %v", err)
 			}
-			if output != tc.expected {
-				t.Errorf("TOON Render(%v) = %q, want %q", tc.payload, output, tc.expected)
-			}
+			assertToonDecodesToPayload(t, output, tc.payload)
 		})
 	}
 }
 
-func TestTOONRendererDeterministicOrder(t *testing.T) {
+func TestTOONRendererRoundTripMap(t *testing.T) {
 	r := NewTOONRenderer()
 	payload := map[string]int{
 		"zebra":  1,
@@ -332,23 +319,12 @@ func TestTOONRendererDeterministicOrder(t *testing.T) {
 		"banana": 3,
 	}
 
-	// Render multiple times to verify deterministic output
-	output1, _ := r.Render(payload)
-	output2, _ := r.Render(payload)
-	output3, _ := r.Render(payload)
-
-	if output1 != output2 || output2 != output3 {
-		t.Errorf("TOON output not deterministic:\n%s\nvs\n%s", output1, output2)
+	requireToonBinary(t)
+	output, err := r.Render(payload)
+	if err != nil {
+		t.Fatalf("TOON Render() error: %v", err)
 	}
-
-	// Fields should be alphabetically sorted
-	appleIdx := strings.Index(output1, "apple")
-	bananaIdx := strings.Index(output1, "banana")
-	zebraIdx := strings.Index(output1, "zebra")
-
-	if appleIdx > bananaIdx || bananaIdx > zebraIdx {
-		t.Errorf("TOON fields not alphabetically sorted: %s", output1)
-	}
+	assertToonDecodesToPayload(t, output, payload)
 }
 
 func TestTOONRendererContentType(t *testing.T) {
@@ -394,14 +370,12 @@ func TestRender(t *testing.T) {
 	})
 
 	t.Run("FormatTOON renders successfully", func(t *testing.T) {
+		requireToonBinary(t)
 		output, err := Render(payload, FormatTOON)
 		if err != nil {
 			t.Fatalf("Render() with TOON error: %v", err)
 		}
-		// TOON output should contain the message field
-		if !strings.Contains(output, "message") || !strings.Contains(output, "hello") {
-			t.Errorf("TOON output missing expected content: %q", output)
-		}
+		assertToonDecodesToPayload(t, output, payload)
 	})
 
 	t.Run("FormatAuto defaults to JSON", func(t *testing.T) {
@@ -498,6 +472,7 @@ func TestOutputTo(t *testing.T) {
 	})
 
 	t.Run("TOON writes to buffer", func(t *testing.T) {
+		requireToonBinary(t)
 		var buf bytes.Buffer
 		err := OutputTo(&buf, payload, FormatTOON)
 		if err != nil {
@@ -507,9 +482,7 @@ func TestOutputTo(t *testing.T) {
 		if output == "" {
 			t.Error("expected non-empty output")
 		}
-		if !strings.Contains(output, "count") {
-			t.Errorf("TOON output missing expected content: %q", output)
-		}
+		assertToonDecodesToPayload(t, output, payload)
 	})
 }
 
@@ -548,6 +521,7 @@ func TestRenderWithMeta(t *testing.T) {
 	})
 
 	t.Run("TOON format", func(t *testing.T) {
+		requireToonBinary(t)
 		result, err := RenderWithMeta(payload, FormatTOON)
 		if err != nil {
 			t.Fatalf("RenderWithMeta() with TOON error: %v", err)
@@ -561,9 +535,7 @@ func TestRenderWithMeta(t *testing.T) {
 		if result.Format != FormatTOON {
 			t.Errorf("Format = %q, want %q", result.Format, FormatTOON)
 		}
-		if !strings.Contains(result.Output, "data") {
-			t.Errorf("TOON output missing expected content: %q", result.Output)
-		}
+		assertToonDecodesToPayload(t, result.Output, payload)
 	})
 }
 
@@ -688,6 +660,7 @@ func TestOutputFormatAffectsEncodeJSON(t *testing.T) {
 
 	// Test with TOON format
 	OutputFormat = FormatTOON
+	requireToonBinary(t)
 	toonOutput, err := Render(payload, OutputFormat)
 	if err != nil {
 		t.Fatalf("Render with FormatTOON error: %v", err)
@@ -698,10 +671,7 @@ func TestOutputFormatAffectsEncodeJSON(t *testing.T) {
 		t.Error("TOON output should differ from JSON output")
 	}
 
-	// TOON output should contain key-value format
-	if !strings.Contains(toonOutput, "key") || !strings.Contains(toonOutput, "value") {
-		t.Errorf("TOON output missing expected content: %q", toonOutput)
-	}
+	assertToonDecodesToPayload(t, toonOutput, payload)
 }
 
 // =============================================================================
@@ -729,15 +699,12 @@ func TestRenderSnapshotsJSONAndTOON(t *testing.T) {
 	})
 
 	t.Run("toon array snapshot", func(t *testing.T) {
+		requireToonBinary(t)
 		output, err := Render(items, FormatTOON)
 		if err != nil {
 			t.Fatalf("Render(TOON) error: %v", err)
 		}
-
-		expected := "[2]{id,name}:\n 1\talpha\n 2\tbeta\n"
-		if output != expected {
-			t.Errorf("TOON snapshot mismatch:\n--- got ---\n%s--- want ---\n%s", output, expected)
-		}
+		assertToonDecodesToPayload(t, output, items)
 	})
 
 	t.Run("robot response snapshot", func(t *testing.T) {
@@ -756,15 +723,12 @@ func TestRenderSnapshotsJSONAndTOON(t *testing.T) {
 			t.Errorf("RobotResponse JSON snapshot mismatch:\n--- got ---\n%s--- want ---\n%s", jsonOutput, expectedJSON)
 		}
 
+		requireToonBinary(t)
 		toonOutput, err := Render(payload, FormatTOON)
 		if err != nil {
 			t.Fatalf("Render(TOON) error: %v", err)
 		}
-
-		expectedTOON := "error: \"\"\nerror_code: \"\"\nhint: \"\"\nstructured_error: null\nsuccess: true\ntimestamp: \"2026-01-01T00:00:00Z\"\n"
-		if toonOutput != expectedTOON {
-			t.Errorf("RobotResponse TOON snapshot mismatch:\n--- got ---\n%s--- want ---\n%s", toonOutput, expectedTOON)
-		}
+		assertToonDecodesToPayload(t, toonOutput, payload)
 	})
 }
 
@@ -795,7 +759,7 @@ func TestRenderTOONUnsupportedTypeReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unsupported TOON payload, got nil")
 	}
-	if !strings.Contains(err.Error(), "unsupported") {
-		t.Fatalf("expected unsupported error, got: %v", err)
+	if !strings.Contains(err.Error(), "json marshal") && !strings.Contains(err.Error(), "json encode") && !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("expected json marshal/encode/unsupported error, got: %v", err)
 	}
 }

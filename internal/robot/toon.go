@@ -1,5 +1,6 @@
 // Package robot provides machine-readable output for AI agents.
-// toon.go implements the TOON (Token-Oriented Object Notation) encoder.
+// toon.go implements TOON (Token-Oriented Object Notation) encoding by
+// delegating to the toon_rust encoder binary (`toon-tr` preferred; `tr` also supported).
 //
 // TOON is a token-efficient serialization format designed for LLM consumption.
 // This implementation supports:
@@ -17,51 +18,127 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // toonEncode encodes a payload as TOON format.
 // Returns an error for unsupported payload shapes.
 func toonEncode(payload any, delimiter string) (string, error) {
-	if payload == nil {
-		return "null\n", nil
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("json marshal: %w", err)
 	}
 
-	v := reflect.ValueOf(payload)
-
-	// Dereference pointers
-	for v.Kind() == reflect.Ptr {
-		if v.IsNil() {
-			return "null\n", nil
-		}
-		v = v.Elem()
+	trPath, err := toonBinaryPath()
+	if err != nil {
+		return "", err
 	}
 
-	enc := &toonEncoder{delimiter: delimiter}
+	args := []string{}
+	if delimArg := toonDelimiterArg(delimiter); delimArg != "" {
+		args = append(args, "--delimiter", delimArg)
+	}
 
-	switch v.Kind() {
-	case reflect.Slice, reflect.Array:
-		return enc.renderArray(v)
-	case reflect.Map, reflect.Struct:
-		return enc.renderObject(v, 0)
-	case reflect.String:
-		return enc.encodeString(v.String()) + "\n", nil
-	case reflect.Bool:
-		if v.Bool() {
-			return "true\n", nil
+	cmd := exec.Command(trPath, args...)
+	cmd.Stdin = bytes.NewReader(jsonBytes)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = err.Error()
 		}
-		return "false\n", nil
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return strconv.FormatInt(v.Int(), 10) + "\n", nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return strconv.FormatUint(v.Uint(), 10) + "\n", nil
-	case reflect.Float32, reflect.Float64:
-		return enc.formatFloat(v.Float()) + "\n", nil
+		return "", fmt.Errorf("toon_rust encode failed: %s", errMsg)
+	}
+
+	return stdout.String(), nil
+}
+
+var (
+	toonBinaryOnce       sync.Once
+	toonBinaryPathCached string
+	toonBinaryErr        error
+)
+
+func toonBinaryPath() (string, error) {
+	if envPath, err := toonBinaryFromEnv(); err != nil {
+		return "", err
+	} else if envPath != "" {
+		return envPath, nil
+	}
+
+	toonBinaryOnce.Do(func() {
+		for _, candidate := range []string{"toon-tr", "tr"} {
+			path, err := exec.LookPath(candidate)
+			if err != nil {
+				continue
+			}
+			if !isToonRustBinary(path) {
+				continue
+			}
+			toonBinaryPathCached = path
+			return
+		}
+
+		toonBinaryErr = fmt.Errorf(
+			"toon_rust encoder not found in PATH; install toon-tr or set TOON_TR_PATH/TOON_TR_BIN to the toon_rust binary path",
+		)
+	})
+
+	if toonBinaryErr != nil {
+		return "", toonBinaryErr
+	}
+	return toonBinaryPathCached, nil
+}
+
+func toonBinaryFromEnv() (string, error) {
+	for _, env := range []string{"TOON_TR_BIN", "TOON_RUST_BIN", "TOON_TR_PATH", "TOON_TR"} {
+		if val := strings.TrimSpace(os.Getenv(env)); val != "" {
+			if !isToonRustBinary(val) {
+				return "", fmt.Errorf("%s=%q does not appear to be toon_rust (expected toon-tr/tr)", env, val)
+			}
+			return val, nil
+		}
+	}
+	return "", nil
+}
+
+func isToonRustBinary(path string) bool {
+	// Distinguish toon_rust from:
+	// - system `tr` (coreutils)
+	// - the Node.js `toon` CLI (toon-format)
+	helpOut, _ := exec.Command(path, "--help").CombinedOutput()
+	helpLower := strings.ToLower(string(helpOut))
+	if strings.Contains(helpLower, "reference implementation in rust") {
+		return true
+	}
+
+	verOut, _ := exec.Command(path, "--version").CombinedOutput()
+	verLower := strings.ToLower(strings.TrimSpace(string(verOut)))
+	return strings.HasPrefix(verLower, "tr ")
+}
+
+func toonDelimiterArg(delimiter string) string {
+	switch delimiter {
+	case "", ",":
+		return ","
+	case "\t":
+		return "tab"
+	case "|":
+		return "|"
+	case "tab", "comma", "pipe":
+		return delimiter
 	default:
-		return "", fmt.Errorf("TOON: unsupported type %s", v.Kind())
+		return strings.TrimSpace(delimiter)
 	}
 }
 

@@ -3,12 +3,14 @@
 package robot
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // =============================================================================
@@ -132,7 +134,10 @@ func findTmuxBinaryPath() string {
 
 // getTmuxVersion returns the tmux version string
 func getTmuxVersion(binaryPath string) string {
-	out, err := exec.Command(binaryPath, "-V").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, binaryPath, "-V").Output()
 	if err != nil {
 		return ""
 	}
@@ -147,26 +152,43 @@ func detectTmuxAlias() bool {
 		return false
 	}
 
-	// Use type command to check for alias/function
-	var cmd *exec.Cmd
-	if strings.Contains(shell, "zsh") {
-		cmd = exec.Command("zsh", "-i", "-c", "type tmux 2>/dev/null")
-	} else if strings.Contains(shell, "bash") {
-		cmd = exec.Command("bash", "-i", "-c", "type tmux 2>/dev/null")
-	} else {
+	home := os.Getenv("HOME")
+	if home == "" {
 		return false
 	}
 
-	out, err := cmd.Output()
-	if err != nil {
+	// Avoid invoking an interactive shell here; user shell init files can hang.
+	// Instead, do a best-effort scan of common RC files for an alias/function.
+	var rcFiles []string
+	switch {
+	case strings.Contains(shell, "zsh"):
+		rcFiles = []string{
+			filepath.Join(home, ".zshrc"),
+			filepath.Join(home, ".zshrc.local"),
+		}
+	case strings.Contains(shell, "bash"):
+		rcFiles = []string{
+			filepath.Join(home, ".bashrc"),
+			filepath.Join(home, ".bash_profile"),
+		}
+	default:
 		return false
 	}
 
-	output := strings.ToLower(string(out))
-	// If "type tmux" shows function or alias, it's wrapped
-	return strings.Contains(output, "function") ||
-		strings.Contains(output, "alias") ||
-		strings.Contains(output, "shell function")
+	aliasRe := regexp.MustCompile(`(?m)^\s*alias\s+tmux=`)
+	funcRe := regexp.MustCompile(`(?m)^\s*(?:function\s+)?tmux\s*\(\)\s*\{`)
+
+	for _, rc := range rcFiles {
+		content, err := os.ReadFile(rc)
+		if err != nil {
+			continue
+		}
+		if aliasRe.Match(content) || funcRe.Match(content) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // detectOhMyZshTmuxPlugin checks for oh-my-zsh tmux plugin
