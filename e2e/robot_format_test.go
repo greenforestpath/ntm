@@ -1,3 +1,6 @@
+//go:build e2e
+// +build e2e
+
 // Package e2e contains end-to-end tests for NTM robot mode commands.
 // robot_format_test.go validates --robot-format selection for JSON/TOON/auto.
 //

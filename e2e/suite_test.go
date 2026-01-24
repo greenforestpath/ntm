@@ -1,3 +1,6 @@
+//go:build e2e
+// +build e2e
+
 // Package e2e contains end-to-end tests for NTM robot mode commands.
 // These tests verify the complete system with real tmux sessions and agents.
 package e2e

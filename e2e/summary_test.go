@@ -1,3 +1,6 @@
+//go:build e2e
+// +build e2e
+
 // Package e2e contains end-to-end tests for NTM robot mode commands.
 // summary_test.go implements E2E tests for Session Summary generation and output.
 //

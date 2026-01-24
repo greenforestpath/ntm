@@ -14,6 +14,12 @@ import (
 	"github.com/Dicklesworthstone/ntm/tests/testutil"
 )
 
+func TestShouldStartInternalMonitor_IsDisabledUnderGoTest(t *testing.T) {
+	if shouldStartInternalMonitor() {
+		t.Fatal("expected internal monitor to be disabled under go test")
+	}
+}
+
 func TestSpawnSessionLogic(t *testing.T) {
 	testutil.RequireTmuxThrottled(t)
 

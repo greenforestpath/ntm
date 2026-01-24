@@ -31,6 +31,10 @@ func RequireNTMBinary(t *testing.T) {
 	binary := BuildLocalNTM(t)
 	binDir := filepath.Dir(binary)
 
+	// Tests should never spawn detached long-running background processes.
+	// This keeps `ntm spawn` from launching the internal monitor during `go test`.
+	t.Setenv("NTM_DISABLE_INTERNAL_MONITOR", "1")
+
 	existing := os.Getenv("PATH")
 	sep := string(os.PathListSeparator)
 	if existing == "" {

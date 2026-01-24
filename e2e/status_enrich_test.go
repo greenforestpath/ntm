@@ -1,3 +1,6 @@
+//go:build e2e
+// +build e2e
+
 // Package e2e contains end-to-end tests for NTM robot mode commands.
 // status_enrich_test.go tests the --robot-status command enrichments.
 package e2e

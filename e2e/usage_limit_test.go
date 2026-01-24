@@ -1,3 +1,6 @@
+//go:build e2e
+// +build e2e
+
 // Package e2e contains end-to-end tests for NTM robot mode commands.
 // usage_limit_test.go implements E2E tests for the Usage Limit Detection System.
 //

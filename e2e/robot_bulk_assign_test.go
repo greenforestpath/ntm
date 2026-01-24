@@ -1,3 +1,6 @@
+//go:build e2e
+// +build e2e
+
 // Package e2e contains end-to-end tests for NTM robot mode commands.
 // robot_bulk_assign_test.go validates --robot-bulk-assign with various configurations.
 //

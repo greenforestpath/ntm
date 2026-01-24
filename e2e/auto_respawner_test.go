@@ -1,3 +1,6 @@
+//go:build e2e
+// +build e2e
+
 // Package e2e contains end-to-end tests for NTM robot mode commands.
 // auto_respawner_test.go implements E2E tests for the AutoRespawner system.
 //
