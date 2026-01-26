@@ -3986,7 +3986,7 @@ func (m Model) renderPaneGrid() string {
 	// In grid mode (used below Split threshold), show more detail when card width allows it.
 	showExtendedInfo := cardWidth >= 24
 
-	rows := BuildPaneTableRows(m.panes, m.agentStatuses, m.paneStatus, &m.beadsSummary, m.fileChanges, m.healthStates, m.animTick, t)
+	rows := BuildPaneTableRows(m.panes, m.agentStatuses, m.paneStatus, &m.beadsSummary, m.fileChanges, m.healthStates, m.agentMailAgents, m.animTick, t)
 	if summary := activitySummaryLine(rows, t); summary != "" {
 		lines = append(lines, "  "+summary)
 	}
@@ -4915,7 +4915,7 @@ func (m Model) renderPaneList(width int) string {
 	lines = append(lines, RenderTableHeader(dims, t))
 
 	// Pane rows (hydrated with status, beads, file changes, health states, with per-agent border colors)
-	rows := BuildPaneTableRows(m.panes, m.agentStatuses, m.paneStatus, &m.beadsSummary, m.fileChanges, m.healthStates, m.animTick, t)
+	rows := BuildPaneTableRows(m.panes, m.agentStatuses, m.paneStatus, &m.beadsSummary, m.fileChanges, m.healthStates, m.agentMailAgents, m.animTick, t)
 	if summary := activitySummaryLine(rows, t); summary != "" {
 		lines = append(lines, " "+summary)
 	}

@@ -260,6 +260,7 @@ type PaneTableRow struct {
 	Variant          string
 	ModelVariant     string
 	Title            string
+	AgentName        string // Agent Mail name (e.g., "RubyDeer"), empty if unregistered
 	Status           string
 	HealthClass      pt.Classification // Health classification from process_triage
 	HealthSince      time.Time         // When this health state started
@@ -279,6 +280,7 @@ type PaneTableRow struct {
 // BuildPaneTableRows hydrates pane table rows using live status, bead progress,
 // file change activity, health states, and lightweight token velocity estimates.
 // The theme is used to assign per-agent border colors.
+// agentMailAgents maps pane IDs to Agent Mail names (e.g., "RubyDeer").
 func BuildPaneTableRows(
 	panes []tmux.Pane,
 	statuses map[string]status.AgentStatus,
@@ -286,6 +288,7 @@ func BuildPaneTableRows(
 	beads *bv.BeadsSummary,
 	fileChanges []tracker.RecordedFileChange,
 	healthStates map[string]*pt.AgentState,
+	agentMailAgents map[string]string,
 	tick int,
 	t theme.Theme,
 ) []PaneTableRow {
@@ -302,6 +305,7 @@ func BuildPaneTableRows(
 			Variant:       pane.Variant,
 			ModelVariant:  pane.Variant,
 			Title:         pane.Title,
+			AgentName:     agentMailAgents[pane.ID], // Empty string if not found
 			Status:        "unknown",
 			HealthClass:   pt.ClassUnknown,
 			Command:       pane.Command,
@@ -599,7 +603,7 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 		parts = append(parts, healthStyle.Render(healthIcon))
 	}
 
-	// Title (flexible width)
+	// Title (flexible width) - prefer Agent Mail name if available
 	titleWidth := dims.CardWidth - 16 // Base width minus fixed columns
 	if dims.ShowContextCol {
 		titleWidth -= 12 // Context bar width
@@ -611,17 +615,21 @@ func RenderPaneRow(row PaneTableRow, dims LayoutDimensions, t theme.Theme) strin
 		titleWidth = 10
 	}
 
-	title := row.Title
-	if lipgloss.Width(title) > titleWidth {
+	// Use Agent Mail name (e.g., "RubyDeer") if available, fallback to technical title
+	displayName := row.AgentName
+	if displayName == "" {
+		displayName = row.Title
+	}
+	if lipgloss.Width(displayName) > titleWidth {
 		// Use smart truncation that preserves the agent suffix (e.g., __cc_1)
 		// so panes with the same project prefix remain visually distinguishable
-		title = layout.TruncatePaneTitle(title, titleWidth)
+		displayName = layout.TruncatePaneTitle(displayName, titleWidth)
 	}
 	titleStyle := lipgloss.NewStyle().Foreground(t.Text)
 	if row.IsSelected {
 		titleStyle = titleStyle.Bold(true)
 	}
-	parts = append(parts, titleStyle.Width(titleWidth).Render(title))
+	parts = append(parts, titleStyle.Width(titleWidth).Render(displayName))
 
 	// Context bar (tablet and up)
 	if dims.ShowContextCol {
