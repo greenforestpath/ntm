@@ -1321,6 +1321,28 @@ Shell Integration:
 			return
 		}
 
+		// Robot-mail-check handler for Agent Mail inbox (bd-adgv)
+		if robotMailCheck {
+			opts := robot.MailCheckOptions{
+				Project:       mailProject,
+				Agent:         mailAgent,
+				Thread:        mailThread,
+				Status:        mailStatus,
+				IncludeBodies: mailIncludeBodies,
+				UrgentOnly:    mailUrgentOnly,
+				Verbose:       mailVerbose,
+				Limit:         cassLimit,   // Use global --limit
+				Offset:        mailOffset,  // Pagination offset
+				Since:         cassSince,   // Use global --since (if set via --cass-since)
+				Until:         mailUntil,   // Date filter
+			}
+			if err := robot.PrintMailCheck(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+
 		// Show help with appropriate verbosity when run without subcommand
 		if helpMinimal {
 			PrintMinimalHelp(cmd.OutOrStdout())
@@ -1719,6 +1741,18 @@ var (
 	robotQuotaStatus        bool   // --robot-quota-status flag
 	robotQuotaCheck         bool   // --robot-quota-check flag
 	robotQuotaCheckProvider string // --provider filter for quota-check
+
+	// Robot-mail-check flags for Agent Mail inbox integration (bd-adgv)
+	robotMailCheck        bool   // --robot-mail-check flag
+	mailProject           string // --project for mail check (required)
+	mailAgent             string // --agent filter for specific agent inbox
+	mailThread            string // --thread filter for specific thread
+	mailStatus            string // --status filter: read, unread, all
+	mailIncludeBodies     bool   // --include-bodies flag
+	mailUrgentOnly        bool   // --urgent-only flag
+	mailVerbose           bool   // --verbose flag for extra details
+	mailOffset            int    // --mail-offset for pagination
+	mailUntil             string // --mail-until date filter (YYYY-MM-DD)
 )
 
 func init() {
@@ -2072,6 +2106,18 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotQuotaStatus, "robot-quota-status", false, "Show caut quota status for all providers. JSON output. Example: ntm --robot-quota-status")
 	rootCmd.Flags().BoolVar(&robotQuotaCheck, "robot-quota-check", false, "Check quota for specific provider. JSON output. Example: ntm --robot-quota-check --quota-check-provider=claude")
 	rootCmd.Flags().StringVar(&robotQuotaCheckProvider, "quota-check-provider", "", "Provider for quota check. Required with --robot-quota-check. Example: --quota-check-provider=claude")
+
+	// Robot-mail-check flags for Agent Mail inbox integration (bd-adgv)
+	rootCmd.Flags().BoolVar(&robotMailCheck, "robot-mail-check", false, "Check agent inboxes via Agent Mail. Requires --project. JSON output. Example: ntm --robot-mail-check --project=myproject")
+	rootCmd.Flags().StringVar(&mailProject, "project", "", "Project for mail check. Required with --robot-mail-check. Example: --project=myproject")
+	rootCmd.Flags().StringVar(&mailAgent, "mail-agent", "", "Filter to specific agent inbox. Optional with --robot-mail-check. Example: --mail-agent=cc_1")
+	rootCmd.Flags().StringVar(&mailThread, "thread", "", "Filter to specific thread. Optional with --robot-mail-check. Example: --thread=TKT-api-design")
+	rootCmd.Flags().StringVar(&mailStatus, "status", "", "Filter by read status: read, unread, all. Optional with --robot-mail-check. Example: --status=unread")
+	rootCmd.Flags().BoolVar(&mailIncludeBodies, "include-bodies", false, "Include full message bodies. Optional with --robot-mail-check")
+	rootCmd.Flags().BoolVar(&mailUrgentOnly, "urgent-only", false, "Only show urgent/high-priority messages. Optional with --robot-mail-check")
+	rootCmd.Flags().BoolVar(&mailVerbose, "verbose", false, "Include extra details in output. Optional with --robot-mail-check")
+	rootCmd.Flags().IntVar(&mailOffset, "mail-offset", 0, "Skip first N messages for pagination. Optional with --robot-mail-check. Example: --mail-offset=20")
+	rootCmd.Flags().StringVar(&mailUntil, "mail-until", "", "Filter to messages before date (YYYY-MM-DD). Optional with --robot-mail-check. Example: --mail-until=2025-12-31")
 
 	// ==========================================================================
 	// CANONICAL FLAG ALIASES - Robot Mode API Harmonization
