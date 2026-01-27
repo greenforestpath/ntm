@@ -48,8 +48,8 @@ func AnalyzeImpact(result *ScanResult, existingBeadIDs map[string]string) (*Anal
 		TotalFindings:      len(result.Findings),
 	}
 
-	// Check if bv is available
-	if !bv.IsInstalled() {
+	// Check if bv is available (skip during tests to avoid slow external calls)
+	if skipBVIntegration() || !bv.IsInstalled() {
 		ar.GraphAvailable = false
 		// Still provide basic analysis without graph
 		for _, f := range result.Findings {

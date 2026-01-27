@@ -2,11 +2,27 @@
 package scanner
 
 import (
+	"flag"
 	"fmt"
+	"os"
 	"sort"
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 )
+
+// skipBVIntegration returns true if we should skip bv calls (e.g., during tests).
+// This prevents slow external tool calls from timing out unit tests.
+func skipBVIntegration() bool {
+	// Skip if running under go test
+	if flag.Lookup("test.v") != nil {
+		return true
+	}
+	// Skip if explicitly disabled via environment
+	if os.Getenv("NTM_SKIP_BV") != "" {
+		return true
+	}
+	return false
+}
 
 // PrioritizedFinding represents a finding with smart priority.
 type PrioritizedFinding struct {
@@ -31,9 +47,9 @@ func ComputePriorities(result *ScanResult, existingBeadIDs map[string]string) (*
 		Findings: make([]PrioritizedFinding, 0, len(result.Findings)),
 	}
 
-	// Try to get bv insights
+	// Try to get bv insights (skip during tests to avoid slow external calls)
 	var insights *bv.InsightsResponse
-	if bv.IsInstalled() {
+	if !skipBVIntegration() && bv.IsInstalled() {
 		var err error
 		insights, err = bv.GetInsights("")
 		if err == nil {

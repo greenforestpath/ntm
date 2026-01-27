@@ -2113,10 +2113,10 @@ func init() {
 	rootCmd.Flags().StringVar(&mailProject, "mail-project", "", "Project for mail check. Required with --robot-mail-check. Example: --mail-project=myproject")
 	rootCmd.Flags().StringVar(&mailAgent, "mail-agent", "", "Filter to specific agent inbox. Optional with --robot-mail-check. Example: --mail-agent=cc_1")
 	rootCmd.Flags().StringVar(&mailThread, "thread", "", "Filter to specific thread. Optional with --robot-mail-check. Example: --thread=TKT-api-design")
-	rootCmd.Flags().StringVar(&mailStatus, "status", "", "Filter by read status: read, unread, all. Optional with --robot-mail-check. Example: --status=unread")
+	rootCmd.Flags().StringVar(&mailStatus, "mail-status", "", "Filter by read status: read, unread, all. Optional with --robot-mail-check. Example: --mail-status=unread")
 	rootCmd.Flags().BoolVar(&mailIncludeBodies, "include-bodies", false, "Include full message bodies. Optional with --robot-mail-check")
 	rootCmd.Flags().BoolVar(&mailUrgentOnly, "urgent-only", false, "Only show urgent/high-priority messages. Optional with --robot-mail-check")
-	rootCmd.Flags().BoolVar(&mailVerbose, "verbose", false, "Include extra details in output. Optional with --robot-mail-check")
+	rootCmd.Flags().BoolVar(&mailVerbose, "mail-verbose", false, "Include extra details in output. Optional with --robot-mail-check")
 	rootCmd.Flags().IntVar(&mailOffset, "mail-offset", 0, "Skip first N messages for pagination. Optional with --robot-mail-check. Example: --mail-offset=20")
 	rootCmd.Flags().StringVar(&mailUntil, "mail-until", "", "Filter to messages before date (YYYY-MM-DD). Optional with --robot-mail-check. Example: --mail-until=2025-12-31")
 

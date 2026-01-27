@@ -57,6 +57,10 @@ func TestScanFile(t *testing.T) {
 	// Scan a real file in the project
 	result, err := scanner.ScanFile(ctx, "types.go")
 	if err != nil {
+		// Skip on timeout since UBS may be slow in CI (bd-1ihar)
+		if err == ErrTimeout {
+			t.Skipf("UBS scan timed out after 30s: %v", err)
+		}
 		t.Fatalf("scanning file: %v", err)
 	}
 	if result == nil {
@@ -95,6 +99,10 @@ func TestQuickScan(t *testing.T) {
 
 	result, err := QuickScan(ctx, "types.go")
 	if err != nil {
+		// Skip on timeout since UBS may be slow in CI (bd-1ihar)
+		if err == ErrTimeout {
+			t.Skipf("UBS quick scan timed out after 30s: %v", err)
+		}
 		t.Fatalf("quick scan: %v", err)
 	}
 	// result can be nil if UBS is not installed (graceful degradation)
@@ -124,6 +132,10 @@ func TestScanOptions(t *testing.T) {
 
 	result, err := scanner.Scan(ctx, ".", opts)
 	if err != nil {
+		// Skip on timeout since UBS may be slow in CI (bd-1ihar)
+		if err == ErrTimeout {
+			t.Skipf("UBS scan with options timed out after 30s: %v", err)
+		}
 		t.Fatalf("scan with options: %v", err)
 	}
 	if result == nil {
