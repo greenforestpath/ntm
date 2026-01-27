@@ -16,6 +16,8 @@ import (
 	"sync"
 	"text/template"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // EventType represents the type of notification event
@@ -422,7 +424,7 @@ func (n *Notifier) sendWebhook(event Event) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 		return fmt.Errorf("webhook returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -538,7 +540,7 @@ func (n *Notifier) sendFileBox(event Event) error {
 	// Create filename with timestamp and event type
 	filename := fmt.Sprintf("%s_%s.md",
 		event.Timestamp.Format("2006-01-02_15-04-05"),
-		strings.ReplaceAll(string(event.Type), ".", "_"),
+		util.SanitizeFilename(string(event.Type)),
 	)
 	filePath := filepath.Join(path, filename)
 

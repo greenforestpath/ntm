@@ -165,10 +165,12 @@ func newAgentMailClient(projectKey string) *agentmail.Client {
 	var opts []agentmail.Option
 	opts = append(opts, agentmail.WithProjectKey(projectKey))
 	if cfg != nil {
-		if cfg.AgentMail.URL != "" {
+		// Environment variables should override config; agentmail.NewClient reads env
+		// before applying options.
+		if cfg.AgentMail.URL != "" && os.Getenv("AGENT_MAIL_URL") == "" {
 			opts = append(opts, agentmail.WithBaseURL(cfg.AgentMail.URL))
 		}
-		if cfg.AgentMail.Token != "" {
+		if cfg.AgentMail.Token != "" && os.Getenv("AGENT_MAIL_TOKEN") == "" {
 			opts = append(opts, agentmail.WithToken(cfg.AgentMail.Token))
 		}
 	}
@@ -416,7 +418,7 @@ func runMailMark(cmd *cobra.Command, session, agent string, action mailAction, i
 	defer cancel()
 
 	if !client.IsAvailable() {
-		return fmt.Errorf("agent mail server not available at %s\nstart the server with: mcp-agent-mail serve", agentmail.DefaultBaseURL)
+		return fmt.Errorf("agent mail server not available at %s\nstart the server with: mcp-agent-mail serve", client.BaseURL())
 	}
 
 	// Ensure project exists (and agent registered)
@@ -532,7 +534,7 @@ func runMailSendOverseer(cmd *cobra.Command, session string, to []string, subjec
 
 	// Check if Agent Mail is available
 	if !client.IsAvailable() {
-		return fmt.Errorf("agent mail server not available at %s\nstart the server with: mcp-agent-mail serve", agentmail.DefaultBaseURL)
+		return fmt.Errorf("agent mail server not available at %s\nstart the server with: mcp-agent-mail serve", client.BaseURL())
 	}
 
 	// Ensure project exists before proceeding

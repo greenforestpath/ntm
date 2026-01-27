@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
@@ -58,8 +59,50 @@ type depCheck struct {
 	InstallHint string
 }
 
-func runDeps(verbose bool) error {
-	deps := []depCheck{
+// DepsInput is the kernel input for core.deps.
+type DepsInput struct {
+	Verbose bool `json:"verbose,omitempty"`
+}
+
+func init() {
+	kernel.MustRegister(kernel.Command{
+		Name:        "core.deps",
+		Description: "Check required dependencies and optional agent CLIs",
+		Category:    "core",
+		Input: &kernel.SchemaRef{
+			Name: "DepsInput",
+			Ref:  "cli.DepsInput",
+		},
+		Output: &kernel.SchemaRef{
+			Name: "DepsResponse",
+			Ref:  "output.DepsResponse",
+		},
+		REST: &kernel.RESTBinding{
+			Method: "GET",
+			Path:   "/deps",
+		},
+		Examples: []kernel.Example{
+			{
+				Name:        "deps",
+				Description: "Check dependencies",
+				Command:     "ntm deps",
+			},
+			{
+				Name:        "deps-verbose",
+				Description: "Check dependencies with versions",
+				Command:     "ntm deps --verbose",
+			},
+		},
+		SafetyLevel: kernel.SafetySafe,
+		Idempotent:  true,
+	})
+	kernel.MustRegisterHandler("core.deps", func(ctx context.Context, _ any) (any, error) {
+		return buildDepsResponse()
+	})
+}
+
+func defaultDepChecks() []depCheck {
+	return []depCheck{
 		// Required
 		{
 			Name:        "tmux",
@@ -114,50 +157,25 @@ func runDeps(verbose bool) error {
 			InstallHint: "brew install git (macOS) / apt install git (Linux)",
 		},
 	}
+}
 
-	// Collect all dependency statuses
-	var depResults []output.DependencyCheck
-	missingRequired := false
-	agentsAvailable := 0
-
-	for _, dep := range deps {
-		status, version, path := checkDepWithPath(dep)
-		installed := status == "found"
-
-		if !installed && dep.Required {
-			missingRequired = true
+func runDeps(verbose bool) error {
+	result, err := kernel.Run(context.Background(), "core.deps", DepsInput{Verbose: verbose})
+	if err != nil {
+		if IsJSONOutput() {
+			_ = output.PrintJSON(output.NewError(err.Error()))
 		}
-		if installed && dep.Category == "AI Agents" {
-			agentsAvailable++
-		}
-
-		depResults = append(depResults, output.DependencyCheck{
-			Name:      dep.Name,
-			Required:  dep.Required,
-			Installed: installed,
-			Version:   version,
-			Path:      path,
-		})
+		return err
 	}
 
-	// Add Agent Mail as a service check
-	client := newAgentMailClient("")
-	agentMailAvailable := client.IsAvailable()
-	depResults = append(depResults, output.DependencyCheck{
-		Name:      "Agent Mail",
-		Required:  false,
-		Installed: agentMailAvailable,
-		Path:      agentmail.DefaultBaseURL,
-	})
+	resp, err := coerceDepsResponse(result)
+	if err != nil {
+		return err
+	}
 
 	// JSON output mode
 	if IsJSONOutput() {
-		response := output.DepsResponse{
-			TimestampedResponse: output.NewTimestamped(),
-			AllInstalled:        !missingRequired,
-			Dependencies:        depResults,
-		}
-		return output.PrintJSON(response)
+		return output.PrintJSON(resp)
 	}
 
 	// Text output mode
@@ -165,10 +183,19 @@ func runDeps(verbose bool) error {
 
 	// Group by category
 	categories := []string{"Required", "AI Agents", "Recommended"}
+	deps := defaultDepChecks()
 	byCategory := make(map[string][]depCheck)
 	for _, d := range deps {
 		byCategory[d.Category] = append(byCategory[d.Category], d)
 	}
+
+	depByName := make(map[string]output.DependencyCheck, len(resp.Dependencies))
+	for _, dep := range resp.Dependencies {
+		depByName[dep.Name] = dep
+	}
+
+	missingRequired := !resp.AllInstalled
+	agentsAvailable := 0
 
 	fmt.Println()
 	fmt.Printf("%s NTM Dependency Check%s\n", "\033[1m", "\033[0m")
@@ -183,7 +210,19 @@ func runDeps(verbose bool) error {
 		fmt.Printf("%s%s:%s\n\n", "\033[1m", cat, "\033[0m")
 
 		for _, dep := range items {
-			status, version, _ := checkDepWithPath(dep)
+			installed := false
+			version := ""
+			if result, ok := depByName[dep.Name]; ok {
+				installed = result.Installed
+				version = result.Version
+			}
+			status := "not found"
+			if installed {
+				status = "found"
+			}
+			if installed && dep.Category == "AI Agents" {
+				agentsAvailable++
+			}
 
 			var statusIcon, statusColor string
 			switch status {
@@ -249,6 +288,61 @@ func runDeps(verbose bool) error {
 
 	fmt.Println()
 	return nil
+}
+
+func coerceDepsResponse(result any) (output.DepsResponse, error) {
+	switch value := result.(type) {
+	case output.DepsResponse:
+		return value, nil
+	case *output.DepsResponse:
+		if value != nil {
+			return *value, nil
+		}
+		return output.DepsResponse{}, fmt.Errorf("core.deps returned nil response")
+	default:
+		return output.DepsResponse{}, fmt.Errorf("core.deps returned unexpected type %T", result)
+	}
+}
+
+func buildDepsResponse() (output.DepsResponse, error) {
+	deps := defaultDepChecks()
+
+	// Collect all dependency statuses
+	var depResults []output.DependencyCheck
+	missingRequired := false
+
+	for _, dep := range deps {
+		status, version, path := checkDepWithPath(dep)
+		installed := status == "found"
+
+		if !installed && dep.Required {
+			missingRequired = true
+		}
+
+		depResults = append(depResults, output.DependencyCheck{
+			Name:      dep.Name,
+			Required:  dep.Required,
+			Installed: installed,
+			Version:   version,
+			Path:      path,
+		})
+	}
+
+	// Add Agent Mail as a service check
+	client := newAgentMailClient("")
+	agentMailAvailable := client.IsAvailable()
+	depResults = append(depResults, output.DependencyCheck{
+		Name:      "Agent Mail",
+		Required:  false,
+		Installed: agentMailAvailable,
+		Path:      agentmail.DefaultBaseURL,
+	})
+
+	return output.DepsResponse{
+		TimestampedResponse: output.NewTimestamped(),
+		AllInstalled:        !missingRequired,
+		Dependencies:        depResults,
+	}, nil
 }
 
 // checkAgentMail checks Agent Mail server availability

@@ -84,11 +84,12 @@ type SpawnedAgent struct {
 	Error     string `json:"error,omitempty"`
 }
 
-// PrintSpawn creates a session with agents and outputs structured JSON.
-func PrintSpawn(opts SpawnOptions, cfg *config.Config) error {
+// GetSpawn creates a session with agents and returns structured output.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetSpawn(opts SpawnOptions, cfg *config.Config) (*SpawnOutput, error) {
 	startTime := time.Now()
 
-	output := SpawnOutput{
+	output := &SpawnOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
 		CreatedAt:     startTime.UTC().Format(time.RFC3339),
@@ -101,21 +102,21 @@ func PrintSpawn(opts SpawnOptions, cfg *config.Config) error {
 	if err := tmux.ValidateSessionName(opts.Session); err != nil {
 		output.Error = fmt.Sprintf("invalid session name: %v", err)
 		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Use a valid tmux session name")
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Check tmux availability
 	if !tmux.IsInstalled() {
 		output.Error = "tmux is not installed"
 		output.RobotResponse = NewErrorResponse(fmt.Errorf("%s", output.Error), ErrCodeDependencyMissing, "Install tmux to spawn sessions")
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Safety check: fail if session already exists (when --spawn-safety is enabled)
 	if opts.Safety && tmux.SessionExists(opts.Session) {
 		output.Error = fmt.Sprintf("session '%s' already exists (--spawn-safety mode prevents reuse; use 'ntm kill %s' first)", opts.Session, opts.Session)
 		output.RobotResponse = NewErrorResponse(fmt.Errorf("%s", output.Error), ErrCodeInvalidFlag, "Choose a new session name or disable --spawn-safety")
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Get working directory
@@ -129,7 +130,7 @@ func PrintSpawn(opts SpawnOptions, cfg *config.Config) error {
 		if err != nil {
 			output.Error = fmt.Sprintf("could not determine working directory: %v", err)
 			output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Check working directory permissions")
-			return encodeJSON(output)
+			return output, nil
 		}
 	}
 	output.WorkingDir = dir
@@ -146,7 +147,7 @@ func PrintSpawn(opts SpawnOptions, cfg *config.Config) error {
 	if totalAgents == 0 {
 		output.Error = "no agents specified (use cc, cod, or gmi counts)"
 		output.RobotResponse = NewErrorResponse(fmt.Errorf("%s", output.Error), ErrCodeInvalidFlag, "Specify at least one agent count")
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Calculate total panes needed
@@ -200,14 +201,14 @@ func PrintSpawn(opts SpawnOptions, cfg *config.Config) error {
 		}
 
 		output.Layout = "tiled"
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Ensure directory exists (only for real spawns, not dry-run)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		output.Error = fmt.Sprintf("creating directory: %v", err)
 		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Check directory permissions")
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Create session if it doesn't exist
@@ -216,7 +217,7 @@ func PrintSpawn(opts SpawnOptions, cfg *config.Config) error {
 		if err := tmux.CreateSession(opts.Session, dir); err != nil {
 			output.Error = fmt.Sprintf("creating session: %v", err)
 			output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Check tmux availability and session name")
-			return encodeJSON(output)
+			return output, nil
 		}
 		sessionCreated = true
 	}
@@ -226,7 +227,7 @@ func PrintSpawn(opts SpawnOptions, cfg *config.Config) error {
 	if err != nil {
 		output.Error = fmt.Sprintf("getting panes: %v", err)
 		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Check tmux session state")
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Add more panes if needed
@@ -237,7 +238,7 @@ func PrintSpawn(opts SpawnOptions, cfg *config.Config) error {
 			if _, err := tmux.SplitWindow(opts.Session, dir); err != nil {
 				output.Error = fmt.Sprintf("creating pane: %v", err)
 				output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Check tmux pane layout constraints")
-				return encodeJSON(output)
+				return output, nil
 			}
 		}
 	}
@@ -247,7 +248,7 @@ func PrintSpawn(opts SpawnOptions, cfg *config.Config) error {
 	if err != nil {
 		output.Error = fmt.Sprintf("getting panes: %v", err)
 		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Check tmux session state")
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Apply tiled layout
@@ -299,14 +300,14 @@ func PrintSpawn(opts SpawnOptions, cfg *config.Config) error {
 		if timeout <= 0 {
 			timeout = 30 // default 30 seconds
 		}
-		waitForAgentsReady(&output, time.Duration(timeout)*time.Second)
+		waitForAgentsReady(output, time.Duration(timeout)*time.Second)
 	}
 
 	// Orchestrator work assignment mode
 	if opts.AssignWork {
 		output.Mode = "orchestrator"
 		output.AssignStrategy = normalizeAssignStrategy(opts.AssignStrategy)
-		assignments := assignWorkToAgents(&output, dir, opts.Session, output.AssignStrategy)
+		assignments := assignWorkToAgents(output, dir, opts.Session, output.AssignStrategy)
 		output.Assignments = assignments
 	}
 
@@ -317,6 +318,16 @@ func PrintSpawn(opts SpawnOptions, cfg *config.Config) error {
 		output.Layout = "tiled"
 	}
 
+	return output, nil
+}
+
+// PrintSpawn creates a session with agents and outputs structured JSON.
+// This is a thin wrapper around GetSpawn() for CLI output.
+func PrintSpawn(opts SpawnOptions, cfg *config.Config) error {
+	output, err := GetSpawn(opts, cfg)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -420,6 +431,8 @@ func isAgentReady(output, agentType string) bool {
 		"claude>",
 		"claude >",
 		"codex>",
+		"openai codex",
+		"context left",
 		"gemini>",
 		">>>", // Python REPL
 		"waiting for input",
@@ -443,6 +456,7 @@ func isAgentReady(output, agentType string) bool {
 		"$ ", // Shell prompt
 		"% ", // Zsh prompt
 		"❯",  // Modern prompts (U+276F)
+		"›",  // Codex prompt (U+203A)
 		">",  // Simple prompt
 	}
 

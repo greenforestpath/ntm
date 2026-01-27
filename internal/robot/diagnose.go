@@ -75,9 +75,11 @@ type DiagnoseOptions struct {
 	Brief   bool   // minimal output
 }
 
-// PrintDiagnose outputs comprehensive health diagnosis for a session
-func PrintDiagnose(opts DiagnoseOptions) error {
-	output := DiagnoseOutput{
+// GetDiagnose collects comprehensive health diagnosis for a session.
+// This function returns the data struct directly, enabling CLI/REST parity.
+// Note: This does not execute fixes; use PrintDiagnose with opts.Fix=true for that.
+func GetDiagnose(opts DiagnoseOptions) (*DiagnoseOutput, error) {
+	output := &DiagnoseOutput{
 		RobotResponse:   NewRobotResponse(true),
 		Session:         opts.Session,
 		OverallHealth:   "healthy",
@@ -99,7 +101,7 @@ func PrintDiagnose(opts DiagnoseOptions) error {
 		output.Error = fmt.Sprintf("session '%s' not found", opts.Session)
 		output.ErrorCode = ErrCodeSessionNotFound
 		output.Hint = "Use 'ntm list' to see available sessions"
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Get all panes in session
@@ -108,7 +110,7 @@ func PrintDiagnose(opts DiagnoseOptions) error {
 		output.Success = false
 		output.Error = fmt.Sprintf("failed to get panes: %v", err)
 		output.ErrorCode = ErrCodeInternalError
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Filter to specific pane if requested
@@ -124,7 +126,7 @@ func PrintDiagnose(opts DiagnoseOptions) error {
 			output.Error = fmt.Sprintf("pane %d not found in session '%s'", opts.Pane, opts.Session)
 			output.ErrorCode = ErrCodePaneNotFound
 			output.Hint = fmt.Sprintf("Use 'ntm --robot-status' to list panes in session '%s'", opts.Session)
-			return encodeJSON(output)
+			return output, nil
 		}
 		panes = filtered
 	}
@@ -266,9 +268,21 @@ func PrintDiagnose(opts DiagnoseOptions) error {
 		output.AutoFixCommand = fmt.Sprintf("ntm --robot-diagnose=%s --fix", opts.Session)
 	}
 
+	return output, nil
+}
+
+// PrintDiagnose outputs comprehensive health diagnosis for a session.
+// This is a thin wrapper around GetDiagnose() for CLI output.
+// When opts.Fix is true and auto-fix is available, it executes fixes.
+func PrintDiagnose(opts DiagnoseOptions) error {
+	output, err := GetDiagnose(opts)
+	if err != nil {
+		return err
+	}
+
 	// Handle --fix mode
 	if opts.Fix && output.AutoFixAvail {
-		return executeDiagnoseFix(output, opts)
+		return executeDiagnoseFix(*output, opts)
 	}
 
 	return encodeJSON(output)
@@ -426,13 +440,10 @@ type DiagnoseBriefOutput struct {
 	FixAvailable  bool   `json:"fix_available"`
 }
 
-// PrintDiagnoseBrief outputs a minimal health summary
-func PrintDiagnoseBrief(session string) error {
-	// Get full diagnosis first
-	opts := DiagnoseOptions{Session: session, Pane: -1}
-	_ = opts
-
-	output := DiagnoseBriefOutput{
+// GetDiagnoseBrief collects a minimal health summary for a session.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetDiagnoseBrief(session string) (*DiagnoseBriefOutput, error) {
+	output := &DiagnoseBriefOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       session,
 	}
@@ -443,7 +454,7 @@ func PrintDiagnoseBrief(session string) error {
 		output.Error = fmt.Sprintf("session '%s' not found", session)
 		output.ErrorCode = ErrCodeSessionNotFound
 		output.Hint = "Use 'ntm list' to see available sessions"
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Get panes and check health
@@ -451,7 +462,7 @@ func PrintDiagnoseBrief(session string) error {
 	if err != nil {
 		output.Success = false
 		output.Error = fmt.Sprintf("failed to get panes: %v", err)
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	var summary DiagnoseSummary
@@ -524,5 +535,15 @@ func PrintDiagnoseBrief(session string) error {
 		output.Summary += part
 	}
 
+	return output, nil
+}
+
+// PrintDiagnoseBrief outputs a minimal health summary.
+// This is a thin wrapper around GetDiagnoseBrief() for CLI output.
+func PrintDiagnoseBrief(session string) error {
+	output, err := GetDiagnoseBrief(session)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }

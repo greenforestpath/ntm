@@ -2,6 +2,7 @@ package robot
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tools"
@@ -9,6 +10,7 @@ import (
 
 // SwitchAccountOutput represents the response from --robot-switch-account
 type SwitchAccountOutput struct {
+	RobotResponse
 	Switch SwitchAccountResult `json:"switch"`
 }
 
@@ -30,13 +32,14 @@ type SwitchAccountOptions struct {
 	Pane      string // Optional pane filter
 }
 
-// PrintSwitchAccount handles the --robot-switch-account command
+// GetSwitchAccount performs the account switch and returns the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
 // Usage:
 //
 //	ntm --robot-switch-account claude         # Switch to next Claude account
 //	ntm --robot-switch-account openai:acc123  # Switch to specific account
 //	ntm --robot-switch-account claude --pane agent-1  # Switch for specific pane
-func PrintSwitchAccount(opts SwitchAccountOptions) error {
+func GetSwitchAccount(opts SwitchAccountOptions) (*SwitchAccountOutput, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -44,14 +47,18 @@ func PrintSwitchAccount(opts SwitchAccountOptions) error {
 
 	// Check if CAAM is available
 	if _, installed := adapter.Detect(); !installed {
-		output := SwitchAccountOutput{
+		return &SwitchAccountOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("caam not installed"),
+				ErrCodeDependencyMissing,
+				"Install caam to enable account switching",
+			),
 			Switch: SwitchAccountResult{
 				Success:  false,
 				Provider: opts.Provider,
 				Error:    "caam not installed",
 			},
-		}
-		return encodeJSON(output)
+		}, nil
 	}
 
 	// Get current account before switch (for comparison)
@@ -80,7 +87,8 @@ func PrintSwitchAccount(opts SwitchAccountOptions) error {
 		result, err = adapter.SwitchToNextAccount(ctx, opts.Provider)
 	}
 
-	output := SwitchAccountOutput{
+	output := &SwitchAccountOutput{
+		RobotResponse: NewRobotResponse(true),
 		Switch: SwitchAccountResult{
 			Provider:        opts.Provider,
 			PreviousAccount: previousAccount,
@@ -90,7 +98,12 @@ func PrintSwitchAccount(opts SwitchAccountOptions) error {
 	if err != nil {
 		output.Switch.Success = false
 		output.Switch.Error = err.Error()
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			err,
+			ErrCodeInternalError,
+			"Check caam configuration and availability",
+		)
+		return output, nil
 	}
 
 	if result != nil {
@@ -108,6 +121,16 @@ func PrintSwitchAccount(opts SwitchAccountOptions) error {
 		output.Switch.PanesAffected = []string{opts.Pane}
 	}
 
+	return output, nil
+}
+
+// PrintSwitchAccount handles the --robot-switch-account command.
+// This is a thin wrapper around GetSwitchAccount() for CLI output.
+func PrintSwitchAccount(opts SwitchAccountOptions) error {
+	output, err := GetSwitchAccount(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 

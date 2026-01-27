@@ -1,0 +1,359 @@
+package ensemble
+
+import (
+	"testing"
+	"time"
+)
+
+func TestDryRunPlan_Validate_NilPlan(t *testing.T) {
+	t.Logf("TEST: %s - starting with nil plan", t.Name())
+	var plan *DryRunPlan
+	err := plan.Validate()
+	t.Logf("TEST: %s - got error: %v", t.Name(), err)
+	if err == nil {
+		t.Error("expected error for nil plan")
+	}
+}
+
+func TestDryRunPlan_Validate_Valid(t *testing.T) {
+	t.Logf("TEST: %s - starting with valid plan", t.Name())
+	plan := &DryRunPlan{
+		GeneratedAt: time.Now(),
+		SessionName: "test-session",
+		Validation:  DryRunValidation{Valid: true},
+	}
+	err := plan.Validate()
+	t.Logf("TEST: %s - got error: %v", t.Name(), err)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestDryRunPlan_Validate_Invalid(t *testing.T) {
+	t.Logf("TEST: %s - starting with invalid plan", t.Name())
+	plan := &DryRunPlan{
+		GeneratedAt: time.Now(),
+		SessionName: "test-session",
+		Validation: DryRunValidation{
+			Valid:  false,
+			Errors: []string{"mode not found", "budget exceeded"},
+		},
+	}
+	err := plan.Validate()
+	t.Logf("TEST: %s - got error: %v", t.Name(), err)
+	if err == nil {
+		t.Error("expected error for invalid plan")
+	}
+	if err.Error() != "validation failed: mode not found; budget exceeded" {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestDryRunPlan_ModeCount(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+
+	// Nil plan
+	var nilPlan *DryRunPlan
+	if nilPlan.ModeCount() != 0 {
+		t.Errorf("expected 0 for nil plan, got %d", nilPlan.ModeCount())
+	}
+
+	// Empty plan
+	emptyPlan := &DryRunPlan{}
+	if emptyPlan.ModeCount() != 0 {
+		t.Errorf("expected 0 for empty plan, got %d", emptyPlan.ModeCount())
+	}
+
+	// Plan with modes
+	plan := &DryRunPlan{
+		Modes: []DryRunMode{
+			{ID: "deductive", Code: "A1", Name: "Deductive"},
+			{ID: "inductive", Code: "B1", Name: "Inductive"},
+			{ID: "bayesian", Code: "C1", Name: "Bayesian"},
+		},
+	}
+	t.Logf("TEST: %s - got mode count: %d", t.Name(), plan.ModeCount())
+	if plan.ModeCount() != 3 {
+		t.Errorf("expected 3 modes, got %d", plan.ModeCount())
+	}
+}
+
+func TestDryRunPlan_EstimatedTokens(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+
+	// Nil plan
+	var nilPlan *DryRunPlan
+	if nilPlan.EstimatedTokens() != 0 {
+		t.Errorf("expected 0 for nil plan, got %d", nilPlan.EstimatedTokens())
+	}
+
+	// Plan with budget
+	plan := &DryRunPlan{
+		Budget: DryRunBudget{
+			MaxTokensPerMode:     4000,
+			MaxTotalTokens:       50000,
+			EstimatedTotalTokens: 12000,
+			ModeCount:            3,
+		},
+	}
+	t.Logf("TEST: %s - got estimated tokens: %d", t.Name(), plan.EstimatedTokens())
+	if plan.EstimatedTokens() != 12000 {
+		t.Errorf("expected 12000 tokens, got %d", plan.EstimatedTokens())
+	}
+}
+
+func TestDryRunBudget_Fields(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+	budget := DryRunBudget{
+		MaxTokensPerMode:       4000,
+		MaxTotalTokens:         50000,
+		SynthesisReserveTokens: 8000,
+		ContextReserveTokens:   2000,
+		EstimatedTotalTokens:   12000,
+		ModeCount:              3,
+	}
+
+	t.Logf("TEST: %s - budget: %+v", t.Name(), budget)
+
+	if budget.MaxTokensPerMode != 4000 {
+		t.Errorf("expected MaxTokensPerMode=4000, got %d", budget.MaxTokensPerMode)
+	}
+	if budget.MaxTotalTokens != 50000 {
+		t.Errorf("expected MaxTotalTokens=50000, got %d", budget.MaxTotalTokens)
+	}
+	if budget.SynthesisReserveTokens != 8000 {
+		t.Errorf("expected SynthesisReserveTokens=8000, got %d", budget.SynthesisReserveTokens)
+	}
+	if budget.ContextReserveTokens != 2000 {
+		t.Errorf("expected ContextReserveTokens=2000, got %d", budget.ContextReserveTokens)
+	}
+	if budget.EstimatedTotalTokens != 12000 {
+		t.Errorf("expected EstimatedTotalTokens=12000, got %d", budget.EstimatedTotalTokens)
+	}
+	if budget.ModeCount != 3 {
+		t.Errorf("expected ModeCount=3, got %d", budget.ModeCount)
+	}
+}
+
+func TestDryRunMode_Fields(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+	mode := DryRunMode{
+		ID:        "deductive",
+		Code:      "A1",
+		Name:      "Deductive Inference",
+		Category:  "Formal",
+		Tier:      "core",
+		ShortDesc: "Classical logical inference",
+	}
+
+	t.Logf("TEST: %s - mode: %+v", t.Name(), mode)
+
+	if mode.ID != "deductive" {
+		t.Errorf("expected ID=deductive, got %s", mode.ID)
+	}
+	if mode.Code != "A1" {
+		t.Errorf("expected Code=A1, got %s", mode.Code)
+	}
+	if mode.Name != "Deductive Inference" {
+		t.Errorf("expected Name=Deductive Inference, got %s", mode.Name)
+	}
+	if mode.Category != "Formal" {
+		t.Errorf("expected Category=Formal, got %s", mode.Category)
+	}
+	if mode.Tier != "core" {
+		t.Errorf("expected Tier=core, got %s", mode.Tier)
+	}
+}
+
+func TestDryRunAssign_Fields(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+	assign := DryRunAssign{
+		ModeID:      "deductive",
+		ModeCode:    "A1",
+		AgentType:   "cc",
+		PaneIndex:   1,
+		TokenBudget: 4000,
+	}
+
+	t.Logf("TEST: %s - assign: %+v", t.Name(), assign)
+
+	if assign.ModeID != "deductive" {
+		t.Errorf("expected ModeID=deductive, got %s", assign.ModeID)
+	}
+	if assign.ModeCode != "A1" {
+		t.Errorf("expected ModeCode=A1, got %s", assign.ModeCode)
+	}
+	if assign.AgentType != "cc" {
+		t.Errorf("expected AgentType=cc, got %s", assign.AgentType)
+	}
+	if assign.PaneIndex != 1 {
+		t.Errorf("expected PaneIndex=1, got %d", assign.PaneIndex)
+	}
+	if assign.TokenBudget != 4000 {
+		t.Errorf("expected TokenBudget=4000, got %d", assign.TokenBudget)
+	}
+}
+
+func TestDryRunSynthesis_Fields(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+	synthesis := DryRunSynthesis{
+		Strategy:           "consensus",
+		SynthesizerModeID:  "meta-cognitive",
+		MinConfidence:      0.7,
+		MaxFindings:        20,
+		ConflictResolution: "voting",
+	}
+
+	t.Logf("TEST: %s - synthesis: %+v", t.Name(), synthesis)
+
+	if synthesis.Strategy != "consensus" {
+		t.Errorf("expected Strategy=consensus, got %s", synthesis.Strategy)
+	}
+	if synthesis.SynthesizerModeID != "meta-cognitive" {
+		t.Errorf("expected SynthesizerModeID=meta-cognitive, got %s", synthesis.SynthesizerModeID)
+	}
+	if synthesis.MinConfidence != 0.7 {
+		t.Errorf("expected MinConfidence=0.7, got %f", synthesis.MinConfidence)
+	}
+	if synthesis.MaxFindings != 20 {
+		t.Errorf("expected MaxFindings=20, got %d", synthesis.MaxFindings)
+	}
+	if synthesis.ConflictResolution != "voting" {
+		t.Errorf("expected ConflictResolution=voting, got %s", synthesis.ConflictResolution)
+	}
+}
+
+func TestDryRunValidation_Fields(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+
+	// Valid case
+	valid := DryRunValidation{
+		Valid:    true,
+		Warnings: []string{"large ensemble"},
+	}
+	t.Logf("TEST: %s - valid: %+v", t.Name(), valid)
+	if !valid.Valid {
+		t.Error("expected Valid=true")
+	}
+	if len(valid.Warnings) != 1 {
+		t.Errorf("expected 1 warning, got %d", len(valid.Warnings))
+	}
+
+	// Invalid case
+	invalid := DryRunValidation{
+		Valid:    false,
+		Warnings: []string{"budget exceeded"},
+		Errors:   []string{"mode not found"},
+	}
+	t.Logf("TEST: %s - invalid: %+v", t.Name(), invalid)
+	if invalid.Valid {
+		t.Error("expected Valid=false")
+	}
+	if len(invalid.Errors) != 1 {
+		t.Errorf("expected 1 error, got %d", len(invalid.Errors))
+	}
+}
+
+func TestDryRunPreamble_Fields(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+	preamble := DryRunPreamble{
+		ModeID:   "deductive",
+		ModeCode: "A1",
+		Preview:  "You are an expert in deductive reasoning...",
+		Length:   2500,
+	}
+
+	t.Logf("TEST: %s - preamble: %+v", t.Name(), preamble)
+
+	if preamble.ModeID != "deductive" {
+		t.Errorf("expected ModeID=deductive, got %s", preamble.ModeID)
+	}
+	if preamble.ModeCode != "A1" {
+		t.Errorf("expected ModeCode=A1, got %s", preamble.ModeCode)
+	}
+	if preamble.Length != 2500 {
+		t.Errorf("expected Length=2500, got %d", preamble.Length)
+	}
+}
+
+func TestDryRunOptions_Fields(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+	opts := DryRunOptions{
+		IncludePreambles:      true,
+		PreamblePreviewLength: 500,
+	}
+
+	t.Logf("TEST: %s - opts: %+v", t.Name(), opts)
+
+	if !opts.IncludePreambles {
+		t.Error("expected IncludePreambles=true")
+	}
+	if opts.PreamblePreviewLength != 500 {
+		t.Errorf("expected PreamblePreviewLength=500, got %d", opts.PreamblePreviewLength)
+	}
+}
+
+func TestDryRunPlan_FullPlan(t *testing.T) {
+	t.Logf("TEST: %s - starting with full plan structure", t.Name())
+
+	plan := &DryRunPlan{
+		GeneratedAt: time.Now(),
+		SessionName: "test-ensemble",
+		Question:    "What are the main architectural issues?",
+		PresetUsed:  "project-diagnosis",
+		Modes: []DryRunMode{
+			{ID: "systems-thinking", Code: "E1", Name: "Systems Thinking", Category: "Causal", Tier: "core"},
+			{ID: "root-cause", Code: "E2", Name: "Root Cause Analysis", Category: "Causal", Tier: "core"},
+			{ID: "failure-mode", Code: "D4", Name: "Failure Mode Analysis", Category: "Change", Tier: "core"},
+		},
+		Assignments: []DryRunAssign{
+			{ModeID: "systems-thinking", ModeCode: "E1", AgentType: "cc", PaneIndex: 1, TokenBudget: 4000},
+			{ModeID: "root-cause", ModeCode: "E2", AgentType: "cod", PaneIndex: 2, TokenBudget: 4000},
+			{ModeID: "failure-mode", ModeCode: "D4", AgentType: "gmi", PaneIndex: 3, TokenBudget: 4000},
+		},
+		Budget: DryRunBudget{
+			MaxTokensPerMode:       4000,
+			MaxTotalTokens:         50000,
+			SynthesisReserveTokens: 8000,
+			ContextReserveTokens:   2000,
+			EstimatedTotalTokens:   12000,
+			ModeCount:              3,
+		},
+		Synthesis: DryRunSynthesis{
+			Strategy:      "consensus",
+			MinConfidence: 0.7,
+			MaxFindings:   20,
+		},
+		Validation: DryRunValidation{
+			Valid:    true,
+			Warnings: []string{"estimated tokens near budget"},
+		},
+		Preambles: []DryRunPreamble{
+			{ModeID: "systems-thinking", ModeCode: "E1", Preview: "You are a systems thinker...", Length: 2000},
+		},
+	}
+
+	t.Logf("TEST: %s - plan.SessionName: %s", t.Name(), plan.SessionName)
+	t.Logf("TEST: %s - plan.ModeCount(): %d", t.Name(), plan.ModeCount())
+	t.Logf("TEST: %s - plan.EstimatedTokens(): %d", t.Name(), plan.EstimatedTokens())
+
+	// Validate structure
+	if err := plan.Validate(); err != nil {
+		t.Errorf("unexpected validation error: %v", err)
+	}
+	if plan.ModeCount() != 3 {
+		t.Errorf("expected 3 modes, got %d", plan.ModeCount())
+	}
+	if plan.EstimatedTokens() != 12000 {
+		t.Errorf("expected 12000 tokens, got %d", plan.EstimatedTokens())
+	}
+	if plan.PresetUsed != "project-diagnosis" {
+		t.Errorf("expected preset project-diagnosis, got %s", plan.PresetUsed)
+	}
+	if len(plan.Assignments) != 3 {
+		t.Errorf("expected 3 assignments, got %d", len(plan.Assignments))
+	}
+	if len(plan.Preambles) != 1 {
+		t.Errorf("expected 1 preamble preview, got %d", len(plan.Preambles))
+	}
+}

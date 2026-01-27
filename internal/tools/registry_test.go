@@ -153,18 +153,18 @@ func TestRegistryGetHealthReport(t *testing.T) {
 func TestGlobalRegistryFunctions(t *testing.T) {
 	// Save current state to restore after test
 	oldAdapters := make(map[ToolName]Adapter)
-	globalMu.Lock()
+	globalRegistry.mu.Lock()
 	for k, v := range globalRegistry.adapters {
 		oldAdapters[k] = v
 	}
 	globalRegistry.adapters = make(map[ToolName]Adapter)
-	globalMu.Unlock()
+	globalRegistry.mu.Unlock()
 
 	// Restore after test
 	defer func() {
-		globalMu.Lock()
+		globalRegistry.mu.Lock()
 		globalRegistry.adapters = oldAdapters
-		globalMu.Unlock()
+		globalRegistry.mu.Unlock()
 	}()
 
 	// Test Register

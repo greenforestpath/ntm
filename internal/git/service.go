@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
@@ -186,16 +187,7 @@ func (ws *WorktreeService) CleanupSessionWorktrees(ctx context.Context, sessionN
 		// Check if this worktree is associated with the session
 		// Branch format: agent/<agent-type>/<session-id>
 		if len(wt.Branch) > 6 && wt.Branch[:6] == "agent/" {
-			parts := []string{}
-			if len(wt.Branch) > 6 {
-				parts = []string{wt.Branch[6:]}
-				for idx := 0; idx < len(parts[0]); idx++ {
-					if parts[0][idx] == '/' {
-						parts = []string{parts[0][:idx], parts[0][idx+1:]}
-						break
-					}
-				}
-			}
+			parts := strings.SplitN(wt.Branch[6:], "/", 2)
 
 			if len(parts) >= 2 {
 				agentType := parts[0]
@@ -237,19 +229,7 @@ func (ws *WorktreeService) GetSessionWorktreeStatus(ctx context.Context, session
 	for _, wt := range worktrees {
 		// Check if this worktree belongs to the session
 		if len(wt.Branch) > 6 && wt.Branch[:6] == "agent/" {
-			parts := []string{}
-			if len(wt.Branch) > 6 {
-				remaining := wt.Branch[6:]
-				for i, r := range remaining {
-					if r == '/' {
-						parts = []string{remaining[:i], remaining[i+1:]}
-						break
-					}
-				}
-				if len(parts) == 0 {
-					parts = []string{remaining}
-				}
-			}
+			parts := strings.SplitN(wt.Branch[6:], "/", 2)
 
 			if len(parts) >= 2 {
 				sessionID := parts[1]
@@ -294,16 +274,17 @@ func (ws *WorktreeService) detectAgentPanes(sessionName string) ([]AgentPane, er
 	var agentPanes []AgentPane
 
 	for _, pane := range panes {
-		// Parse agent type and number from pane title
-		// Expected format: sessionName__agentType_num (e.g., "mysession__cc_1")
-		if agentType, agentNum, isAgent := parseAgentTitle(pane.Title, sessionName); isAgent {
-			agentPanes = append(agentPanes, AgentPane{
-				PaneID:    pane.ID,
-				AgentType: agentType,
-				AgentNum:  agentNum,
-				Title:     pane.Title,
-			})
+		// Skip user panes or panes that didn't parse as NTM agents
+		if pane.Type == tmux.AgentUser || pane.NTMIndex == 0 {
+			continue
 		}
+
+		agentPanes = append(agentPanes, AgentPane{
+			PaneID:    pane.ID,
+			AgentType: string(pane.Type),
+			AgentNum:  pane.NTMIndex,
+			Title:     pane.Title,
+		})
 	}
 
 	return agentPanes, nil
@@ -320,7 +301,7 @@ func (ws *WorktreeService) changeDirectoryInPane(paneID, workingDir string) erro
 	time.Sleep(100 * time.Millisecond)
 
 	// Send the cd command
-	cdCommand := fmt.Sprintf("cd %s", workingDir)
+	cdCommand := fmt.Sprintf("cd %s", tmux.ShellQuote(workingDir))
 	if err := tmux.SendKeys(paneID, cdCommand, true); err != nil {
 		return fmt.Errorf("failed to send cd command: %w", err)
 	}
@@ -328,41 +309,7 @@ func (ws *WorktreeService) changeDirectoryInPane(paneID, workingDir string) erro
 	return nil
 }
 
-// parseAgentTitle parses agent information from a pane title
-func parseAgentTitle(title, sessionName string) (agentType string, agentNum int, isAgent bool) {
-	// Expected format: sessionName__agentType_num
-	prefix := sessionName + "__"
-	if len(title) <= len(prefix) || title[:len(prefix)] != prefix {
-		return "", 0, false
-	}
 
-	suffix := title[len(prefix):]
-
-	// Look for the pattern: agentType_num
-	for i := len(suffix) - 1; i >= 0; i-- {
-		if suffix[i] == '_' {
-			agentTypeStr := suffix[:i]
-			agentNumStr := suffix[i+1:]
-
-			// Parse the number
-			num := 0
-			for _, r := range agentNumStr {
-				if r >= '0' && r <= '9' {
-					num = num*10 + int(r-'0')
-				} else {
-					return "", 0, false
-				}
-			}
-
-			// Valid agent types
-			if agentTypeStr == "cc" || agentTypeStr == "cod" || agentTypeStr == "gmi" {
-				return agentTypeStr, num, true
-			}
-		}
-	}
-
-	return "", 0, false
-}
 
 // GetAllWorktrees returns worktrees across all managed projects
 func (ws *WorktreeService) GetAllWorktrees(ctx context.Context) (map[string][]*WorktreeInfo, error) {

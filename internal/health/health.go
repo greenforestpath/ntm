@@ -2,12 +2,12 @@
 package health
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -190,13 +190,22 @@ func checkAgent(pa tmux.PaneActivity) AgentHealth {
 	}
 
 	// Check for error patterns
-	agent.Issues = detectErrors(output)
+	issues := detectErrors(output)
 
-	// Check for rate limit and parse wait time
-	if hasRateLimitIssue(agent.Issues) {
+	// Check for rate limit and parse wait time (including exit code detection)
+	detection := ratelimit.DetectRateLimit(output)
+	if detection.RateLimited {
+		if !hasRateLimitIssue(issues) {
+			issues = append(issues, Issue{Type: "rate_limit", Message: "Rate limit detected"})
+		}
 		agent.RateLimited = true
-		agent.WaitSeconds = parseWaitTime(output)
+		agent.WaitSeconds = detection.WaitSeconds
+	} else if hasRateLimitIssue(issues) {
+		agent.RateLimited = true
+		agent.WaitSeconds = ratelimit.ParseWaitSeconds(output)
 	}
+
+	agent.Issues = issues
 
 	// Determine activity level
 	agent.Activity = detectActivity(output, pa.LastActivity, string(pa.Pane.Type))
@@ -251,27 +260,10 @@ func detectErrors(output string) []Issue {
 	return issues
 }
 
-// waitTimePatterns for extracting suggested wait times from rate limit messages
-var waitTimePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)try\s+again\s+in\s+(\d+)\s*s`),                       // "try again in 60s"
-	regexp.MustCompile(`(?i)wait\s+(\d+)\s*(?:second|sec|s)`),                    // "wait 60 seconds"
-	regexp.MustCompile(`(?i)retry\s+(?:after|in)\s+(\d+)\s*(?:s|sec)`),           // "retry after 30s"
-	regexp.MustCompile(`(?i)(\d+)\s*(?:second|sec)s?\s+(?:cooldown|delay|wait)`), // "60 second cooldown"
-	regexp.MustCompile(`(?i)rate.?limit.*?(\d+)\s*s`),                            // "rate limit exceeded, 60s"
-}
-
 // parseWaitTime extracts the suggested wait time in seconds from rate limit messages
 // Returns 0 if no wait time is found
 func parseWaitTime(output string) int {
-	for _, pattern := range waitTimePatterns {
-		if matches := pattern.FindStringSubmatch(output); len(matches) > 1 {
-			var seconds int
-			if _, err := fmt.Sscanf(matches[1], "%d", &seconds); err == nil && seconds > 0 {
-				return seconds
-			}
-		}
-	}
-	return 0
+	return ratelimit.ParseWaitSeconds(output)
 }
 
 // hasRateLimitIssue checks if any issue indicates a rate limit

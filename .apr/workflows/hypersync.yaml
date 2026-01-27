@@ -7,7 +7,8 @@ documents:
   implementation: PROPOSED_HYPERSYNC_SPEC__OPUS.md
 
 oracle:
-  model: "5.2 Pro"
+  model: "gpt-5.2-pro"
+  engine: api
   thinking_time: extended
 
 rounds:

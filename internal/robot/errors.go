@@ -145,9 +145,10 @@ func agentTypeFromPaneType(t tmux.AgentType) string {
 	}
 }
 
-// PrintErrors outputs filtered error lines from session panes.
-func PrintErrors(opts ErrorsOptions) error {
-	output := ErrorsOutput{
+// GetErrors returns filtered error lines from session panes.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetErrors(opts ErrorsOptions) (*ErrorsOutput, error) {
+	output := &ErrorsOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
 		Errors:        []ErrorEntry{},
@@ -159,26 +160,35 @@ func PrintErrors(opts ErrorsOptions) error {
 
 	// Validate session
 	if opts.Session == "" {
-		output.Success = false
+		output.RobotResponse = NewErrorResponse(
+			nil,
+			"INVALID_ARGS",
+			"Provide session name: ntm --robot-errors=myproject",
+		)
 		output.Error = "session name required"
-		output.ErrorCode = "INVALID_ARGS"
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	if !tmux.SessionExists(opts.Session) {
-		output.Success = false
+		output.RobotResponse = NewErrorResponse(
+			nil,
+			ErrCodeSessionNotFound,
+			"Use 'ntm list' to see available sessions",
+		)
 		output.Error = "session not found: " + opts.Session
-		output.ErrorCode = "SESSION_NOT_FOUND"
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Get panes
 	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
-		output.Success = false
+		output.RobotResponse = NewErrorResponse(
+			err,
+			ErrCodeInternalError,
+			"Check tmux session state",
+		)
 		output.Error = "failed to get panes: " + err.Error()
-		output.ErrorCode = "TMUX_ERROR"
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Set defaults
@@ -264,6 +274,16 @@ func PrintErrors(opts ErrorsOptions) error {
 		}
 	}
 
+	return output, nil
+}
+
+// PrintErrors outputs filtered error lines from session panes.
+// This is a thin wrapper around GetErrors() for CLI output.
+func PrintErrors(opts ErrorsOptions) error {
+	output, err := GetErrors(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 

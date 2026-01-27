@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 func newCleanupCmd() *cobra.Command {
@@ -266,13 +266,13 @@ func runCleanup(dryRun bool, maxAgeHrs int, verbose bool, forceClean bool) error
 	// Summary
 	fmt.Printf("%s───────────────────────────────────────────────────%s\n", "\033[2m", "\033[0m")
 	if dryRun {
-		fmt.Printf("Would delete: %d files/directories (%s)\n", deletedCount, formatCleanupBytes(deletedSize))
+		fmt.Printf("Would delete: %d files/directories (%s)\n", deletedCount, util.FormatBytes(deletedSize))
 		fmt.Printf("Would skip: %d files/directories (younger than %dh)\n", skippedCount, maxAgeHrs)
 		if len(results) > 0 {
 			fmt.Printf("\n%sRun without --dry-run to delete these files.%s\n", "\033[2m", "\033[0m")
 		}
 	} else {
-		fmt.Printf("Deleted: %d files/directories (%s)\n", deletedCount, formatCleanupBytes(deletedSize))
+		fmt.Printf("Deleted: %d files/directories (%s)\n", deletedCount, util.FormatBytes(deletedSize))
 		if skippedCount > 0 {
 			fmt.Printf("Skipped: %d files/directories (younger than %dh)\n", skippedCount, maxAgeHrs)
 		}
@@ -291,20 +291,6 @@ func matchesNTMPattern(name string) string {
 		matched, err := filepath.Match(pattern, name)
 		if err == nil && matched {
 			return pattern
-		}
-	}
-
-	// Additional checks for partial matches (patterns like ntm-lifecycle-*)
-	prefixes := []string{
-		"ntm-lifecycle-",
-		"test-ntm-",
-		"ntm-atomic-",
-		"ntm-prompt-",
-		"ntm-mail-",
-	}
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(name, prefix) {
-			return prefix + "*"
 		}
 	}
 
@@ -344,19 +330,7 @@ func formatCleanupDuration(d time.Duration) string {
 	return fmt.Sprintf("%.1fd", days)
 }
 
-// formatCleanupBytes formats bytes in a human-readable way
-func formatCleanupBytes(b int64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
-}
+
 
 // CleanupStats holds statistics from a cleanup operation
 type CleanupStats struct {
@@ -425,7 +399,7 @@ func MaybeRunStartupCleanup(enabled bool, maxAgeHours int, verbose bool) {
 
 	if stats.DeletedFiles > 0 && verbose {
 		fmt.Fprintf(os.Stderr, "ntm: cleaned up %d stale temp files (%s)\n",
-			stats.DeletedFiles, formatCleanupBytes(stats.DeletedSize))
+			stats.DeletedFiles, util.FormatBytes(stats.DeletedSize))
 	}
 
 	markCleanupDone()
@@ -491,7 +465,7 @@ func RunStartupCleanup(maxAgeHours int, verbose bool) (CleanupStats, error) {
 			stats.DeletedFiles++
 			stats.DeletedSize += size
 			if verbose {
-				fmt.Fprintf(os.Stderr, "ntm: cleaned up %s (%s)\n", fullPath, formatCleanupBytes(size))
+				fmt.Fprintf(os.Stderr, "ntm: cleaned up %s (%s)\n", fullPath, util.FormatBytes(size))
 			}
 		}
 	}

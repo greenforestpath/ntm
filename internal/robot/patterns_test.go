@@ -75,6 +75,8 @@ func TestPatternLibrary_Match(t *testing.T) {
 		{"claude_prompt", "claude>", "claude", true, StateWaiting},
 		{"claude_prompt_with_space", "claude> ", "claude", true, StateWaiting},
 		{"codex_prompt", "codex>", "codex", true, StateWaiting},
+		{"codex_context_left", "47% context left · ? for shortcuts", "codex", true, StateWaiting},
+		{"codex_chevron_prompt", "› Write tests for @filename", "codex", true, StateWaiting},
 		{"gemini_prompt", "gemini>", "gemini", true, StateWaiting},
 		{"rate_limit", "Rate limit exceeded", "*", true, StateError},
 		{"http_429", "HTTP 429 Too Many Requests", "*", true, StateError},
@@ -210,6 +212,8 @@ func TestPatternLibrary_HasIdlePrompt(t *testing.T) {
 	}{
 		{"claude>", "claude", true},
 		{"codex>", "codex", true},
+		{"42% context left · ? for shortcuts", "codex", true},
+		{"› Write tests for @filename", "codex", true},
 		{"gemini>", "gemini", true},
 		{"$", "*", true},
 		{">", "*", true},

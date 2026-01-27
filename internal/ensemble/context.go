@@ -5,11 +5,12 @@ import "time"
 // ContextPack captures the structured context assembled for an ensemble run.
 // It is intentionally compact and meant to be serialized or cached.
 type ContextPack struct {
-	Hash          string        `json:"hash"`
-	GeneratedAt   time.Time     `json:"generated_at"`
-	ProjectBrief  *ProjectBrief `json:"project_brief,omitempty"`
-	UserContext   *UserContext  `json:"user_context,omitempty"`
-	TokenEstimate int           `json:"token_estimate"`
+	Hash          string             `json:"hash"`
+	GeneratedAt   time.Time          `json:"generated_at"`
+	ProjectBrief  *ProjectBrief      `json:"project_brief,omitempty"`
+	UserContext   *UserContext       `json:"user_context,omitempty"`
+	Questions     []TargetedQuestion `json:"questions,omitempty"`
+	TokenEstimate int                `json:"token_estimate"`
 }
 
 // ProjectBrief summarizes repository facts and recent activity.
@@ -46,4 +47,7 @@ type UserContext struct {
 	FocusAreas       []string `json:"focus_areas,omitempty"`
 	Constraints      []string `json:"constraints,omitempty"`
 	Stakeholders     []string `json:"stakeholders,omitempty"`
+	Decisions        []string `json:"decisions,omitempty"`
+	History          []string `json:"history,omitempty"`
+	SuccessCriteria  []string `json:"success_criteria,omitempty"`
 }

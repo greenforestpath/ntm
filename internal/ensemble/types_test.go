@@ -274,7 +274,7 @@ func TestEnsemblePreset_Validate(t *testing.T) {
 	advancedPreset := EnsemblePreset{
 		Name:        "advanced-blocked",
 		Description: "Should fail",
-		Modes:       []ModeRef{ModeRefFromID("game-theory")},
+		Modes:       []ModeRef{ModeRefFromID("game-theory"), ModeRefFromID("deductive")},
 	}
 	if err := advancedPreset.Validate(catalog); err == nil {
 		t.Error("preset with advanced mode and AllowAdvanced=false should fail")
@@ -1134,6 +1134,32 @@ func TestModeCatalog_ListByTier(t *testing.T) {
 	}
 }
 
+func TestAssignmentStatus_String(t *testing.T) {
+	if AssignmentActive.String() != "active" {
+		t.Fatalf("AssignmentActive.String() = %q", AssignmentActive.String())
+	}
+}
+
+func TestValidatePreset_Helper(t *testing.T) {
+	modes := []ReasoningMode{
+		{ID: "deductive", Code: "A1", Name: "Deductive", Category: CategoryFormal, Tier: TierCore, ShortDesc: "desc"},
+		{ID: "abductive", Code: "C1", Name: "Abductive", Category: CategoryUncertainty, Tier: TierCore, ShortDesc: "desc"},
+	}
+	catalog, err := NewModeCatalog(modes, "1.0.0")
+	if err != nil {
+		t.Fatalf("NewModeCatalog error: %v", err)
+	}
+
+	preset := EnsemblePreset{
+		Name:        "test-preset",
+		Description: "desc",
+		Modes:       []ModeRef{ModeRefFromID("deductive"), ModeRefFromID("abductive")},
+	}
+	if err := ValidatePreset(preset, catalog); err != nil {
+		t.Fatalf("ValidatePreset error: %v", err)
+	}
+}
+
 func TestModeCatalog_ListDefault(t *testing.T) {
 	modes := []ReasoningMode{
 		{ID: "core1", Name: "Core 1", Category: CategoryFormal, ShortDesc: "Test", Code: "A1", Tier: TierCore},
@@ -1371,6 +1397,7 @@ func TestAgentDistribution_ZeroValue(t *testing.T) {
 func TestEnsemblePreset_JSONRoundTrip(t *testing.T) {
 	preset := EnsemblePreset{
 		Name:          "test-preset",
+		Extends:       "base-preset",
 		DisplayName:   "Test Preset",
 		Description:   "A test preset for roundtrip",
 		Modes:         []ModeRef{ModeRefFromID("deductive"), ModeRefFromCode("C1")},
@@ -1398,6 +1425,9 @@ func TestEnsemblePreset_JSONRoundTrip(t *testing.T) {
 
 	if decoded.Name != preset.Name {
 		t.Errorf("Name = %q, want %q", decoded.Name, preset.Name)
+	}
+	if decoded.Extends != preset.Extends {
+		t.Errorf("Extends = %q, want %q", decoded.Extends, preset.Extends)
 	}
 	if decoded.DisplayName != preset.DisplayName {
 		t.Errorf("DisplayName = %q, want %q", decoded.DisplayName, preset.DisplayName)

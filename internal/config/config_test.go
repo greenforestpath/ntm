@@ -482,7 +482,7 @@ func TestPrint(t *testing.T) {
 		t.Fatalf("Print failed: %v", err)
 	}
 	output := buf.String()
-	for _, section := range []string{"[agents]", "[tmux]", "[agent_mail]", "[integrations.dcg]", "[models]", "[[palette]]"} {
+	for _, section := range []string{"[agents]", "[tmux]", "[agent_mail]", "[integrations.dcg]", "[models]", "[ensemble]", "[[palette]]"} {
 		if !strings.Contains(output, section) {
 			t.Errorf("Expected output to contain %s", section)
 		}

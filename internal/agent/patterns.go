@@ -129,6 +129,7 @@ var (
 		regexp.MustCompile(`>\s*$`),                // Standard prompt
 		regexp.MustCompile(`\?\s*for\s*shortcuts`), // Codex prompt line
 		regexp.MustCompile(`codex>\s*$`),           // Codex prompt
+		regexp.MustCompile(`(?m)^\s*›\s*.*$`),      // Codex chevron prompt
 	}
 
 	// codErrorPatterns indicates error conditions.
@@ -277,7 +278,8 @@ func getLastNLines(text string, n int) string {
 
 // stripANSICodes removes ANSI escape sequences from text.
 // This ensures pattern matching works correctly on terminal output.
-var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+// Matches CSI sequences (with private mode ?) and OSC sequences (title setting etc)
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\a\x1b]*(\a|\x1b\\)`)
 
 func stripANSICodes(text string) string {
 	return ansiPattern.ReplaceAllString(text, "")

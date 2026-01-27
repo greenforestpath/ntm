@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 // paneNameRegex matches the NTM pane naming convention:
@@ -26,48 +27,21 @@ var paneNameRegex = regexp.MustCompile(`^.+__([\w-]+)_(\d+)(?:_([A-Za-z0-9._/@:+
 var sessionNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // AgentType represents the type of AI agent
-type AgentType string
+type AgentType = agent.AgentType
 
 const (
-	AgentClaude   AgentType = "cc"
-	AgentCodex    AgentType = "cod"
-	AgentGemini   AgentType = "gmi"
-	AgentCursor   AgentType = "cursor"
-	AgentWindsurf AgentType = "windsurf"
-	AgentAider    AgentType = "aider"
-	AgentUser     AgentType = "user"
+	AgentClaude   = agent.AgentTypeClaudeCode
+	AgentCodex    = agent.AgentTypeCodex
+	AgentGemini   = agent.AgentTypeGemini
+	AgentCursor   = agent.AgentTypeCursor
+	AgentWindsurf = agent.AgentTypeWindsurf
+	AgentAider    = agent.AgentTypeAider
+	AgentUser     = agent.AgentTypeUser
+	AgentUnknown  = agent.AgentTypeUnknown
 )
 
 // FieldSeparator is used to separate fields in tmux format strings.
-// It uses a unique sequence unlikely to appear in user input (e.g. pane titles).
-const FieldSeparator = "|#~NTM~#|"
-
-// ProfileName returns the friendly display name for the agent type.
-// This is used in the dashboard to show profile names prominently.
-func (a AgentType) ProfileName() string {
-	switch a {
-	case AgentClaude:
-		return "Claude"
-	case AgentCodex:
-		return "Codex"
-	case AgentGemini:
-		return "Gemini"
-	case AgentCursor:
-		return "Cursor"
-	case AgentWindsurf:
-		return "Windsurf"
-	case AgentAider:
-		return "Aider"
-	case AgentUser:
-		return "User"
-	default:
-		// Capitalize first letter for unknown types
-		if len(a) > 0 {
-			return strings.ToUpper(string(a)[:1]) + string(a)[1:]
-		}
-		return string(a)
-	}
-}
+const FieldSeparator = ":::"
 
 // Pane represents a tmux pane
 type Pane struct {
@@ -982,17 +956,11 @@ func (c *Client) GetPaneActivity(paneID string) (time.Time, error) {
 		return time.Time{}, err
 	}
 
-	// Some tmux versions may return an empty string for fresh panes; treat as current time
-	if strings.TrimSpace(output) == "" {
-		return time.Now(), nil
-	}
-
-	timestamp, err := strconv.ParseInt(output, 10, 64)
+	activity, err := parsePaneActivityTimestamp(output, time.Now())
 	if err != nil {
 		return time.Time{}, fmt.Errorf("failed to parse pane activity timestamp: %w", err)
 	}
-
-	return time.Unix(timestamp, 0), nil
+	return activity, nil
 }
 
 // GetPaneActivity returns the last activity time for a pane (default client)
@@ -1030,8 +998,14 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 		width, _ := strconv.Atoi(parts[4])
 		height, _ := strconv.Atoi(parts[5])
 		active := parts[6] == "1"
-		timestamp, _ := strconv.ParseInt(parts[7], 10, 64)
+		rawTimestamp := strings.TrimSpace(parts[7])
 		pid, _ := strconv.Atoi(parts[8])
+		now := time.Now()
+		lastActivity, err := parsePaneActivityTimestamp(rawTimestamp, now)
+		if err != nil {
+			// Unparseable timestamps should not produce huge idle durations.
+			lastActivity = now
+		}
 
 		pane := Pane{
 			ID:      parts[0],
@@ -1049,11 +1023,28 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 
 		panes = append(panes, PaneActivity{
 			Pane:         pane,
-			LastActivity: time.Unix(timestamp, 0),
+			LastActivity: lastActivity,
 		})
 	}
 
 	return panes, nil
+}
+
+func parsePaneActivityTimestamp(raw string, now time.Time) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return now, nil
+	}
+
+	timestamp, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if timestamp <= 0 {
+		// Some tmux versions return 0 for fresh panes; treat as current time.
+		return now, nil
+	}
+	return time.Unix(timestamp, 0), nil
 }
 
 // GetPanesWithActivity returns all panes in a session with their activity times

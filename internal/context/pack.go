@@ -193,8 +193,12 @@ func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*Con
 		pack = b.truncateOverflow(pack, budget)
 	}
 
-	// Cache
+	// Cache with simple eviction
 	globalCacheMu.Lock()
+	if len(globalCache) >= 20 {
+		// Simple eviction: clear everything to prevent unlimited growth
+		globalCache = make(map[string]*ContextPackFull)
+	}
 	globalCache[key] = pack
 	globalCacheMu.Unlock()
 

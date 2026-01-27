@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -8,11 +9,15 @@ import (
 	"sync"
 )
 
+// HandlerFunc executes a command with the provided input.
+type HandlerFunc func(ctx context.Context, input any) (any, error)
+
 // Registry stores command metadata for CLI/TUI/REST surfaces.
 type Registry struct {
 	mu        sync.RWMutex
 	commands  map[string]Command
 	restIndex map[string]string
+	handlers  map[string]HandlerFunc
 }
 
 // NewRegistry creates an empty registry.
@@ -20,6 +25,7 @@ func NewRegistry() *Registry {
 	return &Registry{
 		commands:  make(map[string]Command),
 		restIndex: make(map[string]string),
+		handlers:  make(map[string]HandlerFunc),
 	}
 }
 
@@ -65,6 +71,34 @@ func (r *Registry) Register(cmd Command) error {
 	return nil
 }
 
+// RegisterHandler associates a handler with a registered command.
+func (r *Registry) RegisterHandler(name string, handler HandlerFunc) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("command name is required")
+	}
+	if handler == nil {
+		return fmt.Errorf("handler for %q is nil", name)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.commands[name]; !exists {
+		err := fmt.Errorf("command %q not registered", name)
+		slog.Error("kernel handler registration failed", "command", name, "error", err)
+		return err
+	}
+	if _, exists := r.handlers[name]; exists {
+		err := fmt.Errorf("handler for %q already registered", name)
+		slog.Error("kernel handler registration failed", "command", name, "error", err)
+		return err
+	}
+
+	r.handlers[name] = handler
+	return nil
+}
+
 // Get returns a command by name.
 func (r *Registry) Get(name string) (Command, bool) {
 	r.mu.RLock()
@@ -94,6 +128,27 @@ func (r *Registry) List() []Command {
 		out = append(out, r.commands[name])
 	}
 	return out
+}
+
+// Run executes a registered command handler.
+func (r *Registry) Run(ctx context.Context, name string, input any) (any, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("command name is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	r.mu.RLock()
+	handler, ok := r.handlers[name]
+	r.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("handler for %q not registered", name)
+	}
+
+	return handler(ctx, input)
 }
 
 func validateCommand(cmd Command) error {
@@ -155,6 +210,18 @@ func MustRegister(cmd Command) {
 	}
 }
 
+// RegisterHandler registers a handler for a command in the default registry.
+func RegisterHandler(name string, handler HandlerFunc) error {
+	return defaultRegistry.RegisterHandler(name, handler)
+}
+
+// MustRegisterHandler registers a handler or panics on failure.
+func MustRegisterHandler(name string, handler HandlerFunc) {
+	if err := RegisterHandler(name, handler); err != nil {
+		panic(err)
+	}
+}
+
 // Get returns a command from the default registry.
 func Get(name string) (Command, bool) {
 	return defaultRegistry.Get(name)
@@ -163,4 +230,9 @@ func Get(name string) (Command, bool) {
 // List returns all commands from the default registry.
 func List() []Command {
 	return defaultRegistry.List()
+}
+
+// Run executes a handler in the default registry.
+func Run(ctx context.Context, name string, input any) (any, error) {
+	return defaultRegistry.Run(ctx, name, input)
 }

@@ -135,7 +135,8 @@ func killSession(logger *TestLogger, name string) {
 	}
 }
 
-// KillAllTestSessions kills all ntm test sessions (those starting with "ntm_test_").
+// KillAllTestSessions kills all ntm test sessions.
+// Matches both naming conventions: "ntm_test_*" (underscore) and "ntm-test-*" (hyphen).
 // Useful for cleanup in TestMain or after failed tests.
 func KillAllTestSessions(logger *TestLogger) {
 	logger.LogSection("Killing All Test Sessions")
@@ -150,7 +151,8 @@ func KillAllTestSessions(logger *TestLogger) {
 	sessions := strings.Split(strings.TrimSpace(string(out)), "\n")
 	killed := 0
 	for _, session := range sessions {
-		if strings.HasPrefix(session, "ntm_test_") {
+		// Match both naming conventions used in tests
+		if strings.HasPrefix(session, "ntm_test_") || strings.HasPrefix(session, "ntm-test-") {
 			logger.Log("Killing orphan test session: %s", session)
 			exec.Command(tmux.BinaryPath(), "kill-session", "-t", session).Run()
 			killed++
@@ -158,6 +160,25 @@ func KillAllTestSessions(logger *TestLogger) {
 	}
 
 	logger.Log("Killed %d orphan test sessions", killed)
+}
+
+// KillAllTestSessionsSilent kills all ntm test sessions without logging.
+// Use this in TestMain where a logger may not be available.
+func KillAllTestSessionsSilent() int {
+	out, err := exec.Command(tmux.BinaryPath(), "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return 0
+	}
+
+	sessions := strings.Split(strings.TrimSpace(string(out)), "\n")
+	killed := 0
+	for _, session := range sessions {
+		if strings.HasPrefix(session, "ntm_test_") || strings.HasPrefix(session, "ntm-test-") {
+			exec.Command(tmux.BinaryPath(), "kill-session", "-t", session).Run()
+			killed++
+		}
+	}
+	return killed
 }
 
 // SessionExists checks if a tmux session exists.

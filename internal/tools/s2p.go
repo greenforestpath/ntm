@@ -43,7 +43,7 @@ func (a *S2PAdapter) Version(ctx context.Context) (Version, error) {
 		return Version{}, fmt.Errorf("failed to get s2p version: %w", err)
 	}
 
-	return parseVersion(stdout.String())
+	return ParseStandardVersion(stdout.String())
 }
 
 // Capabilities returns s2p capabilities
@@ -116,19 +116,6 @@ func (a *S2PAdapter) GenerateContext(ctx context.Context, dir string, patterns [
 	args = append(args, patterns...)
 
 	return a.runCommand(ctx, dir, args...)
-}
-
-// LimitedBuffer is a bytes.Buffer that errors on overflow
-type LimitedBuffer struct {
-	bytes.Buffer
-	Limit int
-}
-
-func (b *LimitedBuffer) Write(p []byte) (n int, err error) {
-	if b.Len()+len(p) > b.Limit {
-		return 0, fmt.Errorf("output limit exceeded")
-	}
-	return b.Buffer.Write(p)
 }
 
 func (a *S2PAdapter) runCommand(ctx context.Context, dir string, args ...string) ([]byte, error) {

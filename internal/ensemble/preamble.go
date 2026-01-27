@@ -111,6 +111,7 @@ func (e *PreambleEngine) renderModeSection(mode *ReasoningMode) string {
 
 	sb.WriteString("## YOUR REASONING MODE\n\n")
 	sb.WriteString(fmt.Sprintf("**Mode**: %s (%s)\n", mode.Name, mode.Code))
+	sb.WriteString(fmt.Sprintf("**ID**: %s\n", mode.ID))
 	sb.WriteString(fmt.Sprintf("**Category**: %s\n\n", mode.Category))
 
 	// Description
@@ -204,6 +205,35 @@ func formatContextPack(cp *ContextPack) string {
 		}
 		if len(uc.Constraints) > 0 {
 			sb.WriteString(fmt.Sprintf("**Constraints**: %s\n", strings.Join(uc.Constraints, ", ")))
+		}
+		if len(uc.Stakeholders) > 0 {
+			sb.WriteString(fmt.Sprintf("**Stakeholders**: %s\n", strings.Join(uc.Stakeholders, ", ")))
+		}
+		if len(uc.Decisions) > 0 {
+			sb.WriteString(fmt.Sprintf("**Decisions**: %s\n", strings.Join(uc.Decisions, ", ")))
+		}
+		if len(uc.History) > 0 {
+			sb.WriteString(fmt.Sprintf("**History**: %s\n", strings.Join(uc.History, ", ")))
+		}
+		if len(uc.SuccessCriteria) > 0 {
+			sb.WriteString(fmt.Sprintf("**Success**: %s\n", strings.Join(uc.SuccessCriteria, ", ")))
+		}
+	}
+
+	if len(cp.Questions) > 0 {
+		sb.WriteString("\n**Questions**:\n")
+		for _, q := range cp.Questions {
+			label := q.Question
+			if q.Required {
+				label += " (required)"
+			}
+			if q.WhyAsked != "" {
+				label = fmt.Sprintf("%s — %s", label, q.WhyAsked)
+			}
+			sb.WriteString(fmt.Sprintf("- %s\n", label))
+			if q.DefaultHint != "" {
+				sb.WriteString(fmt.Sprintf("  hint: %s\n", q.DefaultHint))
+			}
 		}
 	}
 

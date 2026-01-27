@@ -369,7 +369,7 @@ func applyGoTemplate(dir string) error {
 	projectName := filepath.Base(dir)
 	goMod := fmt.Sprintf(`module %s
 
-go 1.22
+go 1.25
 `, projectName)
 
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0644); err != nil {

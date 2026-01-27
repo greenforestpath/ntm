@@ -45,13 +45,14 @@ type CASSIndexStats struct {
 	Messages      int64 `json:"messages"`
 }
 
-// PrintCASSStatus outputs CASS health and stats as JSON
-func PrintCASSStatus() error {
+// GetCASSStatus collects CASS health and stats.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetCASSStatus() (*CASSStatusOutput, error) {
 	client := cass.NewClient()
 	status, err := client.Status(context.Background())
 
 	cassAvailable := client.IsInstalled()
-	output := CASSStatusOutput{
+	output := &CASSStatusOutput{
 		RobotResponse: NewRobotResponse(true),
 		CASSAvailable: cassAvailable,
 		Healthy:       false,
@@ -64,7 +65,7 @@ func PrintCASSStatus() error {
 			ErrCodeDependencyMissing,
 			"Install cass to enable search and context",
 		)
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	if err == nil {
@@ -82,6 +83,16 @@ func PrintCASSStatus() error {
 		)
 	}
 
+	return output, nil
+}
+
+// PrintCASSStatus outputs CASS health and stats as JSON.
+// This is a thin wrapper around GetCASSStatus() for CLI output.
+func PrintCASSStatus() error {
+	output, err := GetCASSStatus()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -104,43 +115,51 @@ type CASSSearchHit struct {
 	CreatedAt  int64   `json:"created_at"`
 }
 
-// PrintCASSSearch outputs search results as JSON
-func PrintCASSSearch(query, agent, workspace, since string, limit int) error {
+// CASSSearchOptions configures the GetCASSSearch operation.
+type CASSSearchOptions struct {
+	Query     string
+	Agent     string
+	Workspace string
+	Since     string
+	Limit     int
+}
+
+// GetCASSSearch performs a CASS search and returns the results.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetCASSSearch(opts CASSSearchOptions) (*CASSSearchOutput, error) {
 	client := cass.NewClient()
 	if !client.IsInstalled() {
-		output := CASSSearchOutput{
+		return &CASSSearchOutput{
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("cass not installed"),
 				ErrCodeDependencyMissing,
 				"Install cass to enable search",
 			),
-			Query: query,
+			Query: opts.Query,
 			Hits:  []CASSSearchHit{},
-		}
-		return encodeJSON(output)
+		}, nil
 	}
 	resp, err := client.Search(context.Background(), cass.SearchOptions{
-		Query:     query,
-		Agent:     agent,
-		Workspace: workspace,
-		Since:     since,
-		Limit:     limit,
+		Query:     opts.Query,
+		Agent:     opts.Agent,
+		Workspace: opts.Workspace,
+		Since:     opts.Since,
+		Limit:     opts.Limit,
 	})
 
 	if err != nil {
-		output := CASSSearchOutput{
+		return &CASSSearchOutput{
 			RobotResponse: NewErrorResponse(
 				err,
 				ErrCodeInternalError,
 				"Check cass index health and query parameters",
 			),
-			Query: query,
+			Query: opts.Query,
 			Hits:  []CASSSearchHit{},
-		}
-		return encodeJSON(output)
+		}, nil
 	}
 
-	output := CASSSearchOutput{
+	output := &CASSSearchOutput{
 		RobotResponse: NewRobotResponse(true),
 		Query:         resp.Query,
 		Count:         resp.Count,
@@ -163,6 +182,22 @@ func PrintCASSSearch(query, agent, workspace, since string, limit int) error {
 		}
 	}
 
+	return output, nil
+}
+
+// PrintCASSSearch outputs search results as JSON.
+// This is a thin wrapper around GetCASSSearch() for CLI output.
+func PrintCASSSearch(query, agent, workspace, since string, limit int) error {
+	output, err := GetCASSSearch(CASSSearchOptions{
+		Query:     query,
+		Agent:     agent,
+		Workspace: workspace,
+		Since:     since,
+		Limit:     limit,
+	})
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -175,11 +210,12 @@ type CASSInsightsOutput struct {
 	Errors []map[string]interface{} `json:"errors"`
 }
 
-// PrintCASSInsights outputs aggregated insights as JSON
-func PrintCASSInsights() error {
+// GetCASSInsights returns aggregated insights.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetCASSInsights() (*CASSInsightsOutput, error) {
 	client := cass.NewClient()
 	if !client.IsInstalled() {
-		output := CASSInsightsOutput{
+		return &CASSInsightsOutput{
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("cass not installed"),
 				ErrCodeDependencyMissing,
@@ -189,8 +225,7 @@ func PrintCASSInsights() error {
 			Agents: map[string]interface{}{},
 			Topics: []map[string]interface{}{},
 			Errors: []map[string]interface{}{},
-		}
-		return encodeJSON(output)
+		}, nil
 	}
 	// Get aggregations for the last 7 days by default
 	resp, err := client.Search(context.Background(), cass.SearchOptions{
@@ -200,7 +235,7 @@ func PrintCASSInsights() error {
 	})
 
 	if err != nil {
-		output := CASSInsightsOutput{
+		return &CASSInsightsOutput{
 			RobotResponse: NewErrorResponse(
 				err,
 				ErrCodeInternalError,
@@ -210,11 +245,10 @@ func PrintCASSInsights() error {
 			Agents: map[string]interface{}{},
 			Topics: []map[string]interface{}{},
 			Errors: []map[string]interface{}{},
-		}
-		return encodeJSON(output)
+		}, nil
 	}
 
-	output := CASSInsightsOutput{
+	output := &CASSInsightsOutput{
 		RobotResponse: NewRobotResponse(true),
 		Period:        "7d",
 		Agents:        map[string]interface{}{},
@@ -242,6 +276,16 @@ func PrintCASSInsights() error {
 		}
 	}
 
+	return output, nil
+}
+
+// PrintCASSInsights outputs aggregated insights as JSON.
+// This is a thin wrapper around GetCASSInsights() for CLI output.
+func PrintCASSInsights() error {
+	output, err := GetCASSInsights()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -262,11 +306,12 @@ type CASSContextSession struct {
 	When      string   `json:"when"`
 }
 
-// PrintCASSContext outputs relevant past context for spawning
-func PrintCASSContext(query string) error {
+// GetCASSContext returns relevant past context for spawning.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetCASSContext(query string) (*CASSContextOutput, error) {
 	client := cass.NewClient()
 	if !client.IsInstalled() {
-		output := CASSContextOutput{
+		return &CASSContextOutput{
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("cass not installed"),
 				ErrCodeDependencyMissing,
@@ -274,8 +319,7 @@ func PrintCASSContext(query string) error {
 			),
 			Query:            query,
 			RelevantSessions: []CASSContextSession{},
-		}
-		return encodeJSON(output)
+		}, nil
 	}
 	// Search for relevant sessions
 	resp, err := client.Search(context.Background(), cass.SearchOptions{
@@ -284,10 +328,18 @@ func PrintCASSContext(query string) error {
 	})
 
 	if err != nil {
-		return fmt.Errorf("context search failed: %w", err)
+		return &CASSContextOutput{
+			RobotResponse: NewErrorResponse(
+				err,
+				ErrCodeInternalError,
+				"Check cass index health",
+			),
+			Query:            query,
+			RelevantSessions: []CASSContextSession{},
+		}, nil
 	}
 
-	output := CASSContextOutput{
+	output := &CASSContextOutput{
 		RobotResponse:    NewRobotResponse(true),
 		Query:            query,
 		RelevantSessions: []CASSContextSession{},
@@ -320,6 +372,16 @@ func PrintCASSContext(query string) error {
 		output.SuggestedContext = fmt.Sprintf("Consider reviewing: %s", strings.Join(suggestions, ", "))
 	}
 
+	return output, nil
+}
+
+// PrintCASSContext outputs relevant past context for spawning.
+// This is a thin wrapper around GetCASSContext() for CLI output.
+func PrintCASSContext(query string) error {
+	output, err := GetCASSContext(query)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -329,114 +391,77 @@ func PrintCASSContext(query string) error {
 
 // JFPStatusOutput represents the output for --robot-jfp-status
 type JFPStatusOutput struct {
-	Success      bool        `json:"success"`
-	Timestamp    string      `json:"timestamp"`
+	RobotResponse
 	JFPAvailable bool        `json:"jfp_available"`
 	Healthy      bool        `json:"healthy"`
 	Version      string      `json:"version,omitempty"`
-	Error        string      `json:"error,omitempty"`
-	ErrorCode    string      `json:"error_code,omitempty"`
-	Hint         string      `json:"hint,omitempty"`
 	Data         interface{} `json:"data,omitempty"`
 }
 
 // JFPListOutput represents the output for --robot-jfp-list
 type JFPListOutput struct {
-	Success   bool            `json:"success"`
-	Timestamp string          `json:"timestamp"`
+	RobotResponse
 	Count     int             `json:"count"`
 	Prompts   json.RawMessage `json:"prompts"`
-	Error     string          `json:"error,omitempty"`
-	ErrorCode string          `json:"error_code,omitempty"`
-	Hint      string          `json:"hint,omitempty"`
 }
 
 // JFPSearchOutput represents the output for --robot-jfp-search
 type JFPSearchOutput struct {
-	Success   bool            `json:"success"`
-	Timestamp string          `json:"timestamp"`
+	RobotResponse
 	Query     string          `json:"query"`
 	Count     int             `json:"count"`
 	Results   json.RawMessage `json:"results"`
-	Error     string          `json:"error,omitempty"`
-	ErrorCode string          `json:"error_code,omitempty"`
-	Hint      string          `json:"hint,omitempty"`
 }
 
 // JFPShowOutput represents the output for --robot-jfp-show
 type JFPShowOutput struct {
-	Success   bool            `json:"success"`
-	Timestamp string          `json:"timestamp"`
+	RobotResponse
 	ID        string          `json:"id"`
 	Prompt    json.RawMessage `json:"prompt,omitempty"`
-	Error     string          `json:"error,omitempty"`
-	ErrorCode string          `json:"error_code,omitempty"`
-	Hint      string          `json:"hint,omitempty"`
 }
 
 // JFPSuggestOutput represents the output for --robot-jfp-suggest
 type JFPSuggestOutput struct {
-	Success     bool            `json:"success"`
-	Timestamp   string          `json:"timestamp"`
+	RobotResponse
 	Task        string          `json:"task"`
 	Suggestions json.RawMessage `json:"suggestions"`
-	Error       string          `json:"error,omitempty"`
-	ErrorCode   string          `json:"error_code,omitempty"`
-	Hint        string          `json:"hint,omitempty"`
 }
 
 // JFPInstalledOutput represents the output for --robot-jfp-installed
 type JFPInstalledOutput struct {
-	Success   bool            `json:"success"`
-	Timestamp string          `json:"timestamp"`
+	RobotResponse
 	Count     int             `json:"count"`
 	Skills    json.RawMessage `json:"skills"`
-	Error     string          `json:"error,omitempty"`
-	ErrorCode string          `json:"error_code,omitempty"`
-	Hint      string          `json:"hint,omitempty"`
 }
 
 // JFPCategoriesOutput represents the output for --robot-jfp-categories
 type JFPCategoriesOutput struct {
-	Success    bool            `json:"success"`
-	Timestamp  string          `json:"timestamp"`
+	RobotResponse
 	Count      int             `json:"count"`
 	Categories json.RawMessage `json:"categories"`
-	Error      string          `json:"error,omitempty"`
-	ErrorCode  string          `json:"error_code,omitempty"`
-	Hint       string          `json:"hint,omitempty"`
 }
 
 // JFPTagsOutput represents the output for --robot-jfp-tags
 type JFPTagsOutput struct {
-	Success   bool            `json:"success"`
-	Timestamp string          `json:"timestamp"`
+	RobotResponse
 	Count     int             `json:"count"`
 	Tags      json.RawMessage `json:"tags"`
-	Error     string          `json:"error,omitempty"`
-	ErrorCode string          `json:"error_code,omitempty"`
-	Hint      string          `json:"hint,omitempty"`
 }
 
 // JFPBundlesOutput represents the output for --robot-jfp-bundles
 type JFPBundlesOutput struct {
-	Success   bool            `json:"success"`
-	Timestamp string          `json:"timestamp"`
+	RobotResponse
 	Count     int             `json:"count"`
 	Bundles   json.RawMessage `json:"bundles"`
-	Error     string          `json:"error,omitempty"`
-	ErrorCode string          `json:"error_code,omitempty"`
-	Hint      string          `json:"hint,omitempty"`
 }
 
-// PrintJFPStatus outputs JFP health and status as JSON
-func PrintJFPStatus() error {
+// GetJFPStatus returns JFP health and status.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetJFPStatus() (*JFPStatusOutput, error) {
 	adapter := tools.NewJFPAdapter()
-	now := time.Now().UTC().Format(time.RFC3339)
 
-	output := JFPStatusOutput{
-		Success:      true,
-		Timestamp:    now,
+	output := &JFPStatusOutput{
+		RobotResponse: NewRobotResponse(true),
 		JFPAvailable: false,
 		Healthy:      false,
 	}
@@ -446,22 +471,24 @@ func PrintJFPStatus() error {
 	output.JFPAvailable = installed
 
 	if !installed {
-		output.Success = false
-		output.ErrorCode = "DEPENDENCY_MISSING"
-		output.Error = "jfp not installed"
-		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("jfp not installed"),
+			ErrCodeDependencyMissing,
+			"Install jfp with: npm install -g jeffreysprompts",
+		)
+		return output, nil
 	}
 
 	// Check health
 	ctx := context.Background()
 	health, err := adapter.Health(ctx)
 	if err != nil {
-		output.Success = false
-		output.ErrorCode = "HEALTH_CHECK_FAILED"
-		output.Error = err.Error()
-		output.Hint = "Run 'jfp doctor' to diagnose issues"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			err,
+			"HEALTH_CHECK_FAILED",
+			"Run 'jfp doctor' to diagnose issues",
+		)
+		return output, nil
 	}
 
 	output.Healthy = health.Healthy
@@ -478,47 +505,64 @@ func PrintJFPStatus() error {
 		output.Data = json.RawMessage(statusData)
 	}
 
+	return output, nil
+}
+
+// PrintJFPStatus outputs JFP health and status as JSON.
+// This is a thin wrapper around GetJFPStatus() for CLI output.
+func PrintJFPStatus() error {
+	output, err := GetJFPStatus()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintJFPList outputs all prompts as JSON
-func PrintJFPList(category, tag string) error {
-	adapter := tools.NewJFPAdapter()
-	now := time.Now().UTC().Format(time.RFC3339)
+// JFPListOptions configures the GetJFPList operation.
+type JFPListOptions struct {
+	Category string
+	Tag      string
+}
 
-	output := JFPListOutput{
-		Success:   true,
-		Timestamp: now,
+// GetJFPList returns all prompts.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetJFPList(opts JFPListOptions) (*JFPListOutput, error) {
+	adapter := tools.NewJFPAdapter()
+
+	output := &JFPListOutput{
+		RobotResponse: NewRobotResponse(true),
 	}
 
 	// Check if jfp is installed
 	_, installed := adapter.Detect()
 	if !installed {
-		output.Success = false
-		output.ErrorCode = "DEPENDENCY_MISSING"
-		output.Error = "jfp not installed"
-		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("jfp not installed"),
+			ErrCodeDependencyMissing,
+			"Install jfp with: npm install -g jeffreysprompts",
+		)
+		return output, nil
 	}
 
 	ctx := context.Background()
 	var data json.RawMessage
 	var err error
 
-	if category != "" {
-		data, err = adapter.ListByCategory(ctx, category)
-	} else if tag != "" {
-		data, err = adapter.ListByTag(ctx, tag)
+	if opts.Category != "" {
+		data, err = adapter.ListByCategory(ctx, opts.Category)
+	} else if opts.Tag != "" {
+		data, err = adapter.ListByTag(ctx, opts.Tag)
 	} else {
 		data, err = adapter.List(ctx)
 	}
 
 	if err != nil {
-		output.Success = false
-		output.ErrorCode = "LIST_FAILED"
-		output.Error = err.Error()
-		output.Hint = "Check 'jfp status' for registry connectivity"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			err,
+			"LIST_FAILED",
+			"Check 'jfp status' for registry connectivity",
+		)
+		return output, nil
 	}
 
 	output.Prompts = data
@@ -529,47 +573,62 @@ func PrintJFPList(category, tag string) error {
 		output.Count = len(items)
 	}
 
+	return output, nil
+}
+
+// PrintJFPList outputs all prompts as JSON.
+// This is a thin wrapper around GetJFPList() for CLI output.
+func PrintJFPList(category, tag string) error {
+	output, err := GetJFPList(JFPListOptions{
+		Category: category,
+		Tag:      tag,
+	})
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintJFPSearch outputs search results as JSON
-func PrintJFPSearch(query string) error {
+// GetJFPSearch returns search results.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetJFPSearch(query string) (*JFPSearchOutput, error) {
 	adapter := tools.NewJFPAdapter()
-	now := time.Now().UTC().Format(time.RFC3339)
 
-	output := JFPSearchOutput{
-		Success:   true,
-		Timestamp: now,
+	output := &JFPSearchOutput{
+		RobotResponse: NewRobotResponse(true),
 		Query:     query,
 	}
 
 	// Check if jfp is installed
 	_, installed := adapter.Detect()
 	if !installed {
-		output.Success = false
-		output.ErrorCode = "DEPENDENCY_MISSING"
-		output.Error = "jfp not installed"
-		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("jfp not installed"),
+			ErrCodeDependencyMissing,
+			"Install jfp with: npm install -g jeffreysprompts",
+		)
+		return output, nil
 	}
 
 	if query == "" {
-		output.Success = false
-		output.ErrorCode = "INVALID_FLAG"
-		output.Error = "query is required"
-		output.Hint = "Provide a search query, e.g., --robot-jfp-search='debugging'"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("query is required"),
+			ErrCodeInvalidFlag,
+			"Provide a search query, e.g., --robot-jfp-search='debugging'",
+		)
+		return output, nil
 	}
 
 	ctx := context.Background()
 	data, err := adapter.Search(ctx, query)
 
 	if err != nil {
-		output.Success = false
-		output.ErrorCode = "SEARCH_FAILED"
-		output.Error = err.Error()
-		output.Hint = "Try a different search query"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			err,
+			"SEARCH_FAILED",
+			"Try a different search query",
+		)
+		return output, nil
 	}
 
 	output.Results = data
@@ -580,130 +639,165 @@ func PrintJFPSearch(query string) error {
 		output.Count = len(items)
 	}
 
+	return output, nil
+}
+
+// PrintJFPSearch outputs search results as JSON.
+// This is a thin wrapper around GetJFPSearch() for CLI output.
+func PrintJFPSearch(query string) error {
+	output, err := GetJFPSearch(query)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintJFPShow outputs a specific prompt by ID as JSON
-func PrintJFPShow(id string) error {
+// GetJFPShow returns a specific prompt by ID.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetJFPShow(id string) (*JFPShowOutput, error) {
 	adapter := tools.NewJFPAdapter()
-	now := time.Now().UTC().Format(time.RFC3339)
 
-	output := JFPShowOutput{
-		Success:   true,
-		Timestamp: now,
+	output := &JFPShowOutput{
+		RobotResponse: NewRobotResponse(true),
 		ID:        id,
 	}
 
 	// Check if jfp is installed
 	_, installed := adapter.Detect()
 	if !installed {
-		output.Success = false
-		output.ErrorCode = "DEPENDENCY_MISSING"
-		output.Error = "jfp not installed"
-		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("jfp not installed"),
+			ErrCodeDependencyMissing,
+			"Install jfp with: npm install -g jeffreysprompts",
+		)
+		return output, nil
 	}
 
 	if id == "" {
-		output.Success = false
-		output.ErrorCode = "INVALID_FLAG"
-		output.Error = "prompt ID is required"
-		output.Hint = "Provide a prompt ID, e.g., --robot-jfp-show=my-prompt-id"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("prompt ID is required"),
+			ErrCodeInvalidFlag,
+			"Provide a prompt ID, e.g., --robot-jfp-show=my-prompt-id",
+		)
+		return output, nil
 	}
 
 	ctx := context.Background()
 	data, err := adapter.Show(ctx, id)
 
 	if err != nil {
-		output.Success = false
+		code := "SHOW_FAILED"
 		if strings.Contains(err.Error(), "not found") {
-			output.ErrorCode = "NOT_FOUND"
-		} else {
-			output.ErrorCode = "SHOW_FAILED"
+			code = "NOT_FOUND"
 		}
-		output.Error = err.Error()
-		output.Hint = "Use --robot-jfp-search to find available prompts"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			err,
+			code,
+			"Use --robot-jfp-search to find available prompts",
+		)
+		return output, nil
 	}
 
 	output.Prompt = data
+	return output, nil
+}
+
+// PrintJFPShow outputs a specific prompt by ID as JSON.
+// This is a thin wrapper around GetJFPShow() for CLI output.
+func PrintJFPShow(id string) error {
+	output, err := GetJFPShow(id)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintJFPSuggest outputs prompt suggestions for a task as JSON
-func PrintJFPSuggest(task string) error {
+// GetJFPSuggest returns prompt suggestions for a task.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetJFPSuggest(task string) (*JFPSuggestOutput, error) {
 	adapter := tools.NewJFPAdapter()
-	now := time.Now().UTC().Format(time.RFC3339)
 
-	output := JFPSuggestOutput{
-		Success:   true,
-		Timestamp: now,
+	output := &JFPSuggestOutput{
+		RobotResponse: NewRobotResponse(true),
 		Task:      task,
 	}
 
 	// Check if jfp is installed
 	_, installed := adapter.Detect()
 	if !installed {
-		output.Success = false
-		output.ErrorCode = "DEPENDENCY_MISSING"
-		output.Error = "jfp not installed"
-		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("jfp not installed"),
+			ErrCodeDependencyMissing,
+			"Install jfp with: npm install -g jeffreysprompts",
+		)
+		return output, nil
 	}
 
 	if task == "" {
-		output.Success = false
-		output.ErrorCode = "INVALID_FLAG"
-		output.Error = "task description is required"
-		output.Hint = "Provide a task description, e.g., --robot-jfp-suggest='build a REST API'"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("task description is required"),
+			ErrCodeInvalidFlag,
+			"Provide a task description, e.g., --robot-jfp-suggest='build a REST API'",
+		)
+		return output, nil
 	}
 
 	ctx := context.Background()
 	data, err := adapter.Suggest(ctx, task)
 
 	if err != nil {
-		output.Success = false
-		output.ErrorCode = "SUGGEST_FAILED"
-		output.Error = err.Error()
-		output.Hint = "Try a different task description"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			err,
+			"SUGGEST_FAILED",
+			"Try a different task description",
+		)
+		return output, nil
 	}
 
 	output.Suggestions = data
+	return output, nil
+}
+
+// PrintJFPSuggest outputs prompt suggestions for a task as JSON.
+// This is a thin wrapper around GetJFPSuggest() for CLI output.
+func PrintJFPSuggest(task string) error {
+	output, err := GetJFPSuggest(task)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintJFPInstalled outputs installed Claude Code skills as JSON
-func PrintJFPInstalled() error {
+// GetJFPInstalled returns installed Claude Code skills.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetJFPInstalled() (*JFPInstalledOutput, error) {
 	adapter := tools.NewJFPAdapter()
-	now := time.Now().UTC().Format(time.RFC3339)
 
-	output := JFPInstalledOutput{
-		Success:   true,
-		Timestamp: now,
+	output := &JFPInstalledOutput{
+		RobotResponse: NewRobotResponse(true),
 	}
 
 	// Check if jfp is installed
 	_, installed := adapter.Detect()
 	if !installed {
-		output.Success = false
-		output.ErrorCode = "DEPENDENCY_MISSING"
-		output.Error = "jfp not installed"
-		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("jfp not installed"),
+			ErrCodeDependencyMissing,
+			"Install jfp with: npm install -g jeffreysprompts",
+		)
+		return output, nil
 	}
 
 	ctx := context.Background()
 	data, err := adapter.Installed(ctx)
 
 	if err != nil {
-		output.Success = false
-		output.ErrorCode = "INSTALLED_FAILED"
-		output.Error = err.Error()
-		output.Hint = "Check if Claude Code skills directory exists"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			err,
+			"INSTALLED_FAILED",
+			"Check if Claude Code skills directory exists",
+		)
+		return output, nil
 	}
 
 	output.Skills = data
@@ -714,37 +808,49 @@ func PrintJFPInstalled() error {
 		output.Count = len(items)
 	}
 
+	return output, nil
+}
+
+// PrintJFPInstalled outputs installed Claude Code skills as JSON.
+// This is a thin wrapper around GetJFPInstalled() for CLI output.
+func PrintJFPInstalled() error {
+	output, err := GetJFPInstalled()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintJFPCategories outputs all categories with counts as JSON
-func PrintJFPCategories() error {
+// GetJFPCategories returns all categories with counts.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetJFPCategories() (*JFPCategoriesOutput, error) {
 	adapter := tools.NewJFPAdapter()
-	now := time.Now().UTC().Format(time.RFC3339)
 
-	output := JFPCategoriesOutput{
-		Success:   true,
-		Timestamp: now,
+	output := &JFPCategoriesOutput{
+		RobotResponse: NewRobotResponse(true),
 	}
 
 	// Check if jfp is installed
 	_, installed := adapter.Detect()
 	if !installed {
-		output.Success = false
-		output.ErrorCode = "DEPENDENCY_MISSING"
-		output.Error = "jfp not installed"
-		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("jfp not installed"),
+			ErrCodeDependencyMissing,
+			"Install jfp with: npm install -g jeffreysprompts",
+		)
+		return output, nil
 	}
 
 	ctx := context.Background()
 	data, err := adapter.Categories(ctx)
 
 	if err != nil {
-		output.Success = false
-		output.ErrorCode = "CATEGORIES_FAILED"
-		output.Error = err.Error()
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			err,
+			"CATEGORIES_FAILED",
+			"Run 'jfp status' to confirm registry health",
+		)
+		return output, nil
 	}
 
 	output.Categories = data
@@ -755,37 +861,49 @@ func PrintJFPCategories() error {
 		output.Count = len(items)
 	}
 
+	return output, nil
+}
+
+// PrintJFPCategories outputs all categories with counts as JSON.
+// This is a thin wrapper around GetJFPCategories() for CLI output.
+func PrintJFPCategories() error {
+	output, err := GetJFPCategories()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintJFPTags outputs all tags with counts as JSON
-func PrintJFPTags() error {
+// GetJFPTags returns all tags with counts.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetJFPTags() (*JFPTagsOutput, error) {
 	adapter := tools.NewJFPAdapter()
-	now := time.Now().UTC().Format(time.RFC3339)
 
-	output := JFPTagsOutput{
-		Success:   true,
-		Timestamp: now,
+	output := &JFPTagsOutput{
+		RobotResponse: NewRobotResponse(true),
 	}
 
 	// Check if jfp is installed
 	_, installed := adapter.Detect()
 	if !installed {
-		output.Success = false
-		output.ErrorCode = "DEPENDENCY_MISSING"
-		output.Error = "jfp not installed"
-		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("jfp not installed"),
+			ErrCodeDependencyMissing,
+			"Install jfp with: npm install -g jeffreysprompts",
+		)
+		return output, nil
 	}
 
 	ctx := context.Background()
 	data, err := adapter.Tags(ctx)
 
 	if err != nil {
-		output.Success = false
-		output.ErrorCode = "TAGS_FAILED"
-		output.Error = err.Error()
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			err,
+			"TAGS_FAILED",
+			"Run 'jfp status' to confirm registry health",
+		)
+		return output, nil
 	}
 
 	output.Tags = data
@@ -796,37 +914,49 @@ func PrintJFPTags() error {
 		output.Count = len(items)
 	}
 
+	return output, nil
+}
+
+// PrintJFPTags outputs all tags with counts as JSON.
+// This is a thin wrapper around GetJFPTags() for CLI output.
+func PrintJFPTags() error {
+	output, err := GetJFPTags()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintJFPBundles outputs all bundles as JSON
-func PrintJFPBundles() error {
+// GetJFPBundles returns all bundles.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetJFPBundles() (*JFPBundlesOutput, error) {
 	adapter := tools.NewJFPAdapter()
-	now := time.Now().UTC().Format(time.RFC3339)
 
-	output := JFPBundlesOutput{
-		Success:   true,
-		Timestamp: now,
+	output := &JFPBundlesOutput{
+		RobotResponse: NewRobotResponse(true),
 	}
 
 	// Check if jfp is installed
 	_, installed := adapter.Detect()
 	if !installed {
-		output.Success = false
-		output.ErrorCode = "DEPENDENCY_MISSING"
-		output.Error = "jfp not installed"
-		output.Hint = "Install jfp with: npm install -g jeffreysprompts"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("jfp not installed"),
+			ErrCodeDependencyMissing,
+			"Install jfp with: npm install -g jeffreysprompts",
+		)
+		return output, nil
 	}
 
 	ctx := context.Background()
 	data, err := adapter.Bundles(ctx)
 
 	if err != nil {
-		output.Success = false
-		output.ErrorCode = "BUNDLES_FAILED"
-		output.Error = err.Error()
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			err,
+			"BUNDLES_FAILED",
+			"Run 'jfp status' to confirm registry health",
+		)
+		return output, nil
 	}
 
 	output.Bundles = data
@@ -837,6 +967,16 @@ func PrintJFPBundles() error {
 		output.Count = len(items)
 	}
 
+	return output, nil
+}
+
+// PrintJFPBundles outputs all bundles as JSON.
+// This is a thin wrapper around GetJFPBundles() for CLI output.
+func PrintJFPBundles() error {
+	output, err := GetJFPBundles()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -1057,15 +1197,21 @@ Core Commands:
 --robot-status          Session state, agents, alerts (start here)
 --robot-snapshot        Unified state: sessions + beads + alerts + mail
 --robot-capabilities    Machine-discoverable API schema
+--robot-version         Version/build info (JSON)
 
 Session Operations:
 -------------------
 --robot-spawn=SESSION   Create session with --spawn-cc=N, --spawn-cod=N, --spawn-gmi=N
+--robot-ensemble-spawn=SESSION  Spawn ensemble with --preset/--modes and --question
 --robot-send=SESSION    Send prompts (--msg="text", --panes=1,2, --type=claude)
 --robot-tail=SESSION    Capture pane output (--lines=50, --panes=1,2)
+--robot-ensemble=SESSION Ensemble state (modes, status, synthesis readiness)
 --robot-interrupt=SESSION  Ctrl+C to agents (--interrupt-msg="new task")
 --robot-is-working=SESSION Check if agents are busy
 --robot-wait=SESSION    Wait for idle state (--timeout=5m, --condition=idle)
+
+Note: Pane-targeting commands exclude the user pane by default.
+Use --all to include the user pane (index depends on tmux pane-base-index).
 
 Work Distribution:
 ------------------
@@ -1118,21 +1264,33 @@ Quick Start:
 4) Monitor progress:  ntm --robot-is-working=proj
 5) Get output:        ntm --robot-tail=proj --lines=100
 
+Common Workflows:
+-----------------
+- Single agent: ntm --robot-spawn=proj --spawn-cc=1 --spawn-wait
+- Send+wait:    ntm --robot-send=proj --msg="do X" --track
+- Recover:      ntm --robot-snapshot --since=2025-01-01T00:00:00Z
+
+Tips for AI Agents:
+-------------------
+- Start with --robot-status, then narrow with --panes and --lines.
+- Prefer --robot-capabilities for schema discovery over parsing help text.
+
 For complete API documentation: docs/robot-api-design.md
 For machine-readable schema:    ntm --robot-capabilities
 `
 	fmt.Println(help)
 }
 
-// PrintStatus outputs machine-readable status
-func PrintStatus() error {
+// GetStatus collects machine-readable status.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetStatus() (*StatusOutput, error) {
 	wd := mustGetwd()
 	cfg, err := config.LoadMerged(wd, config.DefaultPath())
 	if err != nil {
 		cfg = config.Default()
 	}
 
-	output := StatusOutput{
+	output := &StatusOutput{
 		RobotResponse: NewRobotResponse(true),
 		GeneratedAt:   time.Now().UTC(),
 		System: SystemInfo{
@@ -1155,7 +1313,7 @@ func PrintStatus() error {
 	sessions, err := tmux.ListSessions()
 	if err != nil {
 		// tmux not running is not an error for status
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	for _, sess := range sessions {
@@ -1266,9 +1424,19 @@ func PrintStatus() error {
 	}
 
 	// Include recent file changes (best-effort, bounded).
-	appendFileChanges(&output)
-	appendConflicts(&output)
+	appendFileChanges(output)
+	appendConflicts(output)
 
+	return output, nil
+}
+
+// PrintStatus outputs machine-readable status.
+// This is a thin wrapper around GetStatus() for CLI output.
+func PrintStatus() error {
+	output, err := GetStatus()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -1316,8 +1484,32 @@ func appendConflicts(output *StatusOutput) {
 	output.Conflicts = conflicts
 }
 
-// PrintMail outputs detailed Agent Mail state for AI orchestrators.
-func PrintMail(sessionName, projectKey string) error {
+// MailOptions configures the GetMail operation.
+type MailOptions struct {
+	Session    string
+	ProjectKey string
+}
+
+// MailOutput represents the output for --robot-mail.
+type MailOutput struct {
+	RobotResponse
+	GeneratedAt      time.Time                   `json:"generated_at"`
+	Session          string                      `json:"session,omitempty"`
+	ProjectKey       string                      `json:"project_key"`
+	Available        bool                        `json:"available"`
+	ServerURL        string                      `json:"server_url,omitempty"`
+	SessionAgent     *agentmail.SessionAgentInfo `json:"session_agent,omitempty"`
+	Agents           []AgentMailAgent            `json:"agents,omitempty"`
+	UnmappedAgents   []AgentMailAgent            `json:"unmapped_agents,omitempty"`
+	Messages         AgentMailMessageCounts      `json:"messages,omitempty"`
+	FileReservations []AgentMailReservation      `json:"file_reservations,omitempty"`
+	Conflicts        []AgentMailConflict         `json:"conflicts,omitempty"`
+}
+
+// GetMail returns detailed Agent Mail state for AI orchestrators.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetMail(opts MailOptions) (*MailOutput, error) {
+	projectKey := opts.ProjectKey
 	if projectKey == "" {
 		wd, err := os.Getwd()
 		if err == nil {
@@ -1335,49 +1527,45 @@ func PrintMail(sessionName, projectKey string) error {
 	client := agentmail.NewClient(agentmail.WithProjectKey(projectKey))
 	serverURL := client.BaseURL()
 
-	output := struct {
-		GeneratedAt      time.Time                   `json:"generated_at"`
-		Session          string                      `json:"session,omitempty"`
-		ProjectKey       string                      `json:"project_key"`
-		Available        bool                        `json:"available"`
-		ServerURL        string                      `json:"server_url,omitempty"`
-		SessionAgent     *agentmail.SessionAgentInfo `json:"session_agent,omitempty"`
-		Agents           []AgentMailAgent            `json:"agents,omitempty"`
-		UnmappedAgents   []AgentMailAgent            `json:"unmapped_agents,omitempty"`
-		Messages         AgentMailMessageCounts      `json:"messages,omitempty"`
-		FileReservations []AgentMailReservation      `json:"file_reservations,omitempty"`
-		Conflicts        []AgentMailConflict         `json:"conflicts,omitempty"`
-		Error            string                      `json:"error,omitempty"`
-	}{
+	output := &MailOutput{
+		RobotResponse: NewRobotResponse(true),
 		GeneratedAt: time.Now().UTC(),
-		Session:     sessionName,
+		Session:     opts.Session,
 		ProjectKey:  projectKey,
 		Available:   false,
 		ServerURL:   serverURL,
 	}
 
 	if !client.IsAvailable() {
-		return encodeJSON(output)
+		return output, nil
 	}
 	output.Available = true
 
 	// Ensure project exists
 	if _, err := client.EnsureProject(ctx, projectKey); err != nil {
-		output.Error = fmt.Sprintf("ensure_project: %v", err)
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("ensure_project: %w", err),
+			ErrCodeInternalError,
+			"Verify Agent Mail server and project key",
+		)
+		return output, nil
 	}
 
 	// Session coordinator agent info (best-effort, when a session name is provided).
-	if sessionName != "" {
-		if info, err := agentmail.LoadSessionAgent(sessionName, projectKey); err == nil && info != nil {
+	if opts.Session != "" {
+		if info, err := agentmail.LoadSessionAgent(opts.Session, projectKey); err == nil && info != nil {
 			output.SessionAgent = info
 		}
 	}
 
 	agents, err := client.ListProjectAgents(ctx, projectKey)
 	if err != nil {
-		output.Error = fmt.Sprintf("list_agents: %v", err)
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("list_agents: %w", err),
+			ErrCodeInternalError,
+			"Verify Agent Mail server and project key",
+		)
+		return output, nil
 	}
 
 	agentByName := make(map[string]agentmail.Agent, len(agents))
@@ -1400,8 +1588,8 @@ func PrintMail(sessionName, projectKey string) error {
 
 	// Best-effort pane mapping when a session is provided and tmux is available.
 	assigned := make(map[string]bool)
-	if sessionName != "" && tmux.IsInstalled() && tmux.SessionExists(sessionName) {
-		if panes, err := tmux.GetPanes(sessionName); err == nil {
+	if opts.Session != "" && tmux.IsInstalled() && tmux.SessionExists(opts.Session) {
+		if panes, err := tmux.GetPanes(opts.Session); err == nil {
 			mapping := resolveAgentsForSession(panes, agents)
 			paneInfos := parseNTMPanes(panes)
 
@@ -1475,6 +1663,19 @@ func PrintMail(sessionName, projectKey string) error {
 		output.Conflicts = detectReservationConflicts(reservations)
 	}
 
+	return output, nil
+}
+
+// PrintMail outputs detailed Agent Mail state for AI orchestrators.
+// This is a thin wrapper around GetMail() for CLI output.
+func PrintMail(sessionName, projectKey string) error {
+	output, err := GetMail(MailOptions{
+		Session:    sessionName,
+		ProjectKey: projectKey,
+	})
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -1803,33 +2004,44 @@ func getGraphMetrics() *GraphMetrics {
 	return metrics
 }
 
-// PrintVersion outputs version as JSON
-func PrintVersion() error {
-	info := struct {
-		Version   string `json:"version"`
-		Commit    string `json:"commit"`
-		BuildDate string `json:"build_date"`
-		BuiltBy   string `json:"built_by"`
-		GoVersion string `json:"go_version"`
-		OS        string `json:"os"`
-		Arch      string `json:"arch"`
-	}{
-		Version:   Version,
-		Commit:    Commit,
-		BuildDate: Date,
-		BuiltBy:   BuiltBy,
-		GoVersion: runtime.Version(),
-		OS:        runtime.GOOS,
-		Arch:      runtime.GOARCH,
-	}
-	return encodeJSON(info)
+// VersionOutput represents the output for --robot-version
+type VersionOutput struct {
+	RobotResponse
+	System SystemInfo `json:"system"`
 }
 
-// PrintSessions outputs minimal session list
-func PrintSessions() error {
+// GetVersion returns version information.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetVersion() (*VersionOutput, error) {
+	return &VersionOutput{
+		RobotResponse: NewRobotResponse(true),
+		System: SystemInfo{
+			Version:   Version,
+			Commit:    Commit,
+			BuildDate: Date,
+			GoVersion: runtime.Version(),
+			OS:        runtime.GOOS,
+			Arch:      runtime.GOARCH,
+		},
+	}, nil
+}
+
+// PrintVersion outputs version as JSON.
+// This is a thin wrapper around GetVersion() for CLI output.
+func PrintVersion() error {
+	output, err := GetVersion()
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
+// GetSessions returns a minimal session list.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetSessions() ([]SessionInfo, error) {
 	sessions, err := tmux.ListSessions()
 	if err != nil {
-		return encodeJSON([]SessionInfo{})
+		return []SessionInfo{}, nil
 	}
 
 	output := make([]SessionInfo, 0, len(sessions))
@@ -1841,12 +2053,23 @@ func PrintSessions() error {
 			Windows:  sess.Windows,
 		})
 	}
+	return output, nil
+}
+
+// PrintSessions outputs minimal session list.
+// This is a thin wrapper around GetSessions() for CLI output.
+func PrintSessions() error {
+	output, err := GetSessions()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
-// PrintPlan outputs an execution plan
-func PrintPlan() error {
-	plan := PlanOutput{
+// GetPlan generates an execution plan.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetPlan() (*PlanOutput, error) {
+	plan := &PlanOutput{
 		RobotResponse: NewRobotResponse(true),
 		GeneratedAt:   time.Now().UTC(),
 		Actions:       []PlanAction{},
@@ -1862,7 +2085,7 @@ func PrintPlan() error {
 			Command:     "brew install tmux",
 			Description: "Install tmux using Homebrew (macOS)",
 		})
-		return encodeJSON(plan)
+		return plan, nil
 	}
 
 	// Check for existing sessions
@@ -1921,7 +2144,17 @@ func PrintPlan() error {
 		plan.Recommendation = fmt.Sprintf("Work on high-impact bead: %s", plan.BeadActions[0].Title)
 	}
 
-	return encodeJSON(plan)
+	return plan, nil
+}
+
+// PrintPlan outputs an execution plan.
+// This is a thin wrapper around GetPlan() for CLI output.
+func PrintPlan() error {
+	output, err := GetPlan()
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
 }
 
 // getBeadRecommendations returns recommended bead actions from bv priority analysis
@@ -2205,35 +2438,53 @@ type PaneOutput struct {
 	Truncated bool     `json:"truncated"`
 }
 
-// PrintTail outputs recent pane output for AI consumption
-func PrintTail(session string, lines int, paneFilter []string) error {
-	if !tmux.SessionExists(session) {
-		return RobotError(
-			fmt.Errorf("session '%s' not found", session),
-			ErrCodeSessionNotFound,
-			"Use 'ntm list' to see available sessions",
-		)
+// TailOptions configures the GetTail operation.
+type TailOptions struct {
+	Session    string
+	Lines      int
+	PaneFilter []string
+}
+
+// GetTail returns recent pane output for AI consumption.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetTail(opts TailOptions) (*TailOutput, error) {
+	if !tmux.SessionExists(opts.Session) {
+		return &TailOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("session '%s' not found", opts.Session),
+				ErrCodeSessionNotFound,
+				"Use 'ntm list' to see available sessions",
+			),
+			Session:    opts.Session,
+			CapturedAt: time.Now().UTC(),
+			Panes:      make(map[string]PaneOutput),
+		}, nil
 	}
 
-	panes, err := tmux.GetPanes(session)
+	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
-		return RobotError(
-			fmt.Errorf("failed to get panes: %w", err),
-			ErrCodeInternalError,
-			"Check tmux is running and session is accessible",
-		)
+		return &TailOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("failed to get panes: %w", err),
+				ErrCodeInternalError,
+				"Check tmux is running and session is accessible",
+			),
+			Session:    opts.Session,
+			CapturedAt: time.Now().UTC(),
+			Panes:      make(map[string]PaneOutput),
+		}, nil
 	}
 
-	output := TailOutput{
+	output := &TailOutput{
 		RobotResponse: NewRobotResponse(true),
-		Session:       session,
+		Session:       opts.Session,
 		CapturedAt:    time.Now().UTC(),
 		Panes:         make(map[string]PaneOutput),
 	}
 
 	// Build pane filter map
 	filterMap := make(map[string]bool)
-	for _, p := range paneFilter {
+	for _, p := range opts.PaneFilter {
 		filterMap[p] = true
 	}
 	hasFilter := len(filterMap) > 0
@@ -2247,7 +2498,7 @@ func PrintTail(session string, lines int, paneFilter []string) error {
 		}
 
 		// Capture pane output
-		captured, err := tmux.CapturePaneOutput(pane.ID, lines)
+		captured, err := tmux.CapturePaneOutput(pane.ID, opts.Lines)
 		if err != nil {
 			// Include empty output on error
 			output.Panes[paneKey] = PaneOutput{
@@ -2268,7 +2519,7 @@ func PrintTail(session string, lines int, paneFilter []string) error {
 		state := determineState(captured, agentType)
 
 		// Check if truncated (we captured exactly the requested lines)
-		truncated := len(outputLines) >= lines
+		truncated := len(outputLines) >= opts.Lines
 
 		output.Panes[paneKey] = PaneOutput{
 			Type:      agentType,
@@ -2281,6 +2532,20 @@ func PrintTail(session string, lines int, paneFilter []string) error {
 	// Generate agent hints based on pane states
 	output.AgentHints = generateTailHints(output.Panes)
 
+	return output, nil
+}
+
+// PrintTail outputs recent pane output for AI consumption.
+// This is a thin wrapper around GetTail() for CLI output.
+func PrintTail(session string, lines int, paneFilter []string) error {
+	output, err := GetTail(TailOptions{
+		Session:    session,
+		Lines:      lines,
+		PaneFilter: paneFilter,
+	})
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -2952,10 +3217,11 @@ type SendOptions struct {
 	InjectConfig *InjectConfig // CASS injection configuration (optional)
 }
 
-// PrintSend sends a message to multiple panes atomically and returns structured results
-func PrintSend(opts SendOptions) error {
+// GetSend sends a message to multiple panes atomically and returns structured results.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetSend(opts SendOptions) (*SendOutput, error) {
 	if strings.TrimSpace(opts.Session) == "" {
-		return encodeJSON(SendOutput{
+		return &SendOutput{
 			RobotResponse:  NewErrorResponse(fmt.Errorf("session name is required"), ErrCodeInvalidFlag, "Provide a session name"),
 			Session:        opts.Session,
 			SentAt:         time.Now().UTC(),
@@ -2963,11 +3229,11 @@ func PrintSend(opts SendOptions) error {
 			Successful:     []string{},
 			Failed:         []SendError{{Pane: "session", Error: "session name is required"}},
 			MessagePreview: truncateMessage(opts.Message),
-		})
+		}, nil
 	}
 
 	if !tmux.SessionExists(opts.Session) {
-		return encodeJSON(SendOutput{
+		return &SendOutput{
 			RobotResponse:  NewErrorResponse(fmt.Errorf("session '%s' not found", opts.Session), ErrCodeSessionNotFound, "Use 'ntm list' to see available sessions"),
 			Session:        opts.Session,
 			SentAt:         time.Now().UTC(),
@@ -2975,12 +3241,12 @@ func PrintSend(opts SendOptions) error {
 			Successful:     []string{},
 			Failed:         []SendError{{Pane: "session", Error: fmt.Sprintf("session '%s' not found", opts.Session)}},
 			MessagePreview: truncateMessage(opts.Message),
-		})
+		}, nil
 	}
 
 	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
-		return encodeJSON(SendOutput{
+		return &SendOutput{
 			RobotResponse:  NewErrorResponse(fmt.Errorf("failed to get panes: %w", err), ErrCodeInternalError, "Check tmux is running"),
 			Session:        opts.Session,
 			SentAt:         time.Now().UTC(),
@@ -2988,7 +3254,7 @@ func PrintSend(opts SendOptions) error {
 			Successful:     []string{},
 			Failed:         []SendError{{Pane: "panes", Error: fmt.Sprintf("failed to get panes: %v", err)}},
 			MessagePreview: truncateMessage(opts.Message),
-		})
+		}, nil
 	}
 
 	output := SendOutput{
@@ -3118,7 +3384,7 @@ func PrintSend(opts SendOptions) error {
 			output.Error = "no target panes matched the filter criteria"
 			output.ErrorCode = ErrCodeInvalidFlag
 		}
-		return encodeJSON(output)
+		return &output, nil
 	}
 
 	sendEnter := true
@@ -3165,6 +3431,16 @@ func PrintSend(opts SendOptions) error {
 	// Generate agent hints
 	output.AgentHints = generateSendHints(output)
 
+	return &output, nil
+}
+
+// PrintSend outputs the send operation result as JSON.
+// This is a thin wrapper around GetSend() for CLI output.
+func PrintSend(opts SendOptions) error {
+	output, err := GetSend(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -3323,9 +3599,10 @@ type GraphMailSummary struct {
 	Unread       int       `json:"unread,omitempty"`
 }
 
-// PrintGraph outputs bv graph insights for AI consumption
-func PrintGraph() error {
-	output := GraphOutput{
+// GetGraph returns bv graph insights for AI consumption.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetGraph() (*GraphOutput, error) {
+	output := &GraphOutput{
 		RobotResponse: NewRobotResponse(true),
 		GeneratedAt:   time.Now().UTC(),
 		Available:     bv.IsInstalled(),
@@ -3379,6 +3656,16 @@ func PrintGraph() error {
 	// Build correlation graph (best-effort, independent of bv availability)
 	output.Correlation = buildCorrelationGraph()
 
+	return output, nil
+}
+
+// PrintGraph outputs bv graph insights for AI consumption.
+// This is a thin wrapper around GetGraph() for CLI output.
+func PrintGraph() error {
+	output, err := GetGraph()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -3742,15 +4029,16 @@ type AlertsOutput struct {
 	Summary     AlertSummaryInfo `json:"summary"`
 }
 
-// PrintAlertsDetailed outputs all alerts in JSON format
-func PrintAlertsDetailed(includeResolved bool) error {
+// GetAlertsDetailed returns all alerts.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetAlertsDetailed(includeResolved bool) (*AlertsOutput, error) {
 	alertCfg := alerts.DefaultConfig()
 	tracker := alerts.GenerateAndTrack(alertCfg)
 
 	active, resolved := tracker.GetAll()
 	summary := tracker.Summary()
 
-	output := AlertsOutput{
+	output := &AlertsOutput{
 		RobotResponse: NewRobotResponse(true),
 		GeneratedAt:   time.Now().UTC(),
 		Enabled:       alertCfg.Enabled,
@@ -3797,6 +4085,16 @@ func PrintAlertsDetailed(includeResolved bool) error {
 		}
 	}
 
+	return output, nil
+}
+
+// PrintAlertsDetailed outputs all alerts in JSON format.
+// This is a thin wrapper around GetAlertsDetailed() for CLI output.
+func PrintAlertsDetailed(includeResolved bool) error {
+	output, err := GetAlertsDetailed(includeResolved)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -3825,13 +4123,14 @@ type RecipesOutput struct {
 	Recipes     []RecipeInfo `json:"recipes"`
 }
 
-// PrintRecipes outputs available recipes as JSON for AI orchestrators
-func PrintRecipes() error {
+// GetRecipes returns available recipes for AI orchestrators.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetRecipes() (*RecipesOutput, error) {
 	loader := recipe.NewLoader()
 	recipes, err := loader.LoadAll()
 	if err != nil {
 		// Return empty list on error
-		return encodeJSON(RecipesOutput{
+		return &RecipesOutput{
 			RobotResponse: NewErrorResponse(
 				err,
 				ErrCodeInternalError,
@@ -3840,10 +4139,10 @@ func PrintRecipes() error {
 			GeneratedAt: time.Now().UTC(),
 			Count:       0,
 			Recipes:     []RecipeInfo{},
-		})
+		}, nil
 	}
 
-	output := RecipesOutput{
+	output := &RecipesOutput{
 		RobotResponse: NewRobotResponse(true),
 		GeneratedAt:   time.Now().UTC(),
 		Count:         len(recipes),
@@ -3870,6 +4169,16 @@ func PrintRecipes() error {
 		}
 	}
 
+	return output, nil
+}
+
+// PrintRecipes outputs available recipes as JSON for AI orchestrators.
+// This is a thin wrapper around GetRecipes() for CLI output.
+func PrintRecipes() error {
+	output, err := GetRecipes()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -4493,35 +4802,39 @@ type ActivityAgentHints struct {
 	SuggestedActions []string `json:"suggested_actions,omitempty"`
 }
 
-// PrintActivity outputs agent activity state for a session.
-// This is the handler for --robot-activity flag.
-func PrintActivity(opts ActivityOptions) error {
-	if !tmux.SessionExists(opts.Session) {
-		return RobotError(
-			fmt.Errorf("session '%s' not found", opts.Session),
-			ErrCodeSessionNotFound,
-			"Use 'ntm list' to see available sessions",
-		)
-	}
-
-	panes, err := tmux.GetPanes(opts.Session)
-	if err != nil {
-		return RobotError(
-			fmt.Errorf("failed to get panes: %w", err),
-			ErrCodeInternalError,
-			"Check tmux is running and session is accessible",
-		)
-	}
-
-	output := ActivityOutput{
+// GetActivity returns agent activity state for a session.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetActivity(opts ActivityOptions) (*ActivityOutput, error) {
+	output := &ActivityOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
 		CapturedAt:    time.Now().UTC(),
-		Agents:        make([]AgentActivityInfo, 0, len(panes)),
+		Agents:        make([]AgentActivityInfo, 0),
 		Summary: ActivitySummary{
 			ByState: make(map[string]int),
 		},
 	}
+
+	if !tmux.SessionExists(opts.Session) {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("session '%s' not found", opts.Session),
+			ErrCodeSessionNotFound,
+			"Use 'ntm list' to see available sessions",
+		)
+		return output, nil
+	}
+
+	panes, err := tmux.GetPanes(opts.Session)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("failed to get panes: %w", err),
+			ErrCodeInternalError,
+			"Check tmux is running and session is accessible",
+		)
+		return output, nil
+	}
+
+	output.Agents = make([]AgentActivityInfo, 0, len(panes))
 
 	// Build filter maps
 	paneFilterMap := make(map[string]bool)
@@ -4619,6 +4932,16 @@ func PrintActivity(opts ActivityOptions) error {
 	// Generate agent hints
 	output.AgentHints = generateActivityHints(availableAgents, busyAgents, problemAgents, output.Summary)
 
+	return output, nil
+}
+
+// PrintActivity handles the --robot-activity command.
+// This is a thin wrapper around GetActivity() for CLI output.
+func PrintActivity(opts ActivityOptions) error {
+	output, err := GetActivity(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -4741,17 +5064,9 @@ type DiffAgentHints struct {
 	SuggestedActions []string `json:"suggested_actions,omitempty"`
 }
 
-// PrintDiff outputs agent activity comparison and file change analysis.
-func PrintDiff(opts DiffOptions) error {
-	// Validate session exists
-	if !tmux.SessionExists(opts.Session) {
-		return RobotError(
-			fmt.Errorf("session '%s' not found", opts.Session),
-			ErrCodeSessionNotFound,
-			"Use 'ntm list' to see available sessions",
-		)
-	}
-
+// GetDiff returns agent activity comparison and file change analysis.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetDiff(opts DiffOptions) (*DiffOutput, error) {
 	// Default to 15 minutes if not specified
 	if opts.Since == 0 {
 		opts.Since = 15 * time.Minute
@@ -4760,7 +5075,7 @@ func PrintDiff(opts DiffOptions) error {
 	now := time.Now().UTC()
 	sinceTime := now.Add(-opts.Since)
 
-	output := DiffOutput{
+	output := &DiffOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
 		Timeframe: DiffTimeframe{
@@ -4776,14 +5091,25 @@ func PrintDiff(opts DiffOptions) error {
 		AgentActivity: []DiffAgentInfo{},
 	}
 
+	// Validate session exists
+	if !tmux.SessionExists(opts.Session) {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("session '%s' not found", opts.Session),
+			ErrCodeSessionNotFound,
+			"Use 'ntm list' to see available sessions",
+		)
+		return output, nil
+	}
+
 	// Get panes for agent activity
 	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
-		return RobotError(
+		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("failed to get panes: %w", err),
 			ErrCodeInternalError,
 			"Check tmux is running and session is accessible",
 		)
+		return output, nil
 	}
 
 	// Create conflict detector for file analysis
@@ -4879,6 +5205,16 @@ func PrintDiff(opts DiffOptions) error {
 
 	output.AgentHints = hints
 
+	return output, nil
+}
+
+// PrintDiff handles the --robot-diff command.
+// This is a thin wrapper around GetDiff() for CLI output.
+func PrintDiff(opts DiffOptions) error {
+	output, err := GetDiff(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 

@@ -77,9 +77,10 @@ type RecommendedAction struct {
 // noOutputThreshold is the time in seconds after which an agent is considered unresponsive
 const noOutputThreshold = 300 // 5 minutes
 
-// PrintHealth outputs a focused project health summary for AI consumption
-func PrintHealth() error {
-	output := HealthOutput{
+// GetHealth collects a focused project health summary for AI agents.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetHealth() (*HealthOutput, error) {
+	output := &HealthOutput{
 		RobotResponse: NewRobotResponse(true),
 		CheckedAt:     time.Now().UTC(),
 		BvAvailable:   bv.IsInstalled(),
@@ -92,7 +93,7 @@ func PrintHealth() error {
 	output.System = getSystemHealth()
 
 	// Get agent/session health matrix
-	populateAgentHealth(&output)
+	populateAgentHealth(output)
 
 	// Get drift status
 	drift := bv.CheckDrift("")
@@ -141,6 +142,16 @@ func PrintHealth() error {
 		output.InProgressCount = len(depCtx.InProgressTasks)
 	}
 
+	return output, nil
+}
+
+// PrintHealth outputs a focused project health summary for AI consumption.
+// This is a thin wrapper around GetHealth() for CLI output.
+func PrintHealth() error {
+	output, err := GetHealth()
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -749,9 +760,10 @@ type SessionHealthSummary struct {
 	RateLimited int `json:"rate_limited"`
 }
 
-// PrintSessionHealth outputs per-agent health for a specific session
-func PrintSessionHealth(session string) error {
-	output := SessionHealthOutput{
+// GetSessionHealth collects per-agent health for a specific session.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetSessionHealth(session string) (*SessionHealthOutput, error) {
+	output := &SessionHealthOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       session,
 		CheckedAt:     time.Now().UTC(),
@@ -766,7 +778,7 @@ func PrintSessionHealth(session string) error {
 			ErrCodeSessionNotFound,
 			"Use --robot-status to list available sessions",
 		)
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Get panes in the session
@@ -777,7 +789,7 @@ func PrintSessionHealth(session string) error {
 			ErrCodeInternalError,
 			"Check tmux session state",
 		)
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Check health for each pane
@@ -844,6 +856,16 @@ func PrintSessionHealth(session string) error {
 		}
 	}
 
+	return output, nil
+}
+
+// PrintSessionHealth outputs per-agent health for a specific session.
+// This is a thin wrapper around GetSessionHealth() for CLI output.
+func PrintSessionHealth(session string) error {
+	output, err := GetSessionHealth(session)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 

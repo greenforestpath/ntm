@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -85,5 +86,66 @@ func TestRenderEnsembleStatusNoSession(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "No ensemble running") {
 		t.Errorf("expected no-ensemble message, got %q", buf.String())
+	}
+}
+
+func TestImpactToBeadPriority(t *testing.T) {
+	tests := []struct {
+		name   string
+		impact ensemble.ImpactLevel
+		want   int
+	}{
+		{"critical", ensemble.ImpactCritical, 0},
+		{"high", ensemble.ImpactHigh, 1},
+		{"medium", ensemble.ImpactMedium, 2},
+		{"low", ensemble.ImpactLow, 3},
+		{"unknown", ensemble.ImpactLevel("unknown"), 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := impactToBeadPriority(tt.impact); got != tt.want {
+				t.Errorf("impactToBeadPriority(%s) = %d, want %d", tt.impact, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunBrCreateParsesID(t *testing.T) {
+	prev := runBrCommand
+	t.Cleanup(func() { runBrCommand = prev })
+
+	called := false
+	runBrCommand = func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		called = true
+		if dir == "" {
+			t.Fatalf("expected dir to be set")
+		}
+		if len(args) == 0 || args[0] != "create" {
+			t.Fatalf("expected br create args, got %v", args)
+		}
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "--title") || !strings.Contains(joined, "--priority") || !strings.Contains(joined, "--description") {
+			t.Fatalf("missing expected args: %v", args)
+		}
+		return []byte(`[{"id":"bd-123"}]`), nil
+	}
+
+	spec := beadSpec{
+		Title:       "Test finding",
+		Type:        "task",
+		Priority:    1,
+		Description: "Body",
+	}
+
+	id, err := runBrCreate(context.Background(), t.TempDir(), spec)
+	if err != nil {
+		t.Fatalf("runBrCreate error: %v", err)
+	}
+	if id != "bd-123" {
+		t.Fatalf("runBrCreate id = %q, want bd-123", id)
+	}
+	if !called {
+		t.Fatalf("expected runBrCommand to be called")
 	}
 }

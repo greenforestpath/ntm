@@ -164,18 +164,18 @@ type AgentHealthOutput struct {
 }
 
 // PrintAgentHealth outputs the health state for specified panes in a session.
+// This is a thin wrapper around GetAgentHealth() for CLI output.
 func PrintAgentHealth(opts AgentHealthOptions) error {
-	output, err := AgentHealth(opts)
+	output, err := GetAgentHealth(opts)
 	if err != nil {
-		// AgentHealth already sets error fields on output
-		return encodeJSON(output)
+		return err
 	}
 	return encodeJSON(output)
 }
 
-// AgentHealth is the core function for programmatic use.
-// It returns the structured result instead of printing JSON.
-func AgentHealth(opts AgentHealthOptions) (*AgentHealthOutput, error) {
+// GetAgentHealth returns the health state for specified panes in a session.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetAgentHealth(opts AgentHealthOptions) (*AgentHealthOutput, error) {
 	output := &AgentHealthOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
@@ -198,13 +198,16 @@ func AgentHealth(opts AgentHealthOptions) (*AgentHealthOutput, error) {
 		Verbose:       opts.Verbose,
 	}
 
-	isWorkingResult, err := IsWorking(isWorkingOpts)
+	isWorkingResult, err := GetIsWorking(isWorkingOpts)
 	if err != nil {
+		return output, err
+	}
+	if !isWorkingResult.Success {
 		output.Success = false
-		output.Error = err.Error()
+		output.Error = isWorkingResult.Error
 		output.ErrorCode = isWorkingResult.ErrorCode
 		output.Hint = isWorkingResult.Hint
-		return output, err
+		return output, nil
 	}
 
 	// Step 2: Query caut for provider usage (if enabled)

@@ -921,7 +921,7 @@ func (e *Executor) executeParallelStep(ctx context.Context, step *Step, workflow
 
 	// Select pane with coordination to avoid reusing agents
 	// We select once and reuse for retries to avoid "self-exclusion" issues
-	paneID, agentType, err := e.selectPaneExcluding(step, usedPanes, panesMu)
+	paneID, agentType, err := e.selectAndMarkPane(step, usedPanes, panesMu)
 	if err != nil {
 		result.Status = StatusFailed
 		result.Error = &StepError{
@@ -935,11 +935,6 @@ func (e *Executor) executeParallelStep(ctx context.Context, step *Step, workflow
 
 	result.PaneUsed = paneID
 	result.AgentType = agentType
-
-	// Mark pane as used for this parallel group
-	panesMu.Lock()
-	usedPanes[paneID] = true
-	panesMu.Unlock()
 
 	// Calculate retry parameters
 	maxAttempts := 1
@@ -1125,9 +1120,9 @@ func (e *Executor) executeParallelStep(ctx context.Context, step *Step, workflow
 	return result
 }
 
-// selectPaneExcluding selects a pane for a step, excluding panes already in use by the parallel group.
-// This ensures different agents are used for concurrent parallel steps.
-func (e *Executor) selectPaneExcluding(step *Step, usedPanes map[string]bool, panesMu *sync.Mutex) (paneID string, agentType string, err error) {
+// selectAndMarkPane selects a pane for a step and marks it as used atomically.
+// This prevents race conditions where multiple parallel steps select the same agent.
+func (e *Executor) selectAndMarkPane(step *Step, usedPanes map[string]bool, panesMu *sync.Mutex) (paneID string, agentType string, err error) {
 	// In dry run mode, return dummy pane info
 	if e.config.DryRun {
 		return "dry-run-pane", "dry-run-agent", nil
@@ -1141,13 +1136,17 @@ func (e *Executor) selectPaneExcluding(step *Step, usedPanes map[string]bool, pa
 		}
 		for _, p := range panes {
 			if p.Index == step.Pane {
+				// We still need to mark it as used to prevent others from picking it via auto-selection
+				panesMu.Lock()
+				usedPanes[p.ID] = true
+				panesMu.Unlock()
 				return p.ID, string(p.Type), nil
 			}
 		}
 		return "", "", fmt.Errorf("pane %d not found", step.Pane)
 	}
 
-	// Use ScoreAgents to get all scored agents
+	// Use ScoreAgents to get all scored agents (slow operation, do outside lock)
 	agents, err := e.scorer.ScoreAgents(e.config.Session, step.Prompt)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to score agents: %w", err)
@@ -1165,17 +1164,20 @@ func (e *Executor) selectPaneExcluding(step *Step, usedPanes map[string]bool, pa
 		agents = filtered
 	}
 
-	// Filter out excluded agents and already-used panes
+	// Begin atomic selection and marking
 	panesMu.Lock()
+	defer panesMu.Unlock()
+
+	// Filter out excluded agents and already-used panes
 	available := make([]robot.ScoredAgent, 0, len(agents))
 	for _, a := range agents {
 		if !a.Excluded && !usedPanes[a.PaneID] {
 			available = append(available, a)
 		}
 	}
-	panesMu.Unlock()
 
 	// If all agents are used, allow reuse (fall back to original list minus excluded)
+	// This degrades parallelism but prevents starvation
 	if len(available) == 0 {
 		for _, a := range agents {
 			if !a.Excluded {
@@ -1210,7 +1212,11 @@ func (e *Executor) selectPaneExcluding(step *Step, usedPanes map[string]bool, pa
 		return "", "", fmt.Errorf("routing failed: %s", routeResult.Reason)
 	}
 
-	return routeResult.Selected.PaneID, routeResult.Selected.AgentType, nil
+	// Mark as used
+	paneID = routeResult.Selected.PaneID
+	usedPanes[paneID] = true
+
+	return paneID, routeResult.Selected.AgentType, nil
 }
 
 // selectPane finds the appropriate pane for a step

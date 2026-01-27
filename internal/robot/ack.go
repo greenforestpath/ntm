@@ -59,8 +59,9 @@ type AckOptions struct {
 	PollMs    int      // How often to poll for changes (default 500)
 }
 
-// PrintAck monitors panes for acknowledgment after a send operation
-func PrintAck(opts AckOptions) error {
+// GetAck monitors panes for acknowledgment after a send operation and returns the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetAck(opts AckOptions) (*AckOutput, error) {
 	if opts.TimeoutMs <= 0 {
 		opts.TimeoutMs = 30000 // Default 30s timeout
 	}
@@ -69,7 +70,7 @@ func PrintAck(opts AckOptions) error {
 	}
 
 	sentAt := time.Now().UTC()
-	output := AckOutput{
+	output := &AckOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
 		SentAt:        sentAt,
@@ -91,7 +92,7 @@ func PrintAck(opts AckOptions) error {
 			"Use --robot-status to list available sessions",
 		)
 		output.CompletedAt = time.Now().UTC()
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	panes, err := tmux.GetPanes(opts.Session)
@@ -106,7 +107,7 @@ func PrintAck(opts AckOptions) error {
 			"Check tmux session state",
 		)
 		output.CompletedAt = time.Now().UTC()
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Build pane filter map
@@ -143,7 +144,7 @@ func PrintAck(opts AckOptions) error {
 
 	if len(targetPanes) == 0 {
 		output.CompletedAt = time.Now().UTC()
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Capture initial state of each pane
@@ -235,6 +236,16 @@ func PrintAck(opts AckOptions) error {
 	}
 
 	output.CompletedAt = time.Now().UTC()
+	return output, nil
+}
+
+// PrintAck monitors panes for acknowledgment after a send operation.
+// This is a thin wrapper around GetAck() for CLI output.
+func PrintAck(opts AckOptions) error {
+	output, err := GetAck(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -391,18 +402,30 @@ type SendAndAckOptions struct {
 
 // SendAndAckOutput combines send result with acknowledgment tracking
 type SendAndAckOutput struct {
+	RobotResponse
 	Send SendOutput `json:"send"`
 	Ack  AckOutput  `json:"ack"`
 }
 
-// PrintSendAndAck sends a message and waits for acknowledgment
-func PrintSendAndAck(opts SendAndAckOptions) error {
+// GetSendAndAck sends a message and waits for acknowledgment, returning the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 	// First, send the message
 	sentAt := time.Now().UTC()
 
 	if !tmux.SessionExists(opts.Session) {
-		return encodeJSON(SendAndAckOutput{
+		return &SendAndAckOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("session '%s' not found", opts.Session),
+				ErrCodeSessionNotFound,
+				"Use --robot-status to list available sessions",
+			),
 			Send: SendOutput{
+				RobotResponse: NewErrorResponse(
+					fmt.Errorf("session '%s' not found", opts.Session),
+					ErrCodeSessionNotFound,
+					"Use --robot-status to list available sessions",
+				),
 				Session:        opts.Session,
 				SentAt:         sentAt,
 				Targets:        []string{},
@@ -411,6 +434,11 @@ func PrintSendAndAck(opts SendAndAckOptions) error {
 				MessagePreview: truncateMessage(opts.Message),
 			},
 			Ack: AckOutput{
+				RobotResponse: NewErrorResponse(
+					fmt.Errorf("session '%s' not found", opts.Session),
+					ErrCodeSessionNotFound,
+					"Use --robot-status to list available sessions",
+				),
 				Session:       opts.Session,
 				SentAt:        sentAt,
 				CompletedAt:   time.Now().UTC(),
@@ -418,13 +446,23 @@ func PrintSendAndAck(opts SendAndAckOptions) error {
 				Pending:       []string{},
 				Failed:        []AckFailure{{Pane: "session", Reason: "send failed"}},
 			},
-		})
+		}, nil
 	}
 
 	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
-		return encodeJSON(SendAndAckOutput{
+		return &SendAndAckOutput{
+			RobotResponse: NewErrorResponse(
+				err,
+				ErrCodeInternalError,
+				"Check tmux session state",
+			),
 			Send: SendOutput{
+				RobotResponse: NewErrorResponse(
+					err,
+					ErrCodeInternalError,
+					"Check tmux session state",
+				),
 				Session:        opts.Session,
 				SentAt:         sentAt,
 				Targets:        []string{},
@@ -433,6 +471,11 @@ func PrintSendAndAck(opts SendAndAckOptions) error {
 				MessagePreview: truncateMessage(opts.Message),
 			},
 			Ack: AckOutput{
+				RobotResponse: NewErrorResponse(
+					err,
+					ErrCodeInternalError,
+					"Check tmux session state",
+				),
 				Session:       opts.Session,
 				SentAt:        sentAt,
 				CompletedAt:   time.Now().UTC(),
@@ -440,7 +483,7 @@ func PrintSendAndAck(opts SendAndAckOptions) error {
 				Pending:       []string{},
 				Failed:        []AckFailure{{Pane: "panes", Reason: "failed to get panes"}},
 			},
-		})
+		}, nil
 	}
 
 	// Build exclusion map
@@ -621,8 +664,26 @@ func PrintSendAndAck(opts SendAndAckOptions) error {
 
 	ackOutput.CompletedAt = time.Now().UTC()
 
-	return encodeJSON(SendAndAckOutput{
-		Send: sendOutput,
-		Ack:  ackOutput,
-	})
+	combined := NewRobotResponse(true)
+	if !sendOutput.Success {
+		combined = sendOutput.RobotResponse
+	} else if !ackOutput.Success {
+		combined = ackOutput.RobotResponse
+	}
+
+	return &SendAndAckOutput{
+		RobotResponse: combined,
+		Send:          sendOutput,
+		Ack:           ackOutput,
+	}, nil
+}
+
+// PrintSendAndAck sends a message and waits for acknowledgment.
+// This is a thin wrapper around GetSendAndAck() for CLI output.
+func PrintSendAndAck(opts SendAndAckOptions) error {
+	output, err := GetSendAndAck(opts)
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
 }

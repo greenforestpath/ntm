@@ -11,6 +11,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/palette"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
@@ -63,8 +64,11 @@ func runPalette(w io.Writer, errW io.Writer, session string) error {
 		return fmt.Errorf("session '%s' not found", session)
 	}
 
-	// Check that we have commands
-	if len(cfg.Palette) == 0 {
+	paletteCommands, err := loadPaletteCommands(cfg)
+	if err != nil {
+		return err
+	}
+	if len(paletteCommands) == 0 {
 		return fmt.Errorf("no palette commands configured - run 'ntm config init' first")
 	}
 
@@ -90,7 +94,7 @@ func runPalette(w io.Writer, errW io.Writer, session string) error {
 		}
 	}
 
-	model := palette.NewWithOptions(session, cfg.Palette, palette.Options{
+	model := palette.NewWithOptions(session, paletteCommands, palette.Options{
 		PaletteState:     cfg.PaletteState,
 		PaletteStatePath: statePath,
 	})
@@ -158,7 +162,11 @@ func watchPaletteConfig(p *tea.Program) (func(), error) {
 			return
 		}
 		// Send reload to palette model
-		p.Send(palette.ReloadMsg{Commands: newCfg.Palette})
+		commands, err := loadPaletteCommands(newCfg)
+		if err != nil {
+			return
+		}
+		p.Send(palette.ReloadMsg{Commands: commands})
 	}, watcher.WithEventFilter(watcher.Write|watcher.Chmod|watcher.Create|watcher.Remove))
 	if err != nil {
 		return nil, err
@@ -172,4 +180,23 @@ func watchPaletteConfig(p *tea.Program) (func(), error) {
 	}
 
 	return func() { _ = w.Close() }, nil
+}
+
+func loadPaletteCommands(cfg *config.Config) ([]config.PaletteCmd, error) {
+	output, err := robot.GetPalette(cfg, robot.PaletteOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	commands := make([]config.PaletteCmd, 0, len(output.Commands))
+	for _, cmd := range output.Commands {
+		commands = append(commands, config.PaletteCmd{
+			Key:      cmd.Key,
+			Label:    cmd.Label,
+			Category: cmd.Category,
+			Prompt:   cmd.Prompt,
+			Tags:     cmd.Tags,
+		})
+	}
+	return commands, nil
 }

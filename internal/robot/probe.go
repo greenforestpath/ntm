@@ -516,12 +516,10 @@ func PrintProbeFlagError(err error) error {
 	return encodeJSON(output)
 }
 
-// PrintProbe outputs probe results for a pane.
-// Note: This function is a placeholder for the full implementation.
-// The actual probing logic (keystroke_echo, interrupt_test) will be implemented
-// in separate tasks (bd-30nv1, bd-3ah0k).
-func PrintProbe(opts ProbeOptions) error {
-	output := ProbeOutput{
+// GetProbe performs probe on a pane and returns the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetProbe(opts ProbeOptions) (*ProbeOutput, error) {
+	output := &ProbeOutput{
 		RobotResponse:  NewRobotResponse(true),
 		Session:        opts.Session,
 		Pane:           opts.Pane,
@@ -535,20 +533,23 @@ func PrintProbe(opts ProbeOptions) error {
 
 	// Check if session exists
 	if !CurrentTmuxClient.SessionExists(opts.Session) {
-		output.Success = false
-		output.Error = fmt.Sprintf("session '%s' not found", opts.Session)
-		output.ErrorCode = ErrCodeSessionNotFound
-		output.Hint = "Use 'ntm list' to see available sessions"
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("session '%s' not found", opts.Session),
+			ErrCodeSessionNotFound,
+			"Use 'ntm list' to see available sessions",
+		)
+		return output, nil
 	}
 
 	// Get pane info to verify it exists
 	panes, err := CurrentTmuxClient.GetPanes(opts.Session)
 	if err != nil {
-		output.Success = false
-		output.Error = fmt.Sprintf("failed to get pane info: %v", err)
-		output.ErrorCode = ErrCodeInternalError
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("failed to get pane info: %w", err),
+			ErrCodeInternalError,
+			"Check tmux session state",
+		)
+		return output, nil
 	}
 
 	var targetPane *tmux.Pane
@@ -560,11 +561,12 @@ func PrintProbe(opts ProbeOptions) error {
 	}
 
 	if targetPane == nil {
-		output.Success = false
-		output.Error = fmt.Sprintf("pane %d not found in session '%s'", opts.Pane, opts.Session)
-		output.ErrorCode = ErrCodePaneNotFound
-		output.Hint = fmt.Sprintf("Session has %d pane(s), indices 0-%d", len(panes), len(panes)-1)
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("pane %d not found in session '%s'", opts.Pane, opts.Session),
+			ErrCodePaneNotFound,
+			fmt.Sprintf("Session has %d pane(s), indices 0-%d", len(panes), len(panes)-1),
+		)
+		return output, nil
 	}
 
 	// Build target string for tmux commands
@@ -579,10 +581,12 @@ func PrintProbe(opts ProbeOptions) error {
 	case ProbeMethodInterruptTest:
 		probeResult = probeInterruptTest(target, timeout)
 	default:
-		output.Success = false
-		output.Error = fmt.Sprintf("unknown probe method: %s", opts.Flags.Method)
-		output.ErrorCode = ErrCodeInvalidFlag
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("unknown probe method: %s", opts.Flags.Method),
+			ErrCodeInvalidFlag,
+			"Valid methods: keystroke_echo, interrupt_test",
+		)
+		return output, nil
 	}
 
 	// If keystroke_echo failed and aggressive mode is enabled, try interrupt_test
@@ -601,6 +605,16 @@ func PrintProbe(opts ProbeOptions) error {
 	output.Recommendation = probeResult.Recommendation
 	output.Reasoning = probeResult.Reasoning
 
+	return output, nil
+}
+
+// PrintProbe outputs probe results for a pane.
+// This is a thin wrapper around GetProbe() for CLI output.
+func PrintProbe(opts ProbeOptions) error {
+	output, err := GetProbe(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 

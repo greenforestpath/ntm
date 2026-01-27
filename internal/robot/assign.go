@@ -187,22 +187,33 @@ func GetAssignRecommendations(opts AssignOptions) ([]DistributeRecommendation, e
 	return result, nil
 }
 
-// PrintAssign outputs work assignment recommendations as JSON
-func PrintAssign(opts AssignOptions) error {
+// GetAssign generates work assignment recommendations and returns the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetAssign(opts AssignOptions) (*AssignOutput, error) {
+	output := &AssignOutput{
+		RobotResponse:   NewRobotResponse(true),
+		Session:         opts.Session,
+		Recommendations: make([]AssignRecommend, 0),
+		BlockedBeads:    make([]BlockedBead, 0),
+		IdleAgents:      []string{},
+	}
+
 	if opts.Session == "" {
-		return RobotError(
+		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("session name is required"),
 			ErrCodeInvalidFlag,
 			"Provide session name: ntm --robot-assign=myproject",
 		)
+		return output, nil
 	}
 
 	if !tmux.SessionExists(opts.Session) {
-		return RobotError(
+		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("session '%s' not found", opts.Session),
 			ErrCodeSessionNotFound,
 			"Use 'ntm list' to see available sessions",
 		)
+		return output, nil
 	}
 
 	// Normalize strategy
@@ -212,21 +223,26 @@ func PrintAssign(opts AssignOptions) error {
 	}
 	validStrategies := map[string]bool{"balanced": true, "speed": true, "quality": true, "dependency": true}
 	if !validStrategies[strategy] {
-		return RobotError(
+		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("invalid strategy '%s'", opts.Strategy),
 			ErrCodeInvalidFlag,
 			"Valid strategies: balanced, speed, quality, dependency",
 		)
+		return output, nil
 	}
+
+	output.Strategy = strategy
+	output.GeneratedAt = time.Now().UTC()
 
 	// Get agents from tmux panes
 	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
-		return RobotError(
+		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("failed to get panes: %w", err),
 			ErrCodeInternalError,
 			"Check tmux is running and session is accessible",
 		)
+		return output, nil
 	}
 
 	// Build agent info
@@ -256,6 +272,8 @@ func PrintAssign(opts AssignOptions) error {
 		}
 	}
 
+	output.IdleAgents = idleAgentPanes
+
 	// Get beads from bv
 	wd, _ := os.Getwd()
 	readyBeads := bv.GetReadyPreview(wd, 50)   // Get up to 50 ready beads
@@ -274,16 +292,6 @@ func PrintAssign(opts AssignOptions) error {
 			}
 		}
 		readyBeads = filtered
-	}
-
-	output := AssignOutput{
-		RobotResponse:   NewRobotResponse(true),
-		Session:         opts.Session,
-		Strategy:        strategy,
-		GeneratedAt:     time.Now().UTC(),
-		Recommendations: make([]AssignRecommend, 0),
-		BlockedBeads:    make([]BlockedBead, 0),
-		IdleAgents:      idleAgentPanes,
 	}
 
 	// Build working agents set from in-progress beads
@@ -311,6 +319,16 @@ func PrintAssign(opts AssignOptions) error {
 	// Generate agent hints
 	output.AgentHints = generateAssignHints(recommendations, idleAgentPanes, readyBeads, inProgress)
 
+	return output, nil
+}
+
+// PrintAssign handles the --robot-assign command.
+// This is a thin wrapper around GetAssign() for CLI output.
+func PrintAssign(opts AssignOptions) error {
+	output, err := GetAssign(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 

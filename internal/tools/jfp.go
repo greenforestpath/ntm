@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -64,8 +65,8 @@ func parseJFPVersion(output string) (Version, error) {
 		versionPart = versionPart[idx+1:]
 	}
 
-	// Use the shared version regex from bv.go
-	matches := versionRegex.FindStringSubmatch(versionPart)
+	// Use the shared version regex from adapter.go
+	matches := VersionRegex.FindStringSubmatch(versionPart)
 	if len(matches) < 4 {
 		return Version{Raw: output}, nil
 	}
@@ -221,18 +222,36 @@ func (a *JFPAdapter) runCommand(ctx context.Context, args ...string) (json.RawMe
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start jfp: %w", err)
+	}
+
+	// Limit output to 10MB
+	const maxOutput = 10 * 1024 * 1024
+	output, err := io.ReadAll(io.LimitReader(stdoutPipe, maxOutput+1))
+	if err != nil {
+		_ = cmd.Process.Kill()
+		return nil, fmt.Errorf("failed to read jfp output: %w", err)
+	}
+	if len(output) > maxOutput {
+		_ = cmd.Process.Kill()
+		return nil, fmt.Errorf("jfp output exceeded limit of %d bytes", maxOutput)
+	}
+
+	if err := cmd.Wait(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, ErrTimeout
 		}
 		return nil, fmt.Errorf("jfp %s failed: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}
 
-	output := stdout.Bytes()
 	if len(output) > 0 && !json.Valid(output) {
 		return nil, fmt.Errorf("%w: invalid JSON from jfp", ErrSchemaValidation)
 	}

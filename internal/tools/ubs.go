@@ -46,7 +46,7 @@ func (a *UBSAdapter) Version(ctx context.Context) (Version, error) {
 		return Version{}, fmt.Errorf("failed to get ubs version: %w", err)
 	}
 
-	return parseVersion(stdout.String())
+	return ParseStandardVersion(stdout.String())
 }
 
 // Capabilities returns the list of ubs capabilities
@@ -171,8 +171,9 @@ func (a *UBSAdapter) Scan(ctx context.Context, path string) (*UBSScanResult, err
 	}
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
@@ -205,8 +206,9 @@ func (a *UBSAdapter) Doctor(ctx context.Context) (string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "doctor")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {

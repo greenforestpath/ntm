@@ -15,6 +15,42 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
+// validSynthesisStrategies defines the canonical synthesis strategy names.
+// This is kept in sync with ensemble.strategyRegistry to break the import cycle.
+var validSynthesisStrategies = map[string]bool{
+	"manual":         true,
+	"adversarial":    true,
+	"consensus":      true,
+	"creative":       true,
+	"analytical":     true,
+	"deliberative":   true,
+	"prioritized":    true,
+	"dialectical":    true,
+	"meta-reasoning": true,
+	"voting":         true,
+	"argumentation":  true,
+}
+
+// deprecatedSynthesisStrategies maps deprecated names to their replacements.
+var deprecatedSynthesisStrategies = map[string]string{
+	"debate":     "dialectical",
+	"weighted":   "prioritized",
+	"sequential": "manual",
+	"best-of":    "prioritized",
+}
+
+// validateSynthesisStrategy validates a synthesis strategy name.
+// Returns nil if valid, or an error with migration hints for deprecated names.
+func validateSynthesisStrategy(name string) error {
+	if validSynthesisStrategies[name] {
+		return nil
+	}
+	if replacement, ok := deprecatedSynthesisStrategies[name]; ok {
+		return fmt.Errorf("strategy %q is deprecated; use %q instead", name, replacement)
+	}
+	return fmt.Errorf("unknown synthesis strategy %q", name)
+}
+
 // Config represents the main configuration
 type Config struct {
 	ProjectsBase       string                `toml:"projects_base"`
@@ -45,6 +81,7 @@ type Config struct {
 	FileReservation    FileReservationConfig `toml:"file_reservation"` // Auto file reservation via Agent Mail
 	Memory             MemoryConfig          `toml:"memory"`           // CASS Memory (cm) integration
 	Assign             AssignConfig          `toml:"assign"`           // Assignment strategy configuration
+	Ensemble           EnsembleConfig        `toml:"ensemble"`         // Reasoning ensemble defaults
 	Swarm              SwarmConfig           `toml:"swarm"`            // Weighted multi-project agent swarm
 
 	// Runtime-only fields (populated by project config merging)
@@ -81,9 +118,9 @@ func ValidateRobotOutputConfig(cfg *RobotOutputConfig) error {
 	if cfg.Format == "" {
 		return nil
 	}
-	validFormats := map[string]bool{"json": true, "toon": true}
+	validFormats := map[string]bool{"json": true, "toon": true, "auto": true}
 	if !validFormats[cfg.Format] {
-		return fmt.Errorf("invalid robot output format %q: must be \"json\" or \"toon\"", cfg.Format)
+		return fmt.Errorf("invalid robot output format %q: must be \"json\", \"toon\", or \"auto\"", cfg.Format)
 	}
 	return nil
 }
@@ -483,6 +520,73 @@ func ValidateContextRotationConfig(cfg *ContextRotationConfig) error {
 	return nil
 }
 
+// ValidateEnsembleConfig validates ensemble defaults in config.toml.
+func ValidateEnsembleConfig(cfg *EnsembleConfig) error {
+	if cfg == nil {
+		return nil
+	}
+
+	if cfg.Assignment != "" {
+		switch strings.ToLower(strings.TrimSpace(cfg.Assignment)) {
+		case "round-robin", "affinity", "category", "explicit":
+			// ok
+		default:
+			return fmt.Errorf("assignment must be one of round-robin, affinity, category, explicit; got %q", cfg.Assignment)
+		}
+	}
+
+	if cfg.ModeTierDefault != "" {
+		switch strings.ToLower(strings.TrimSpace(cfg.ModeTierDefault)) {
+		case "core", "advanced", "experimental":
+			// ok
+		default:
+			return fmt.Errorf("mode_tier_default must be core, advanced, or experimental; got %q", cfg.ModeTierDefault)
+		}
+	}
+
+	if cfg.Synthesis.Strategy != "" {
+		if err := validateSynthesisStrategy(cfg.Synthesis.Strategy); err != nil {
+			return fmt.Errorf("synthesis.strategy: %w", err)
+		}
+	}
+
+	if cfg.Synthesis.MinConfidence < 0 || cfg.Synthesis.MinConfidence > 1 {
+		return fmt.Errorf("synthesis.min_confidence must be between 0.0 and 1.0, got %f", cfg.Synthesis.MinConfidence)
+	}
+	if cfg.Synthesis.MaxFindings < 0 {
+		return fmt.Errorf("synthesis.max_findings must be non-negative, got %d", cfg.Synthesis.MaxFindings)
+	}
+
+	if cfg.Budget.PerAgent < 0 || cfg.Budget.Total < 0 || cfg.Budget.Synthesis < 0 || cfg.Budget.ContextPack < 0 {
+		return fmt.Errorf("budget values must be non-negative")
+	}
+	if cfg.Budget.PerAgent > 0 && cfg.Budget.Total > 0 && cfg.Budget.PerAgent > cfg.Budget.Total {
+		return fmt.Errorf("budget.per_agent (%d) must be <= budget.total (%d)", cfg.Budget.PerAgent, cfg.Budget.Total)
+	}
+
+	if cfg.Cache.TTLMinutes < 0 {
+		return fmt.Errorf("cache.ttl_minutes must be non-negative, got %d", cfg.Cache.TTLMinutes)
+	}
+	if cfg.Cache.MaxEntries < 0 {
+		return fmt.Errorf("cache.max_entries must be non-negative, got %d", cfg.Cache.MaxEntries)
+	}
+
+	if cfg.EarlyStop.MinAgents < 0 {
+		return fmt.Errorf("early_stop.min_agents must be non-negative, got %d", cfg.EarlyStop.MinAgents)
+	}
+	if cfg.EarlyStop.WindowSize < 0 {
+		return fmt.Errorf("early_stop.window_size must be non-negative, got %d", cfg.EarlyStop.WindowSize)
+	}
+	if cfg.EarlyStop.FindingsThreshold < 0 || cfg.EarlyStop.FindingsThreshold > 1 {
+		return fmt.Errorf("early_stop.findings_threshold must be between 0.0 and 1.0, got %f", cfg.EarlyStop.FindingsThreshold)
+	}
+	if cfg.EarlyStop.SimilarityThreshold < 0 || cfg.EarlyStop.SimilarityThreshold > 1 {
+		return fmt.Errorf("early_stop.similarity_threshold must be between 0.0 and 1.0, got %f", cfg.EarlyStop.SimilarityThreshold)
+	}
+
+	return nil
+}
+
 // GeminiSetupConfig holds configuration for Gemini post-spawn setup.
 type GeminiSetupConfig struct {
 	// AutoSelectProModel automatically selects Pro model after Gemini spawns.
@@ -754,6 +858,88 @@ func IsValidStrategy(strategy string) bool {
 func DefaultAssignConfig() AssignConfig {
 	return AssignConfig{
 		Strategy: "balanced",
+	}
+}
+
+// EnsembleConfig holds configuration defaults for reasoning ensembles.
+type EnsembleConfig struct {
+	DefaultEnsemble string                  `toml:"default_ensemble"`
+	AgentMix        string                  `toml:"agent_mix"`
+	Assignment      string                  `toml:"assignment"`
+	ModeTierDefault string                  `toml:"mode_tier_default"` // core|advanced|experimental
+	AllowAdvanced   bool                    `toml:"allow_advanced"`
+	Synthesis       EnsembleSynthesisConfig `toml:"synthesis"`
+	Cache           EnsembleCacheConfig     `toml:"cache"`
+	Budget          EnsembleBudgetConfig    `toml:"budget"`
+	EarlyStop       EnsembleEarlyStopConfig `toml:"early_stop"`
+}
+
+// EnsembleSynthesisConfig configures synthesis defaults for ensembles.
+type EnsembleSynthesisConfig struct {
+	Strategy           string  `toml:"strategy"`
+	MinConfidence      float64 `toml:"min_confidence"`
+	MaxFindings        int     `toml:"max_findings"`
+	IncludeRawOutputs  bool    `toml:"include_raw_outputs"`
+	ConflictResolution string  `toml:"conflict_resolution"`
+}
+
+// EnsembleCacheConfig configures context pack caching defaults.
+type EnsembleCacheConfig struct {
+	Enabled          bool   `toml:"enabled"`
+	TTLMinutes       int    `toml:"ttl_minutes"`
+	CacheDir         string `toml:"cache_dir"`
+	MaxEntries       int    `toml:"max_entries"`
+	ShareAcrossModes bool   `toml:"share_across_modes"`
+}
+
+// EnsembleBudgetConfig configures token budgets for ensembles.
+type EnsembleBudgetConfig struct {
+	PerAgent    int `toml:"per_agent"`
+	Total       int `toml:"total"`
+	Synthesis   int `toml:"synthesis"`
+	ContextPack int `toml:"context_pack"`
+}
+
+// EnsembleEarlyStopConfig configures early stop thresholds for ensembles.
+type EnsembleEarlyStopConfig struct {
+	Enabled             bool    `toml:"enabled"`
+	MinAgents           int     `toml:"min_agents"`
+	FindingsThreshold   float64 `toml:"findings_threshold"`
+	SimilarityThreshold float64 `toml:"similarity_threshold"`
+	WindowSize          int     `toml:"window_size"`
+}
+
+// DefaultEnsembleConfig returns the default ensemble configuration.
+func DefaultEnsembleConfig() EnsembleConfig {
+	return EnsembleConfig{
+		DefaultEnsemble: "architecture-review",
+		AgentMix:        "cc=3,cod=2,gmi=1",
+		Assignment:      "affinity",
+		ModeTierDefault: "core",
+		AllowAdvanced:   false,
+		Synthesis: EnsembleSynthesisConfig{
+			Strategy: "deliberative",
+		},
+		Cache: EnsembleCacheConfig{
+			Enabled:          true,
+			TTLMinutes:       60,
+			CacheDir:         "~/.cache/ntm/context-packs",
+			MaxEntries:       32,
+			ShareAcrossModes: true,
+		},
+		Budget: EnsembleBudgetConfig{
+			PerAgent:    5000,
+			Total:       30000,
+			Synthesis:   8000,
+			ContextPack: 2000,
+		},
+		EarlyStop: EnsembleEarlyStopConfig{
+			Enabled:             true,
+			MinAgents:           3,
+			FindingsThreshold:   0.15,
+			SimilarityThreshold: 0.7,
+			WindowSize:          3,
+		},
 	}
 }
 
@@ -1265,6 +1451,7 @@ func Default() *Config {
 		FileReservation: DefaultFileReservationConfig(),
 		Memory:          DefaultMemoryConfig(),
 		Assign:          DefaultAssignConfig(),
+		Ensemble:        DefaultEnsembleConfig(),
 		Swarm:           DefaultSwarmConfig(),
 	}
 
@@ -1729,6 +1916,18 @@ func Print(cfg *Config, w io.Writer) error {
 	}
 	fmt.Fprintln(w)
 
+	fmt.Fprintln(w, "[robot.output]")
+	fmt.Fprintln(w, "# Robot output format settings")
+	if cfg.Robot.Output.Format != "" {
+		fmt.Fprintf(w, "format = %q\n", cfg.Robot.Output.Format)
+	} else {
+		fmt.Fprintln(w, "# format = \"json\"")
+	}
+	fmt.Fprintf(w, "pretty = %t\n", cfg.Robot.Output.Pretty)
+	fmt.Fprintf(w, "timestamps = %t\n", cfg.Robot.Output.Timestamps)
+	fmt.Fprintf(w, "compress = %t\n", cfg.Robot.Output.Compress)
+	fmt.Fprintln(w)
+
 	fmt.Fprintln(w, "[agent_mail]")
 	fmt.Fprintln(w, "# Agent Mail server settings for multi-agent coordination")
 	fmt.Fprintln(w, "# Environment variables: AGENT_MAIL_URL, AGENT_MAIL_TOKEN, AGENT_MAIL_ENABLED")
@@ -2028,6 +2227,74 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "require_confirm = %t           # Require user confirmation before rotating\n", cfg.ContextRotation.RequireConfirm)
 	fmt.Fprintln(w)
 
+	fmt.Fprintln(w, "[ensemble]")
+	fmt.Fprintln(w, "# Reasoning ensemble defaults (used when flags are not provided)")
+	fmt.Fprintf(w, "default_ensemble = %q\n", cfg.Ensemble.DefaultEnsemble)
+	fmt.Fprintf(w, "agent_mix = %q\n", cfg.Ensemble.AgentMix)
+	fmt.Fprintf(w, "assignment = %q\n", cfg.Ensemble.Assignment)
+	fmt.Fprintf(w, "mode_tier_default = %q  # core|advanced|experimental\n", cfg.Ensemble.ModeTierDefault)
+	fmt.Fprintf(w, "allow_advanced = %t\n", cfg.Ensemble.AllowAdvanced)
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[ensemble.synthesis]")
+	fmt.Fprintln(w, "# Synthesis defaults (strategy + optional filters)")
+	if cfg.Ensemble.Synthesis.Strategy != "" {
+		fmt.Fprintf(w, "strategy = %q\n", cfg.Ensemble.Synthesis.Strategy)
+	} else {
+		fmt.Fprintln(w, "# strategy = \"deliberative\"")
+	}
+	if cfg.Ensemble.Synthesis.MinConfidence > 0 {
+		fmt.Fprintf(w, "min_confidence = %.2f\n", cfg.Ensemble.Synthesis.MinConfidence)
+	} else {
+		fmt.Fprintln(w, "# min_confidence = 0.50")
+	}
+	if cfg.Ensemble.Synthesis.MaxFindings > 0 {
+		fmt.Fprintf(w, "max_findings = %d\n", cfg.Ensemble.Synthesis.MaxFindings)
+	} else {
+		fmt.Fprintln(w, "# max_findings = 10")
+	}
+	fmt.Fprintf(w, "include_raw_outputs = %t\n", cfg.Ensemble.Synthesis.IncludeRawOutputs)
+	if cfg.Ensemble.Synthesis.ConflictResolution != "" {
+		fmt.Fprintf(w, "conflict_resolution = %q\n", cfg.Ensemble.Synthesis.ConflictResolution)
+	} else {
+		fmt.Fprintln(w, "# conflict_resolution = \"highlight\"")
+	}
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[ensemble.cache]")
+	fmt.Fprintln(w, "# Context pack caching defaults")
+	fmt.Fprintf(w, "enabled = %t\n", cfg.Ensemble.Cache.Enabled)
+	fmt.Fprintf(w, "ttl_minutes = %d\n", cfg.Ensemble.Cache.TTLMinutes)
+	if cfg.Ensemble.Cache.CacheDir != "" {
+		fmt.Fprintf(w, "cache_dir = %q\n", cfg.Ensemble.Cache.CacheDir)
+	} else {
+		fmt.Fprintln(w, "# cache_dir = \"~/.cache/ntm/context-packs\"")
+	}
+	if cfg.Ensemble.Cache.MaxEntries > 0 {
+		fmt.Fprintf(w, "max_entries = %d\n", cfg.Ensemble.Cache.MaxEntries)
+	} else {
+		fmt.Fprintln(w, "# max_entries = 32")
+	}
+	fmt.Fprintf(w, "share_across_modes = %t\n", cfg.Ensemble.Cache.ShareAcrossModes)
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[ensemble.budget]")
+	fmt.Fprintln(w, "# Token budget defaults")
+	fmt.Fprintf(w, "per_agent = %d\n", cfg.Ensemble.Budget.PerAgent)
+	fmt.Fprintf(w, "total = %d\n", cfg.Ensemble.Budget.Total)
+	fmt.Fprintf(w, "synthesis = %d\n", cfg.Ensemble.Budget.Synthesis)
+	fmt.Fprintf(w, "context_pack = %d\n", cfg.Ensemble.Budget.ContextPack)
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[ensemble.early_stop]")
+	fmt.Fprintln(w, "# Early stop defaults for ensembles")
+	fmt.Fprintf(w, "enabled = %t\n", cfg.Ensemble.EarlyStop.Enabled)
+	fmt.Fprintf(w, "min_agents = %d\n", cfg.Ensemble.EarlyStop.MinAgents)
+	fmt.Fprintf(w, "findings_threshold = %.2f\n", cfg.Ensemble.EarlyStop.FindingsThreshold)
+	fmt.Fprintf(w, "similarity_threshold = %.2f\n", cfg.Ensemble.EarlyStop.SimilarityThreshold)
+	fmt.Fprintf(w, "window_size = %d\n", cfg.Ensemble.EarlyStop.WindowSize)
+	fmt.Fprintln(w)
+
 	fmt.Fprintln(w, "# Command Palette entries")
 	fmt.Fprintln(w, "# Add your own prompts here")
 	fmt.Fprintln(w)
@@ -2305,6 +2572,84 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 		case "rotate_threshold":
 			return cfg.ContextRotation.RotateThreshold, nil
 		}
+	case "ensemble":
+		if len(parts) < 2 {
+			return cfg.Ensemble, nil
+		}
+		switch parts[1] {
+		case "default_ensemble":
+			return cfg.Ensemble.DefaultEnsemble, nil
+		case "agent_mix":
+			return cfg.Ensemble.AgentMix, nil
+		case "assignment":
+			return cfg.Ensemble.Assignment, nil
+		case "mode_tier_default":
+			return cfg.Ensemble.ModeTierDefault, nil
+		case "allow_advanced":
+			return cfg.Ensemble.AllowAdvanced, nil
+		case "synthesis":
+			if len(parts) < 3 {
+				return cfg.Ensemble.Synthesis, nil
+			}
+			switch parts[2] {
+			case "strategy":
+				return cfg.Ensemble.Synthesis.Strategy, nil
+			case "min_confidence":
+				return cfg.Ensemble.Synthesis.MinConfidence, nil
+			case "max_findings":
+				return cfg.Ensemble.Synthesis.MaxFindings, nil
+			case "include_raw_outputs":
+				return cfg.Ensemble.Synthesis.IncludeRawOutputs, nil
+			case "conflict_resolution":
+				return cfg.Ensemble.Synthesis.ConflictResolution, nil
+			}
+		case "cache":
+			if len(parts) < 3 {
+				return cfg.Ensemble.Cache, nil
+			}
+			switch parts[2] {
+			case "enabled":
+				return cfg.Ensemble.Cache.Enabled, nil
+			case "ttl_minutes":
+				return cfg.Ensemble.Cache.TTLMinutes, nil
+			case "cache_dir":
+				return cfg.Ensemble.Cache.CacheDir, nil
+			case "max_entries":
+				return cfg.Ensemble.Cache.MaxEntries, nil
+			case "share_across_modes":
+				return cfg.Ensemble.Cache.ShareAcrossModes, nil
+			}
+		case "budget":
+			if len(parts) < 3 {
+				return cfg.Ensemble.Budget, nil
+			}
+			switch parts[2] {
+			case "per_agent":
+				return cfg.Ensemble.Budget.PerAgent, nil
+			case "total":
+				return cfg.Ensemble.Budget.Total, nil
+			case "synthesis":
+				return cfg.Ensemble.Budget.Synthesis, nil
+			case "context_pack":
+				return cfg.Ensemble.Budget.ContextPack, nil
+			}
+		case "early_stop":
+			if len(parts) < 3 {
+				return cfg.Ensemble.EarlyStop, nil
+			}
+			switch parts[2] {
+			case "enabled":
+				return cfg.Ensemble.EarlyStop.Enabled, nil
+			case "min_agents":
+				return cfg.Ensemble.EarlyStop.MinAgents, nil
+			case "findings_threshold":
+				return cfg.Ensemble.EarlyStop.FindingsThreshold, nil
+			case "similarity_threshold":
+				return cfg.Ensemble.EarlyStop.SimilarityThreshold, nil
+			case "window_size":
+				return cfg.Ensemble.EarlyStop.WindowSize, nil
+			}
+		}
 	case "cass":
 		if len(parts) < 2 {
 			return cfg.CASS, nil
@@ -2452,6 +2797,32 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("context_rotation.warning_threshold", defaults.ContextRotation.WarningThreshold, cfg.ContextRotation.WarningThreshold)
 	addDiff("context_rotation.rotate_threshold", defaults.ContextRotation.RotateThreshold, cfg.ContextRotation.RotateThreshold)
 
+	// Ensemble defaults
+	addDiff("ensemble.default_ensemble", defaults.Ensemble.DefaultEnsemble, cfg.Ensemble.DefaultEnsemble)
+	addDiff("ensemble.agent_mix", defaults.Ensemble.AgentMix, cfg.Ensemble.AgentMix)
+	addDiff("ensemble.assignment", defaults.Ensemble.Assignment, cfg.Ensemble.Assignment)
+	addDiff("ensemble.mode_tier_default", defaults.Ensemble.ModeTierDefault, cfg.Ensemble.ModeTierDefault)
+	addDiff("ensemble.allow_advanced", defaults.Ensemble.AllowAdvanced, cfg.Ensemble.AllowAdvanced)
+	addDiff("ensemble.synthesis.strategy", defaults.Ensemble.Synthesis.Strategy, cfg.Ensemble.Synthesis.Strategy)
+	addDiff("ensemble.synthesis.min_confidence", defaults.Ensemble.Synthesis.MinConfidence, cfg.Ensemble.Synthesis.MinConfidence)
+	addDiff("ensemble.synthesis.max_findings", defaults.Ensemble.Synthesis.MaxFindings, cfg.Ensemble.Synthesis.MaxFindings)
+	addDiff("ensemble.synthesis.include_raw_outputs", defaults.Ensemble.Synthesis.IncludeRawOutputs, cfg.Ensemble.Synthesis.IncludeRawOutputs)
+	addDiff("ensemble.synthesis.conflict_resolution", defaults.Ensemble.Synthesis.ConflictResolution, cfg.Ensemble.Synthesis.ConflictResolution)
+	addDiff("ensemble.cache.enabled", defaults.Ensemble.Cache.Enabled, cfg.Ensemble.Cache.Enabled)
+	addDiff("ensemble.cache.ttl_minutes", defaults.Ensemble.Cache.TTLMinutes, cfg.Ensemble.Cache.TTLMinutes)
+	addDiff("ensemble.cache.cache_dir", defaults.Ensemble.Cache.CacheDir, cfg.Ensemble.Cache.CacheDir)
+	addDiff("ensemble.cache.max_entries", defaults.Ensemble.Cache.MaxEntries, cfg.Ensemble.Cache.MaxEntries)
+	addDiff("ensemble.cache.share_across_modes", defaults.Ensemble.Cache.ShareAcrossModes, cfg.Ensemble.Cache.ShareAcrossModes)
+	addDiff("ensemble.budget.per_agent", defaults.Ensemble.Budget.PerAgent, cfg.Ensemble.Budget.PerAgent)
+	addDiff("ensemble.budget.total", defaults.Ensemble.Budget.Total, cfg.Ensemble.Budget.Total)
+	addDiff("ensemble.budget.synthesis", defaults.Ensemble.Budget.Synthesis, cfg.Ensemble.Budget.Synthesis)
+	addDiff("ensemble.budget.context_pack", defaults.Ensemble.Budget.ContextPack, cfg.Ensemble.Budget.ContextPack)
+	addDiff("ensemble.early_stop.enabled", defaults.Ensemble.EarlyStop.Enabled, cfg.Ensemble.EarlyStop.Enabled)
+	addDiff("ensemble.early_stop.min_agents", defaults.Ensemble.EarlyStop.MinAgents, cfg.Ensemble.EarlyStop.MinAgents)
+	addDiff("ensemble.early_stop.findings_threshold", defaults.Ensemble.EarlyStop.FindingsThreshold, cfg.Ensemble.EarlyStop.FindingsThreshold)
+	addDiff("ensemble.early_stop.similarity_threshold", defaults.Ensemble.EarlyStop.SimilarityThreshold, cfg.Ensemble.EarlyStop.SimilarityThreshold)
+	addDiff("ensemble.early_stop.window_size", defaults.Ensemble.EarlyStop.WindowSize, cfg.Ensemble.EarlyStop.WindowSize)
+
 	// CASS
 	addDiff("cass.enabled", defaults.CASS.Enabled, cfg.CASS.Enabled)
 	addDiff("cass.timeout", defaults.CASS.Timeout, cfg.CASS.Timeout)
@@ -2488,6 +2859,11 @@ func Validate(cfg *Config) []error {
 	// Validate context rotation
 	if err := ValidateContextRotationConfig(&cfg.ContextRotation); err != nil {
 		errs = append(errs, fmt.Errorf("context_rotation: %w", err))
+	}
+
+	// Validate ensemble defaults
+	if err := ValidateEnsembleConfig(&cfg.Ensemble); err != nil {
+		errs = append(errs, fmt.Errorf("ensemble: %w", err))
 	}
 
 	// Validate health monitoring

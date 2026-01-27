@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -1636,58 +1635,9 @@ func TestDetectAgentState_EmptyPaneID(t *testing.T) {
 	}
 }
 
-// TestExecutor_selectPaneExcluding_DryRun tests selectPaneExcluding in dry run mode
-func TestExecutor_selectPaneExcluding_DryRun(t *testing.T) {
-	t.Parallel()
-
-	cfg := DefaultExecutorConfig("test-session")
-	cfg.DryRun = true
-	e := NewExecutor(cfg)
-
-	step := &Step{ID: "step1", Prompt: "test prompt"}
-	usedPanes := make(map[string]bool)
-	var mu sync.Mutex
-
-	paneID, agentType, err := e.selectPaneExcluding(step, usedPanes, &mu)
-
-	if err != nil {
-		t.Fatalf("selectPaneExcluding() returned error: %v", err)
-	}
-	if paneID != "dry-run-pane" {
-		t.Errorf("paneID = %q, want %q", paneID, "dry-run-pane")
-	}
-	if agentType != "dry-run-agent" {
-		t.Errorf("agentType = %q, want %q", agentType, "dry-run-agent")
-	}
-}
-
-// TestExecutor_selectPaneExcluding_DryRun_WithUsedPanes tests that dry run ignores usedPanes
-func TestExecutor_selectPaneExcluding_DryRun_WithUsedPanes(t *testing.T) {
-	t.Parallel()
-
-	cfg := DefaultExecutorConfig("test-session")
-	cfg.DryRun = true
-	e := NewExecutor(cfg)
-
-	step := &Step{ID: "step1", Prompt: "test prompt"}
-	usedPanes := map[string]bool{
-		"dry-run-pane": true, // Already marked as used
-	}
-	var mu sync.Mutex
-
-	// In dry run mode, should still return dry-run-pane regardless of usedPanes
-	paneID, agentType, err := e.selectPaneExcluding(step, usedPanes, &mu)
-
-	if err != nil {
-		t.Fatalf("selectPaneExcluding() returned error: %v", err)
-	}
-	if paneID != "dry-run-pane" {
-		t.Errorf("paneID = %q, want %q", paneID, "dry-run-pane")
-	}
-	if agentType != "dry-run-agent" {
-		t.Errorf("agentType = %q, want %q", agentType, "dry-run-agent")
-	}
-}
+// NOTE: Tests for selectPaneExcluding were removed because the method was never implemented.
+// The selectPane method provides the core pane selection logic; if exclusion is needed in
+// the future, it should be added to the Executor type and tested here.
 
 // TestWaitForIdle_ContextCancelled tests waitForIdle with cancelled context
 func TestWaitForIdle_ContextCancelled(t *testing.T) {

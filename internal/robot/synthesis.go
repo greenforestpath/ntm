@@ -1603,8 +1603,9 @@ type SummaryOptions struct {
 	Since   time.Duration
 }
 
-// PrintSummary generates and prints an activity summary for a session.
-func PrintSummary(opts SummaryOptions) error {
+// GetSummary generates an activity summary for a session and returns the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetSummary(opts SummaryOptions) (*SessionSummaryResponse, error) {
 	session := opts.Session
 	since := opts.Since
 	if since == 0 {
@@ -1614,7 +1615,10 @@ func PrintSummary(opts SummaryOptions) error {
 	// Get panes from tmux
 	panes, err := getPanesForSession(session)
 	if err != nil {
-		return RobotError(err, ErrCodeInternalError, "Failed to get panes")
+		resp := &SessionSummaryResponse{
+			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Failed to get panes"),
+		}
+		return resp, nil
 	}
 
 	// Build agent activity data from panes
@@ -1645,11 +1649,23 @@ func PrintSummary(opts SummaryOptions) error {
 		AgentData: agentData,
 	})
 	if err != nil {
-		return err
+		resp := &SessionSummaryResponse{
+			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Failed to generate summary"),
+		}
+		return resp, nil
 	}
 
-	// Output as JSON
-	resp := NewSessionSummaryResponse(summary)
+	// Return the response
+	return NewSessionSummaryResponse(summary), nil
+}
+
+// PrintSummary handles the --robot-summary command.
+// This is a thin wrapper around GetSummary() for CLI output.
+func PrintSummary(opts SummaryOptions) error {
+	resp, err := GetSummary(opts)
+	if err != nil {
+		return err
+	}
 	return outputJSON(resp)
 }
 

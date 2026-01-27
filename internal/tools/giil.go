@@ -46,7 +46,7 @@ func (a *GIILAdapter) Version(ctx context.Context) (Version, error) {
 		return Version{}, fmt.Errorf("failed to get giil version: %w", err)
 	}
 
-	return parseVersion(stdout.String())
+	return ParseStandardVersion(stdout.String())
 }
 
 // Capabilities returns the list of giil capabilities
@@ -153,8 +153,9 @@ func (a *GIILAdapter) GetDirectURL(ctx context.Context, shareURL string) (*GIILM
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), shareURL, "--print-url", "--json", "--quiet")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
@@ -189,8 +190,9 @@ func (a *GIILAdapter) Download(ctx context.Context, shareURL, outputDir string) 
 	}
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {

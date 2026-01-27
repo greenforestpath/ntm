@@ -1,6 +1,9 @@
 package kernel
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func testCommand(name string) Command {
 	return Command{
@@ -83,5 +86,54 @@ func TestRegistryValidation(t *testing.T) {
 	reg := NewRegistry()
 	if err := reg.Register(Command{}); err == nil {
 		t.Fatalf("expected validation error for empty command")
+	}
+}
+
+func TestRegistryRegisterHandlerUnknownCommand(t *testing.T) {
+	reg := NewRegistry()
+	err := reg.RegisterHandler("missing", func(context.Context, any) (any, error) {
+		return nil, nil
+	})
+	if err == nil {
+		t.Fatalf("expected error registering handler for unknown command")
+	}
+}
+
+func TestRegistryRunHandler(t *testing.T) {
+	reg := NewRegistry()
+	cmd := testCommand("kernel.list")
+
+	if err := reg.Register(cmd); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	if err := reg.RegisterHandler(cmd.Name, func(ctx context.Context, input any) (any, error) {
+		if input != "ping" {
+			t.Fatalf("expected input 'ping', got %v", input)
+		}
+		return "ok", nil
+	}); err != nil {
+		t.Fatalf("register handler failed: %v", err)
+	}
+
+	out, err := reg.Run(context.Background(), cmd.Name, "ping")
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("expected output ok, got %v", out)
+	}
+}
+
+func TestRegistryRunMissingHandler(t *testing.T) {
+	reg := NewRegistry()
+	cmd := testCommand("kernel.list")
+
+	if err := reg.Register(cmd); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	if _, err := reg.Run(context.Background(), cmd.Name, nil); err == nil {
+		t.Fatalf("expected error for missing handler")
 	}
 }

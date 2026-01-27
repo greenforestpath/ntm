@@ -109,89 +109,108 @@ type bulkPane struct {
 	AgentType string
 }
 
-// PrintBulkAssign outputs the bulk assignment plan as JSON.
-func PrintBulkAssign(opts BulkAssignOptions) error {
-	if opts.Session == "" {
-		return RobotError(
-			fmt.Errorf("session name is required"),
-			ErrCodeInvalidFlag,
-			"Provide session name: ntm --robot-bulk-assign=myproject",
-		)
-	}
-
-	deps := bulkAssignDeps(opts.Deps)
-	strategy := normalizeBulkAssignStrategy(opts.Strategy)
-
-	panes, err := deps.ListPanes(opts.Session)
-	if err != nil {
-		return RobotError(
-			fmt.Errorf("failed to get panes: %w", err),
-			ErrCodeInternalError,
-			"Check tmux is running and session is accessible",
-		)
-	}
-
-	paneList := filterBulkAssignPanes(panes, opts.SkipPanes)
-	output := BulkAssignOutput{
+// GetBulkAssign generates the bulk assignment plan and returns the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetBulkAssign(opts BulkAssignOptions) (*BulkAssignOutput, error) {
+	output := &BulkAssignOutput{
 		RobotResponse:   NewRobotResponse(true),
 		Session:         opts.Session,
-		Strategy:        strategy,
-		Timestamp:       deps.Now().UTC(),
 		Assignments:     []BulkAssignAssignment{},
 		UnassignedBeads: []string{},
 		UnassignedPanes: []int{},
 		DryRun:          opts.DryRun,
 	}
 
+	if opts.Session == "" {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("session name is required"),
+			ErrCodeInvalidFlag,
+			"Provide session name: ntm --robot-bulk-assign=myproject",
+		)
+		return output, nil
+	}
+
+	deps := bulkAssignDeps(opts.Deps)
+	strategy := normalizeBulkAssignStrategy(opts.Strategy)
+	output.Strategy = strategy
+	output.Timestamp = deps.Now().UTC()
+
+	panes, err := deps.ListPanes(opts.Session)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("failed to get panes: %w", err),
+			ErrCodeInternalError,
+			"Check tmux is running and session is accessible",
+		)
+		return output, nil
+	}
+
+	paneList := filterBulkAssignPanes(panes, opts.SkipPanes)
+
 	if opts.AllocationJSON != "" {
 		allocation, err := parseBulkAssignAllocation(opts.AllocationJSON)
 		if err != nil {
-			return RobotError(err, ErrCodeInvalidFlag, "Provide valid JSON mapping pane->bead")
+			output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Provide valid JSON mapping pane->bead")
+			return output, nil
 		}
 		plan := planBulkAssignFromAllocation(opts, deps, paneList, allocation)
 		output.AllocationSource = "explicit"
-		applyBulkAssignPlan(opts, deps, &output, plan)
-		return encodeJSON(output)
+		applyBulkAssignPlan(opts, deps, output, plan)
+		return output, nil
 	}
 
 	if !opts.FromBV {
-		return RobotError(
+		output.RobotResponse = NewErrorResponse(
 			errors.New("either --from-bv or --allocation is required"),
 			ErrCodeInvalidFlag,
 			"Use --from-bv or provide --allocation JSON",
 		)
+		return output, nil
 	}
 
 	wd, err := deps.Cwd()
 	if err != nil {
-		return RobotError(
+		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("failed to resolve working directory: %w", err),
 			ErrCodeInternalError,
 			"Run from a valid project directory",
 		)
+		return output, nil
 	}
 
 	triage, err := deps.FetchTriage(wd)
 	if err != nil {
-		return RobotError(
+		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("bv triage failed: %w", err),
 			ErrCodeInternalError,
 			"Ensure bv is installed and .beads exists",
 		)
+		return output, nil
 	}
 
 	inProgress, err := deps.FetchInProgress(wd, 200)
 	if err != nil {
-		return RobotError(
+		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("fetch in-progress failed: %w", err),
 			ErrCodeInternalError,
 			"Ensure br/bd is available for in-progress beads",
 		)
+		return output, nil
 	}
 
 	plan := planBulkAssignFromBV(opts, deps, paneList, triage, inProgress)
 	output.AllocationSource = "bv"
-	applyBulkAssignPlan(opts, deps, &output, plan)
+	applyBulkAssignPlan(opts, deps, output, plan)
+	return output, nil
+}
+
+// PrintBulkAssign handles the --robot-bulk-assign command.
+// This is a thin wrapper around GetBulkAssign() for CLI output.
+func PrintBulkAssign(opts BulkAssignOptions) error {
+	output, err := GetBulkAssign(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -428,7 +447,8 @@ func selectImpactBeads(candidates bulkAssignCandidates) []bulkBead {
 func selectReadyBeads(ready []bulkBead) []bulkBead {
 	filtered := make([]bulkBead, 0, len(ready))
 	for _, bead := range ready {
-		if bead.Status == "" || bead.Status == "ready" {
+		switch bead.Status {
+		case "", "ready", "open":
 			filtered = append(filtered, bead)
 		}
 	}

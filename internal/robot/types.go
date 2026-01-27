@@ -53,19 +53,15 @@
 //
 // ## Compliance Status
 //
-// Compliant types (embed RobotResponse): TailOutput, SendOutput, ContextOutput,
-// ActivityOutput, DiffOutput, AssignOutput, FilesOutput, InspectPaneOutput,
-// MetricsOutput, ReplayOutput, PaletteOutput, TUIAlertsOutput, DismissAlertOutput,
-// BeadsListOutput, BeadClaimOutput, BeadCreateOutput, BeadShowOutput, BeadCloseOutput,
-// TokensOutput, SchemaOutput, RouteOutput, HistoryOutput.
+// All robot output structs should embed RobotResponse. The canonical compliance
+// list is enforced in envelope_test.go.
 //
-// Non-compliant types (need migration): CASSStatusOutput, CASSSearchOutput,
-// CASSInsightsOutput, CASSContextOutput, StatusOutput, PlanOutput, SnapshotOutput,
-// SnapshotDeltaOutput, GraphOutput, AlertsOutput, RecipesOutput, TriageOutput,
-// AckOutput, SpawnOutput, HealthOutput, SessionHealthOutput, InterruptOutput,
-// DashboardOutput.
-//
-// See envelope_test.go for test coverage ensuring compliance.
+// Nested helper outputs that intentionally do NOT embed RobotResponse:
+//   - CapturedOutput (synthesis.go)
+//   - JSONOutput (synthesis.go)
+//   - PaneOutput (robot.go)
+//   - ToolInfoOutput (tools.go)
+//   - ToolHealthOutput (tools.go)
 package robot
 
 import (
@@ -74,6 +70,11 @@ import (
 	"os"
 	"time"
 )
+
+// EnvelopeVersion is the current version of the robot output envelope specification.
+// This version indicates the schema of the envelope structure itself, not the ntm version.
+// Increment when envelope fields change in a backwards-incompatible way.
+const EnvelopeVersion = "1.0.0"
 
 // Error codes for programmatic handling by AI agents.
 // These codes allow agents to handle specific error types without parsing error messages.
@@ -131,6 +132,23 @@ const (
 	ErrCodePromptSendFailed = "PROMPT_SEND_FAILED"
 )
 
+// ResponseMeta provides optional metadata about response generation.
+// This includes timing information and exit codes for debugging and monitoring.
+// Fields are omitted when not applicable or when no meaningful value exists.
+type ResponseMeta struct {
+	// DurationMs is how long the operation took in milliseconds.
+	// Only included when timing information is relevant.
+	DurationMs int64 `json:"duration_ms,omitempty"`
+
+	// ExitCode is the exit code that will be returned (0=success, 1=error, 2=unavailable).
+	// Included when the command has a non-zero exit code or when explicitly requested.
+	ExitCode int `json:"exit_code,omitempty"`
+
+	// Command is the robot command that generated this response (e.g., "robot-status").
+	// Useful for debugging and log correlation.
+	Command string `json:"command,omitempty"`
+}
+
 // RobotResponse is the base structure for all robot command outputs.
 // All robot commands should embed this or include these fields.
 //
@@ -138,13 +156,40 @@ const (
 // AI coding agents consume this output. They don't read external documentation
 // before using commands - they parse JSON and make decisions based on what
 // they see. Every response must be understandable WITHOUT external docs.
+//
+// # Envelope Specification (v1.0.0)
+//
+// All robot responses follow this envelope structure:
+//   - success: Whether the operation completed successfully (check FIRST)
+//   - timestamp: RFC3339 UTC timestamp when response was generated
+//   - version: Envelope specification version (e.g., "1.0.0")
+//   - output_format: Format of the response ("json" or "toon")
+//   - _meta: Optional metadata (timing, exit code, command name)
+//
+// Error responses additionally include:
+//   - error: Human-readable error message
+//   - error_code: Machine-readable code for programmatic handling
+//   - hint: Actionable guidance for resolving the error
 type RobotResponse struct {
 	// Success indicates whether the operation completed successfully.
 	// This is the first field agents should check.
 	Success bool `json:"success"`
 
 	// Timestamp is when this response was generated (RFC3339 format, UTC).
+	// Kept for backward compatibility - same value as generated_at.
 	Timestamp string `json:"timestamp"`
+
+	// Version is the envelope specification version (e.g., "1.0.0").
+	// This indicates the schema version of the envelope itself, not the ntm version.
+	Version string `json:"version,omitempty"`
+
+	// OutputFormat indicates the serialization format ("json" or "toon").
+	// This helps agents know what format to expect when parsing.
+	OutputFormat string `json:"output_format,omitempty"`
+
+	// Meta contains optional metadata about the response generation.
+	// Includes timing information, exit code, and command name.
+	Meta *ResponseMeta `json:"_meta,omitempty"`
 
 	// Error contains the human-readable error message when success=false.
 	Error string `json:"error,omitempty"`
@@ -391,6 +436,10 @@ type RobotAction struct {
 
 	// Priority indicates relative importance (higher = more important).
 	Priority int `json:"priority,omitempty"`
+
+	// Details provides additional information about the action.
+	// Example: shell command, prompt text, or configuration.
+	Details string `json:"details,omitempty"`
 }
 
 // TerseKeyMap defines the short-key mapping for --robot-verbosity=terse JSON/TOON output.
@@ -403,12 +452,20 @@ type RobotAction struct {
 //
 // Agents can reverse the mapping using TerseKeyReverseMap().
 var TerseKeyMap = map[string]string{
-	// Envelope fields
-	"success":    "ok",
-	"timestamp":  "ts",
-	"error":      "err",
-	"error_code": "ec",
-	"hint":       "h",
+	// Envelope fields (v1.0.0)
+	"success":       "ok",
+	"timestamp":     "ts",
+	"version":       "v",
+	"output_format": "of",
+	"_meta":         "mt",
+	"error":         "err",
+	"error_code":    "ec",
+	"hint":          "h",
+
+	// ResponseMeta fields
+	"duration_ms": "dm",
+	"exit_code":   "ex",
+	"command":     "cmd",
 
 	// Optional agent guidance (only if included by profile)
 	"_agent_hints": "ah",
@@ -464,12 +521,63 @@ func ExpandTerseKey(short string) (long string, ok bool) {
 	return long, ok
 }
 
-// NewRobotResponse creates a new RobotResponse with current timestamp.
+// NewRobotResponse creates a new RobotResponse with current timestamp and envelope fields.
 func NewRobotResponse(success bool) RobotResponse {
 	return RobotResponse{
-		Success:   success,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Success:      success,
+		Timestamp:    time.Now().UTC().Format(time.RFC3339),
+		Version:      EnvelopeVersion,
+		OutputFormat: OutputFormat.String(),
 	}
+}
+
+// NewRobotResponseWithMeta creates a RobotResponse with metadata.
+// Use this when you want to include timing or command information.
+func NewRobotResponseWithMeta(success bool, meta *ResponseMeta) RobotResponse {
+	resp := NewRobotResponse(success)
+	resp.Meta = meta
+	return resp
+}
+
+// NewResponseMeta creates a ResponseMeta with the given command name.
+// Call Finish() when the operation completes to record the duration.
+func NewResponseMeta(command string) *ResponseMeta {
+	return &ResponseMeta{
+		Command: command,
+	}
+}
+
+// responseMetaStart is used internally to track operation start time.
+type responseMetaStart struct {
+	meta  *ResponseMeta
+	start time.Time
+}
+
+// StartResponseMeta creates a ResponseMeta and starts timing.
+// Call the returned function when done to record duration.
+//
+// Example:
+//
+//	meta, finish := StartResponseMeta("robot-status")
+//	defer finish()
+//	// ... do work ...
+//	resp := NewRobotResponseWithMeta(true, meta)
+func StartResponseMeta(command string) (*ResponseMeta, func()) {
+	meta := &ResponseMeta{
+		Command: command,
+	}
+	start := time.Now()
+	return meta, func() {
+		meta.DurationMs = time.Since(start).Milliseconds()
+	}
+}
+
+// WithExitCode sets the exit code on ResponseMeta and returns it for chaining.
+func (m *ResponseMeta) WithExitCode(code int) *ResponseMeta {
+	if m != nil {
+		m.ExitCode = code
+	}
+	return m
 }
 
 // NewErrorResponse creates an error RobotResponse with the given details.

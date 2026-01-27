@@ -85,6 +85,8 @@ func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 		}
 
 		switch name {
+		case "health_check":
+			writeResponse(map[string]interface{}{"status": "ok"})
 		case "ensure_project":
 			stub.ensureCalled++
 			project := map[string]interface{}{

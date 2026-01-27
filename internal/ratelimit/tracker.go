@@ -2,12 +2,16 @@
 package ratelimit
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
-	"sync"
-	"time"
+    "encoding/json"
+    "fmt"
+    "os"
+    "path/filepath"
+    "regexp"
+    "strconv"
+    "sync"
+    "time"
+
+    "github.com/Dicklesworthstone/ntm/internal/status"
 )
 
 // Default delays per provider (initial values before learning).
@@ -35,11 +39,12 @@ type RateLimitEvent struct {
 
 // ProviderState tracks the current state for a provider.
 type ProviderState struct {
-	CurrentDelay       time.Duration `json:"current_delay"`
-	ConsecutiveSuccess int           `json:"consecutive_success"`
-	LastRateLimit      time.Time     `json:"last_rate_limit,omitempty"`
-	TotalRateLimits    int           `json:"total_rate_limits"`
-	TotalSuccesses     int           `json:"total_successes"`
+    CurrentDelay       time.Duration `json:"current_delay"`
+    ConsecutiveSuccess int           `json:"consecutive_success"`
+    LastRateLimit      time.Time     `json:"last_rate_limit,omitempty"`
+    CooldownUntil      time.Time     `json:"cooldown_until,omitempty"`
+    TotalRateLimits    int           `json:"total_rate_limits"`
+    TotalSuccesses     int           `json:"total_successes"`
 }
 
 // RateLimitTracker tracks rate limit events and learns optimal spawn/send timing.
@@ -108,39 +113,68 @@ func (t *RateLimitTracker) getOrCreateState(provider string) *ProviderState {
 
 // RecordRateLimit records a rate limit event and adjusts delays.
 func (t *RateLimitTracker) RecordRateLimit(provider, action string) {
-	provider = NormalizeProvider(provider)
-	t.mu.Lock()
-	defer t.mu.Unlock()
+    provider = NormalizeProvider(provider)
+    t.mu.Lock()
+    defer t.mu.Unlock()
 
-	now := time.Now()
-	event := RateLimitEvent{
-		Time:     now,
-		Provider: provider,
-		Action:   action,
-	}
+    now := time.Now()
+    t.recordRateLimitLocked(provider, action, now)
+}
 
-	// Add to history (keep last 100 events per provider)
-	t.history[provider] = append(t.history[provider], event)
-	if len(t.history[provider]) > 100 {
-		t.history[provider] = t.history[provider][len(t.history[provider])-100:]
-	}
+// RecordRateLimitWithCooldown records a rate limit event and sets a cooldown window.
+// If waitSeconds is <= 0, the current adaptive delay is used as the cooldown duration.
+// Returns the applied cooldown duration.
+func (t *RateLimitTracker) RecordRateLimitWithCooldown(provider, action string, waitSeconds int) time.Duration {
+    provider = NormalizeProvider(provider)
+    t.mu.Lock()
+    defer t.mu.Unlock()
 
-	// Update state
-	state := t.getOrCreateState(provider)
-	state.LastRateLimit = now
-	state.TotalRateLimits++
-	state.ConsecutiveSuccess = 0 // Reset consecutive successes
+    now := time.Now()
+    state := t.recordRateLimitLocked(provider, action, now)
 
-	// Increase delay by 50%
-	newDelay := time.Duration(float64(state.CurrentDelay) * delayIncreaseRate)
-	state.CurrentDelay = newDelay
+    cooldown := time.Duration(waitSeconds) * time.Second
+    if waitSeconds <= 0 {
+        cooldown = state.CurrentDelay
+    }
+
+    cooldownUntil := now.Add(cooldown)
+    if cooldownUntil.After(state.CooldownUntil) {
+        state.CooldownUntil = cooldownUntil
+    }
+
+    return cooldown
+}
+
+func (t *RateLimitTracker) recordRateLimitLocked(provider, action string, now time.Time) *ProviderState {
+    event := RateLimitEvent{
+        Time:     now,
+        Provider: provider,
+        Action:   action,
+    }
+
+    // Add to history (keep last 100 events per provider)
+    t.history[provider] = append(t.history[provider], event)
+    if len(t.history[provider]) > 100 {
+        t.history[provider] = t.history[provider][len(t.history[provider])-100:]
+    }
+
+    // Update state
+    state := t.getOrCreateState(provider)
+    state.LastRateLimit = now
+    state.TotalRateLimits++
+    state.ConsecutiveSuccess = 0 // Reset consecutive successes
+
+    // Increase delay by 50%
+    newDelay := time.Duration(float64(state.CurrentDelay) * delayIncreaseRate)
+    state.CurrentDelay = newDelay
+    return state
 }
 
 // RecordSuccess records a successful request.
 func (t *RateLimitTracker) RecordSuccess(provider string) {
-	provider = NormalizeProvider(provider)
-	t.mu.Lock()
-	defer t.mu.Unlock()
+    provider = NormalizeProvider(provider)
+    t.mu.Lock()
+    defer t.mu.Unlock()
 
 	state := t.getOrCreateState(provider)
 	state.TotalSuccesses++
@@ -156,6 +190,40 @@ func (t *RateLimitTracker) RecordSuccess(provider string) {
 		state.CurrentDelay = newDelay
 		state.ConsecutiveSuccess = 0 // Reset counter
 	}
+}
+
+// CooldownRemaining returns how much cooldown time remains for a provider.
+// Returns 0 if no cooldown is active or the provider is unknown.
+func (t *RateLimitTracker) CooldownRemaining(provider string) time.Duration {
+    provider = NormalizeProvider(provider)
+    t.mu.RLock()
+    defer t.mu.RUnlock()
+
+    state, ok := t.state[provider]
+    if !ok {
+        return 0
+    }
+    remaining := time.Until(state.CooldownUntil)
+    if remaining < 0 {
+        return 0
+    }
+    return remaining
+}
+
+// IsInCooldown reports whether the provider is currently in a cooldown window.
+func (t *RateLimitTracker) IsInCooldown(provider string) bool {
+    return t.CooldownRemaining(provider) > 0
+}
+
+// ClearCooldown clears any active cooldown for a provider.
+func (t *RateLimitTracker) ClearCooldown(provider string) {
+    provider = NormalizeProvider(provider)
+    t.mu.Lock()
+    defer t.mu.Unlock()
+
+    if state, ok := t.state[provider]; ok {
+        state.CooldownUntil = time.Time{}
+    }
 }
 
 // GetOptimalDelay returns the current optimal delay for a provider.
@@ -339,4 +407,105 @@ func NormalizeProvider(provider string) string {
 	default:
 		return provider
 	}
+}
+
+// RateLimitDetection captures a detected rate limit signal from output.
+type RateLimitDetection struct {
+    RateLimited bool
+    WaitSeconds int
+    ExitCode    int
+    Source      string // "output" or "exit_code"
+}
+
+const (
+    detectionSourceOutput   = "output"
+    detectionSourceExitCode = "exit_code"
+)
+
+type waitPattern struct {
+    re         *regexp.Regexp
+    multiplier int
+}
+
+var waitTimePatterns = []waitPattern{
+    {regexp.MustCompile(`(?i)retry-after[:=]\s*(\d+)`), 1},
+    {regexp.MustCompile(`(?i)try\s+again\s+in\s+(\d+)\s*s`), 1},
+    {regexp.MustCompile(`(?i)wait\s+(\d+)\s*(?:second|sec|s)`), 1},
+    {regexp.MustCompile(`(?i)retry\s+(?:after|in)\s+(\d+)\s*(?:s|sec)`), 1},
+    {regexp.MustCompile(`(?i)retry\s+(?:after|in)\s+(\d+)\s*(?:m|min|minute|minutes)`), 60},
+    {regexp.MustCompile(`(?i)(\d+)\s*(?:second|sec)s?\s+(?:cooldown|delay|wait)`), 1},
+    {regexp.MustCompile(`(?i)rate.?limit.*?(\d+)\s*s`), 1},
+}
+
+var exitCodePatterns = []*regexp.Regexp{
+    regexp.MustCompile(`(?i)exit(?:\s+status|\s+code)?[:\s]+(\d+)`),
+    regexp.MustCompile(`(?i)exited\s+with\s+code\s+(\d+)`),
+    regexp.MustCompile(`(?i)status[:\s]+(\d+)`),
+}
+
+// ParseWaitSeconds extracts a suggested wait time in seconds from output.
+// Returns 0 if no wait time is found.
+func ParseWaitSeconds(output string) int {
+    if output == "" {
+        return 0
+    }
+    output = status.StripANSI(output)
+
+    for _, pattern := range waitTimePatterns {
+        if matches := pattern.re.FindStringSubmatch(output); len(matches) > 1 {
+            seconds, err := strconv.Atoi(matches[1])
+            if err == nil && seconds > 0 {
+                return seconds * pattern.multiplier
+            }
+        }
+    }
+    return 0
+}
+
+// ParseExitCode tries to extract an exit code from output.
+func ParseExitCode(output string) (int, bool) {
+    if output == "" {
+        return 0, false
+    }
+    output = status.StripANSI(output)
+
+    for _, pattern := range exitCodePatterns {
+        if matches := pattern.FindStringSubmatch(output); len(matches) > 1 {
+            code, err := strconv.Atoi(matches[1])
+            if err == nil {
+                return code, true
+            }
+        }
+    }
+    return 0, false
+}
+
+// DetectRateLimit inspects output for rate limit signals, including exit code 429.
+func DetectRateLimit(output string) RateLimitDetection {
+    detection := RateLimitDetection{WaitSeconds: ParseWaitSeconds(output)}
+
+    if code, ok := ParseExitCode(output); ok {
+        detection.ExitCode = code
+        if code == 429 {
+            detection.RateLimited = true
+            detection.Source = detectionSourceExitCode
+            return detection
+        }
+    }
+
+    if status.DetectErrorInOutput(output) == status.ErrorRateLimit {
+        detection.RateLimited = true
+        detection.Source = detectionSourceOutput
+        return detection
+    }
+
+    for _, et := range status.DetectAllErrorsInOutput(output) {
+        if et == status.ErrorRateLimit {
+            detection.RateLimited = true
+            detection.Source = detectionSourceOutput
+            return detection
+        }
+    }
+
+    return detection
 }

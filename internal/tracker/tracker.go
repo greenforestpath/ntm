@@ -488,13 +488,18 @@ func SnapshotDirectory(root string, opts SnapshotOptions) (map[string]FileState,
 func SnapshotGit(root string, opts SnapshotOptions) (map[string]FileState, error) {
 	// git status --porcelain -uall --no-renames (shows modified and untracked, splits renames)
 	cmd := exec.Command("git", "-C", root, "status", "--porcelain", "-uall", "--no-renames")
-	output, err := cmd.Output()
+	
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("git status failed: %w", err)
+		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("git status start failed: %w", err)
 	}
 
 	snap := make(map[string]FileState)
-	scanner := bufio.NewScanner(bytes.NewReader(output))
+	scanner := bufio.NewScanner(stdout)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -554,6 +559,13 @@ func SnapshotGit(root string, opts SnapshotOptions) (map[string]FileState, error
 			Size:      info.Size(),
 			GitStatus: strings.TrimSpace(status),
 		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+		// git status might exit non-zero if no repo? Check error message?
+		// But IsGitRepository check usually precedes this.
+		// If Wait fails, we might still have useful partial data, but safer to return error.
+		return nil, fmt.Errorf("git status wait failed: %w", err)
 	}
 
 	return snap, nil

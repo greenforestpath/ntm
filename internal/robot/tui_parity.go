@@ -13,6 +13,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/history"
+	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 )
@@ -72,8 +73,9 @@ type FilesOptions struct {
 	Limit      int    // Max changes to return (default: 100)
 }
 
-// PrintFiles outputs file changes as JSON
-func PrintFiles(opts FilesOptions) error {
+// GetFiles returns file changes data.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetFiles(opts FilesOptions) (*FilesOutput, error) {
 	// Set defaults
 	if opts.TimeWindow == "" {
 		opts.TimeWindow = "15m"
@@ -82,7 +84,7 @@ func PrintFiles(opts FilesOptions) error {
 		opts.Limit = 100
 	}
 
-	output := FilesOutput{
+	output := &FilesOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
 		TimeWindow:    opts.TimeWindow,
@@ -100,7 +102,7 @@ func PrintFiles(opts FilesOptions) error {
 			Summary: "File change tracking not initialized",
 			Notes:   []string{"File changes are tracked when agents modify files within ntm sessions"},
 		}
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Calculate time cutoff
@@ -245,6 +247,16 @@ func PrintFiles(opts FilesOptions) error {
 		}
 	}
 
+	return output, nil
+}
+
+// PrintFiles outputs file changes as JSON.
+// This is a thin wrapper around GetFiles() for CLI output.
+func PrintFiles(opts FilesOptions) error {
+	output, err := GetFiles(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -312,33 +324,42 @@ type InspectPaneOptions struct {
 	IncludeCode bool   // Parse code blocks
 }
 
-// PrintInspectPane outputs detailed pane inspection
-func PrintInspectPane(opts InspectPaneOptions) error {
+// GetInspectPane returns detailed pane inspection data.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetInspectPane(opts InspectPaneOptions) (*InspectPaneOutput, error) {
 	if opts.Lines <= 0 {
 		opts.Lines = 100
 	}
 
 	// Validate session
 	if opts.Session == "" {
-		return RobotError(
-			fmt.Errorf("session name required"),
-			ErrCodeInvalidFlag,
-			"Specify session with --robot-inspect-pane=SESSION",
-		)
+		return &InspectPaneOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("session name required"),
+				ErrCodeInvalidFlag,
+				"Specify session with --robot-inspect-pane=SESSION",
+			),
+		}, nil
 	}
 
 	if !tmux.SessionExists(opts.Session) {
-		return RobotError(
-			fmt.Errorf("session '%s' not found", opts.Session),
-			ErrCodeSessionNotFound,
-			"Use 'ntm list' to see available sessions",
-		)
+		return &InspectPaneOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("session '%s' not found", opts.Session),
+				ErrCodeSessionNotFound,
+				"Use 'ntm list' to see available sessions",
+			),
+			Session: opts.Session,
+		}, nil
 	}
 
 	// Get panes
 	panes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
-		return RobotError(err, ErrCodeInternalError, "Failed to get panes")
+		return &InspectPaneOutput{
+			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Failed to get panes"),
+			Session:       opts.Session,
+		}, nil
 	}
 
 	// Find the target pane
@@ -370,17 +391,21 @@ func PrintInspectPane(opts InspectPaneOptions) error {
 		if len(validIndices) > 0 {
 			hint = fmt.Sprintf("Valid pane indices: %s", strings.Join(validIndices, ", "))
 		}
-		return RobotError(
-			fmt.Errorf("pane %d not found in session '%s'", opts.PaneIndex, opts.Session),
-			ErrCodePaneNotFound,
-			hint,
-		)
+		return &InspectPaneOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("pane %d not found in session '%s'", opts.PaneIndex, opts.Session),
+				ErrCodePaneNotFound,
+				hint,
+			),
+			Session:   opts.Session,
+			PaneIndex: opts.PaneIndex,
+		}, nil
 	}
 
 	// Capture output
 	captured, captureErr := tmux.CapturePaneOutput(targetPane.ID, opts.Lines)
 
-	output := InspectPaneOutput{
+	output := &InspectPaneOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
 		PaneIndex:     targetPane.Index,
@@ -459,6 +484,16 @@ func PrintInspectPane(opts InspectPaneOptions) error {
 		SuggestedActions: suggestions,
 	}
 
+	return output, nil
+}
+
+// PrintInspectPane outputs detailed pane inspection.
+// This is a thin wrapper around GetInspectPane() for CLI output.
+func PrintInspectPane(opts InspectPaneOptions) error {
+	output, err := GetInspectPane(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -515,13 +550,14 @@ type MetricsOptions struct {
 	Format  string // "json", "csv" (default: "json")
 }
 
-// PrintMetrics outputs session metrics
-func PrintMetrics(opts MetricsOptions) error {
+// GetMetrics returns session metrics data.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetMetrics(opts MetricsOptions) (*MetricsOutput, error) {
 	if opts.Period == "" {
 		opts.Period = "24h"
 	}
 
-	output := MetricsOutput{
+	output := &MetricsOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
 		Period:        opts.Period,
@@ -536,11 +572,21 @@ func PrintMetrics(opts MetricsOptions) error {
 	// Get session info if specified
 	if opts.Session != "" {
 		if !tmux.SessionExists(opts.Session) {
-			return RobotError(
-				fmt.Errorf("session '%s' not found", opts.Session),
-				ErrCodeSessionNotFound,
-				"Use 'ntm list' to see available sessions",
-			)
+			return &MetricsOutput{
+				RobotResponse: NewErrorResponse(
+					fmt.Errorf("session '%s' not found", opts.Session),
+					ErrCodeSessionNotFound,
+					"Use 'ntm list' to see available sessions",
+				),
+				Session: opts.Session,
+				Period:  opts.Period,
+				TokenUsage: MetricsTokenUsage{
+					ByAgent:        make(map[string]int64),
+					ByModel:        make(map[string]int64),
+					ContextCurrent: make(map[string]int),
+				},
+				AgentStats: make(map[string]AgentMetrics),
+			}, nil
 		}
 
 		panes, err := tmux.GetPanes(opts.Session)
@@ -585,6 +631,16 @@ func PrintMetrics(opts MetricsOptions) error {
 		Notes:   []string{"Token usage requires integration with provider APIs for accurate data"},
 	}
 
+	return output, nil
+}
+
+// PrintMetrics outputs session metrics.
+// This is a thin wrapper around GetMetrics() for CLI output.
+func PrintMetrics(opts MetricsOptions) error {
+	output, err := GetMetrics(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -611,9 +667,11 @@ type ReplayOptions struct {
 	DryRun    bool   // Just show what would be replayed
 }
 
-// PrintReplay outputs replay operation result
-func PrintReplay(opts ReplayOptions) error {
-	output := ReplayOutput{
+// GetReplay returns replay operation result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+// Note: When DryRun is false, this executes the replay and returns nil (send handles output).
+func GetReplay(opts ReplayOptions) (*ReplayOutput, error) {
+	output := &ReplayOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
 		HistoryID:     opts.HistoryID,
@@ -623,11 +681,15 @@ func PrintReplay(opts ReplayOptions) error {
 	// Get history entries
 	entries, err := history.ReadRecent(100)
 	if err != nil {
-		return RobotError(
-			fmt.Errorf("history tracking not available: %w", err),
-			ErrCodeDependencyMissing,
-			"History is recorded during send operations",
-		)
+		return &ReplayOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("history tracking not available: %w", err),
+				ErrCodeDependencyMissing,
+				"History is recorded during send operations",
+			),
+			HistoryID:   opts.HistoryID,
+			TargetPanes: []int{},
+		}, nil
 	}
 
 	// Find the history entry
@@ -640,11 +702,15 @@ func PrintReplay(opts ReplayOptions) error {
 	}
 
 	if target == nil {
-		return RobotError(
-			fmt.Errorf("history entry '%s' not found", opts.HistoryID),
-			ErrCodeInvalidFlag,
-			"Use --robot-history to see available entries",
-		)
+		return &ReplayOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("history entry '%s' not found", opts.HistoryID),
+				ErrCodeInvalidFlag,
+				"Use --robot-history to see available entries",
+			),
+			HistoryID:   opts.HistoryID,
+			TargetPanes: []int{},
+		}, nil
 	}
 
 	output.OriginalCmd = target.Prompt
@@ -663,25 +729,53 @@ func PrintReplay(opts ReplayOptions) error {
 			Summary: fmt.Sprintf("Would replay: %s", truncateString(target.Prompt, 50)),
 			Notes:   []string{"Use without --replay-dry-run to execute"},
 		}
-	} else {
-		// Execute the replay by calling send logic
-		// Build pane filter from original targets
-		paneFilter := append([]string{}, target.Targets...)
-
-		sendOpts := SendOptions{
-			Session: target.Session,
-			Message: target.Prompt,
-			Panes:   paneFilter,
-		}
-
-		// Execute the send (this will print its own JSON output)
-		if err := PrintSend(sendOpts); err != nil {
-			return err
-		}
-		// PrintSend already outputs JSON, so we return early
-		return nil
+		return output, nil
 	}
 
+	// Execute the replay by calling send logic
+	// Build pane filter from original targets
+	paneFilter := append([]string{}, target.Targets...)
+
+	sendOpts := SendOptions{
+		Session: target.Session,
+		Message: target.Prompt,
+		Panes:   paneFilter,
+	}
+
+	// Execute the send - GetSend handles the actual operation
+	sendOutput, err := GetSend(sendOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Return nil to signal that PrintReplay should use send output directly
+	// This is a special case where we delegate to another command
+	_ = sendOutput // Used by PrintReplay
+	return nil, nil
+}
+
+// PrintReplay outputs replay operation result.
+// This is a thin wrapper around GetReplay() for CLI output.
+func PrintReplay(opts ReplayOptions) error {
+	output, err := GetReplay(opts)
+	if err != nil {
+		return err
+	}
+	// nil output means GetReplay delegated to send
+	if output == nil {
+		// Execute send directly for non-dry-run case
+		entries, _ := history.ReadRecent(100)
+		for i := range entries {
+			if entries[i].ID == opts.HistoryID {
+				sendOpts := SendOptions{
+					Session: entries[i].Session,
+					Message: entries[i].Prompt,
+					Panes:   append([]string{}, entries[i].Targets...),
+				}
+				return PrintSend(sendOpts)
+			}
+		}
+	}
 	return encodeJSON(output)
 }
 
@@ -730,13 +824,14 @@ type PaletteOptions struct {
 	SearchQuery string // Filter commands by search term
 }
 
-// PrintPalette outputs palette information
-func PrintPalette(cfg *config.Config, opts PaletteOptions) error {
+// GetPalette returns palette information.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetPalette(cfg *config.Config, opts PaletteOptions) (*PaletteOutput, error) {
 	if cfg == nil {
 		cfg = config.Default()
 	}
 
-	output := PaletteOutput{
+	output := &PaletteOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
 		Commands:      []PaletteCmd{},
@@ -746,19 +841,24 @@ func PrintPalette(cfg *config.Config, opts PaletteOptions) error {
 		Categories:    []string{},
 	}
 
+	seen := make(map[string]struct{})
+	query := strings.ToLower(opts.SearchQuery)
+	matchesFilters := func(key, label, category string) bool {
+		if opts.Category != "" && category != opts.Category {
+			return false
+		}
+		if opts.SearchQuery == "" {
+			return true
+		}
+		return strings.Contains(strings.ToLower(label), query) ||
+			strings.Contains(strings.ToLower(key), query)
+	}
+
 	// Get commands from config
 	categorySet := make(map[string]struct{})
 	for _, cmd := range cfg.Palette {
-		// Apply filters
-		if opts.Category != "" && cmd.Category != opts.Category {
+		if !matchesFilters(cmd.Key, cmd.Label, cmd.Category) {
 			continue
-		}
-		if opts.SearchQuery != "" {
-			query := strings.ToLower(opts.SearchQuery)
-			if !strings.Contains(strings.ToLower(cmd.Label), query) &&
-				!strings.Contains(strings.ToLower(cmd.Key), query) {
-				continue
-			}
 		}
 
 		palCmd := PaletteCmd{
@@ -766,10 +866,57 @@ func PrintPalette(cfg *config.Config, opts PaletteOptions) error {
 			Label:    cmd.Label,
 			Category: cmd.Category,
 			Prompt:   cmd.Prompt,
+			Tags:     cmd.Tags,
 		}
 
 		output.Commands = append(output.Commands, palCmd)
 		categorySet[cmd.Category] = struct{}{}
+		if cmd.Key != "" {
+			seen[cmd.Key] = struct{}{}
+		}
+	}
+
+	for _, cmd := range kernel.List() {
+		key := strings.TrimSpace(cmd.Name)
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+
+		label := strings.TrimSpace(cmd.Description)
+		if label == "" {
+			label = key
+		}
+		category := strings.TrimSpace(cmd.Category)
+		if category == "" {
+			category = "kernel"
+		}
+
+		if !matchesFilters(key, label, category) {
+			continue
+		}
+
+		prompt := ""
+		if len(cmd.Examples) > 0 {
+			prompt = strings.TrimSpace(cmd.Examples[0].Command)
+		}
+		if prompt == "" {
+			prompt = key
+		}
+
+		palCmd := PaletteCmd{
+			Key:      key,
+			Label:    label,
+			Category: category,
+			Prompt:   prompt,
+			Tags:     []string{"kernel"},
+		}
+
+		output.Commands = append(output.Commands, palCmd)
+		categorySet[category] = struct{}{}
+		seen[key] = struct{}{}
 	}
 
 	for cat := range categorySet {
@@ -781,6 +928,16 @@ func PrintPalette(cfg *config.Config, opts PaletteOptions) error {
 		Notes:   []string{"Use --robot-send with a prompt to send commands to agents"},
 	}
 
+	return output, nil
+}
+
+// PrintPalette outputs palette information.
+// This is a thin wrapper around GetPalette() for CLI output.
+func PrintPalette(cfg *config.Config, opts PaletteOptions) error {
+	output, err := GetPalette(cfg, opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -819,9 +976,10 @@ type TUIAlertsOptions struct {
 	Type     string // Filter by type
 }
 
-// PrintAlertsTUI outputs current alerts with TUI-parity formatting
-func PrintAlertsTUI(cfg *config.Config, opts TUIAlertsOptions) error {
-	output := TUIAlertsOutput{
+// GetAlertsTUI returns current alerts with TUI-parity formatting.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetAlertsTUI(cfg *config.Config, opts TUIAlertsOptions) (*TUIAlertsOutput, error) {
+	output := &TUIAlertsOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
 		Alerts:        []TUIAlertInfo{},
@@ -892,6 +1050,16 @@ func PrintAlertsTUI(cfg *config.Config, opts TUIAlertsOptions) error {
 		Warnings: warnings,
 	}
 
+	return output, nil
+}
+
+// PrintAlertsTUI outputs current alerts with TUI-parity formatting.
+// This is a thin wrapper around GetAlertsTUI() for CLI output.
+func PrintAlertsTUI(cfg *config.Config, opts TUIAlertsOptions) error {
+	output, err := GetAlertsTUI(cfg, opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -910,21 +1078,25 @@ type DismissAlertOptions struct {
 	DismissAll bool   // Dismiss all alerts matching criteria
 }
 
-// PrintDismissAlert dismisses an alert and outputs the result
+// GetDismissAlert dismisses an alert and returns the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
 // Note: Alert dismissal is session-local and non-persistent in this implementation.
 // Future versions may persist dismissals.
-func PrintDismissAlert(opts DismissAlertOptions) error {
-	output := DismissAlertOutput{
+func GetDismissAlert(opts DismissAlertOptions) (*DismissAlertOutput, error) {
+	output := &DismissAlertOutput{
 		RobotResponse: NewRobotResponse(true),
 		AlertID:       opts.AlertID,
 	}
 
 	if opts.AlertID == "" && !opts.DismissAll {
-		return RobotError(
-			fmt.Errorf("alert ID required"),
-			ErrCodeInvalidFlag,
-			"Specify --robot-dismiss-alert=ALERT_ID or use --dismiss-all",
-		)
+		return &DismissAlertOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("alert ID required"),
+				ErrCodeInvalidFlag,
+				"Specify --robot-dismiss-alert=ALERT_ID or use --dismiss-all",
+			),
+			AlertID: opts.AlertID,
+		}, nil
 	}
 
 	// Note: Full alert dismissal with persistence requires tracker integration.
@@ -939,6 +1111,16 @@ func PrintDismissAlert(opts DismissAlertOptions) error {
 		}
 	}
 
+	return output, nil
+}
+
+// PrintDismissAlert dismisses an alert and outputs the result.
+// This is a thin wrapper around GetDismissAlert() for CLI output.
+func PrintDismissAlert(opts DismissAlertOptions) error {
+	output, err := GetDismissAlert(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -1144,20 +1326,24 @@ type BeadsListSummary struct {
 	Ready      int `json:"ready"`
 }
 
-// PrintBeadsList lists beads with optional filtering
-func PrintBeadsList(opts BeadsListOptions) error {
-	output := BeadsListOutput{
+// GetBeadsList returns beads list with optional filtering.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetBeadsList(opts BeadsListOptions) (*BeadsListOutput, error) {
+	output := &BeadsListOutput{
 		RobotResponse: NewRobotResponse(true),
 		Beads:         []BeadListItem{},
 	}
 
 	// Check if bv/bd is installed
 	if !bv.IsInstalled() {
-		return RobotError(
-			fmt.Errorf("beads system not available"),
-			ErrCodeDependencyMissing,
-			"Install bv/bd or run 'bd init' in your project",
-		)
+		return &BeadsListOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("beads system not available"),
+				ErrCodeDependencyMissing,
+				"Install bv/bd or run 'bd init' in your project",
+			),
+			Beads: []BeadListItem{},
+		}, nil
 	}
 
 	// Build bd list command with filters
@@ -1196,13 +1382,16 @@ func PrintBeadsList(opts BeadsListOptions) error {
 				Summary: "Beads not initialized in this project",
 				Notes:   []string{"Run 'bd init' to initialize beads tracking"},
 			}
-			return encodeJSON(output)
+			return output, nil
 		}
-		return RobotError(
-			fmt.Errorf("failed to list beads: %w", err),
-			ErrCodeInternalError,
-			"Check that bd is installed and .beads/ exists",
-		)
+		return &BeadsListOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("failed to list beads: %w", err),
+				ErrCodeInternalError,
+				"Check that bd is installed and .beads/ exists",
+			),
+			Beads: []BeadListItem{},
+		}, nil
 	}
 
 	// Parse bd list output
@@ -1224,11 +1413,14 @@ func PrintBeadsList(opts BeadsListOptions) error {
 
 	if err := json.Unmarshal([]byte(result), &rawBeads); err != nil {
 		// Try parsing as single object (some bd versions return differently)
-		return RobotError(
-			fmt.Errorf("failed to parse bead list: %w", err),
-			ErrCodeInternalError,
-			"Unexpected bd output format",
-		)
+		return &BeadsListOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("failed to parse bead list: %w", err),
+				ErrCodeInternalError,
+				"Unexpected bd output format",
+			),
+			Beads: []BeadListItem{},
+		}, nil
 	}
 
 	// Compute summary from the full result set (before applying limit)
@@ -1311,6 +1503,16 @@ func PrintBeadsList(opts BeadsListOptions) error {
 		Warnings: warnings,
 	}
 
+	return output, nil
+}
+
+// PrintBeadsList lists beads with optional filtering.
+// This is a thin wrapper around GetBeadsList() for CLI output.
+func PrintBeadsList(opts BeadsListOptions) error {
+	output, err := GetBeadsList(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -1336,17 +1538,20 @@ type BeadClaimOptions struct {
 	Assignee string // Optional assignee name
 }
 
-// PrintBeadClaim claims a bead by setting its status to in_progress
-func PrintBeadClaim(opts BeadClaimOptions) error {
+// GetBeadClaim claims a bead by setting its status to in_progress.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetBeadClaim(opts BeadClaimOptions) (*BeadClaimOutput, error) {
 	if opts.BeadID == "" {
-		return RobotError(
-			fmt.Errorf("bead ID required"),
-			ErrCodeInvalidFlag,
-			"Specify --robot-bead-claim=BEAD_ID",
-		)
+		return &BeadClaimOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("bead ID required"),
+				ErrCodeInvalidFlag,
+				"Specify --robot-bead-claim=BEAD_ID",
+			),
+		}, nil
 	}
 
-	output := BeadClaimOutput{
+	output := &BeadClaimOutput{
 		RobotResponse: NewRobotResponse(true),
 		BeadID:        opts.BeadID,
 	}
@@ -1354,11 +1559,14 @@ func PrintBeadClaim(opts BeadClaimOptions) error {
 	// Get current bead info first
 	showOutput, err := bv.RunBd("", "show", opts.BeadID, "--json")
 	if err != nil {
-		return RobotError(
-			fmt.Errorf("bead '%s' not found: %w", opts.BeadID, err),
-			ErrCodeInvalidFlag,
-			"Use 'bd list --status=open' to see available beads",
-		)
+		return &BeadClaimOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("bead '%s' not found: %w", opts.BeadID, err),
+				ErrCodeInvalidFlag,
+				"Use 'bd list --status=open' to see available beads",
+			),
+			BeadID: opts.BeadID,
+		}, nil
 	}
 
 	// Parse bead info - bd show returns an array
@@ -1368,11 +1576,14 @@ func PrintBeadClaim(opts BeadClaimOptions) error {
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal([]byte(showOutput), &beadInfo); err != nil || len(beadInfo) == 0 {
-		return RobotError(
-			fmt.Errorf("failed to parse bead info"),
-			ErrCodeInternalError,
-			"Bead data may be corrupted",
-		)
+		return &BeadClaimOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("failed to parse bead info"),
+				ErrCodeInternalError,
+				"Bead data may be corrupted",
+			),
+			BeadID: opts.BeadID,
+		}, nil
 	}
 
 	output.Title = beadInfo[0].Title
@@ -1386,7 +1597,7 @@ func PrintBeadClaim(opts BeadClaimOptions) error {
 			Summary:  fmt.Sprintf("Bead %s is already in progress", opts.BeadID),
 			Warnings: []string{"Bead was already claimed"},
 		}
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Claim the bead
@@ -1397,11 +1608,16 @@ func PrintBeadClaim(opts BeadClaimOptions) error {
 
 	_, err = bv.RunBd("", args...)
 	if err != nil {
-		return RobotError(
-			fmt.Errorf("failed to claim bead: %w", err),
-			ErrCodeInternalError,
-			"Check if bead is blocked by dependencies",
-		)
+		return &BeadClaimOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("failed to claim bead: %w", err),
+				ErrCodeInternalError,
+				"Check if bead is blocked by dependencies",
+			),
+			BeadID:     opts.BeadID,
+			Title:      output.Title,
+			PrevStatus: output.PrevStatus,
+		}, nil
 	}
 
 	output.NewStatus = "in_progress"
@@ -1411,6 +1627,16 @@ func PrintBeadClaim(opts BeadClaimOptions) error {
 		Notes:   []string{"Use 'bd close " + opts.BeadID + "' when complete"},
 	}
 
+	return output, nil
+}
+
+// PrintBeadClaim claims a bead by setting its status to in_progress.
+// This is a thin wrapper around GetBeadClaim() for CLI output.
+func PrintBeadClaim(opts BeadClaimOptions) error {
+	output, err := GetBeadClaim(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -1437,14 +1663,17 @@ type BeadCreateOptions struct {
 	DependsOn   []string // Optional dependency IDs
 }
 
-// PrintBeadCreate creates a new bead
-func PrintBeadCreate(opts BeadCreateOptions) error {
+// GetBeadCreate creates a new bead and returns the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetBeadCreate(opts BeadCreateOptions) (*BeadCreateOutput, error) {
 	if opts.Title == "" {
-		return RobotError(
-			fmt.Errorf("title required"),
-			ErrCodeInvalidFlag,
-			"Specify --bead-title='Your title'",
-		)
+		return &BeadCreateOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("title required"),
+				ErrCodeInvalidFlag,
+				"Specify --bead-title='Your title'",
+			),
+		}, nil
 	}
 
 	// Set defaults
@@ -1455,7 +1684,7 @@ func PrintBeadCreate(opts BeadCreateOptions) error {
 		opts.Priority = 2
 	}
 
-	output := BeadCreateOutput{
+	output := &BeadCreateOutput{
 		RobotResponse: NewRobotResponse(true),
 		Title:         opts.Title,
 		Type:          opts.Type,
@@ -1484,11 +1713,16 @@ func PrintBeadCreate(opts BeadCreateOptions) error {
 	// Execute creation
 	createOutput, err := bv.RunBd("", args...)
 	if err != nil {
-		return RobotError(
-			fmt.Errorf("failed to create bead: %w", err),
-			ErrCodeInternalError,
-			"Check bd is installed and .beads/ directory exists",
-		)
+		return &BeadCreateOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("failed to create bead: %w", err),
+				ErrCodeInternalError,
+				"Check bd is installed and .beads/ directory exists",
+			),
+			Title:    opts.Title,
+			Type:     opts.Type,
+			Priority: fmt.Sprintf("P%d", opts.Priority),
+		}, nil
 	}
 
 	// Parse the result to get the bead ID
@@ -1502,20 +1736,30 @@ func PrintBeadCreate(opts BeadCreateOptions) error {
 			ID string `json:"id"`
 		}
 		if err := json.Unmarshal([]byte(createOutput), &arrayResult); err != nil || len(arrayResult) == 0 {
-			return RobotError(
-				fmt.Errorf("failed to parse created bead ID"),
-				ErrCodeInternalError,
-				"Bead may have been created but ID not returned",
-			)
+			return &BeadCreateOutput{
+				RobotResponse: NewErrorResponse(
+					fmt.Errorf("failed to parse created bead ID"),
+					ErrCodeInternalError,
+					"Bead may have been created but ID not returned",
+				),
+				Title:    opts.Title,
+				Type:     opts.Type,
+				Priority: fmt.Sprintf("P%d", opts.Priority),
+			}, nil
 		}
 		singleResult.ID = arrayResult[0].ID
 	}
 	if singleResult.ID == "" {
-		return RobotError(
-			fmt.Errorf("failed to parse created bead ID"),
-			ErrCodeInternalError,
-			"Bead may have been created but ID not returned",
-		)
+		return &BeadCreateOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("failed to parse created bead ID"),
+				ErrCodeInternalError,
+				"Bead may have been created but ID not returned",
+			),
+			Title:    opts.Title,
+			Type:     opts.Type,
+			Priority: fmt.Sprintf("P%d", opts.Priority),
+		}, nil
 	}
 
 	output.BeadID = singleResult.ID
@@ -1541,6 +1785,16 @@ func PrintBeadCreate(opts BeadCreateOptions) error {
 		Warnings: depWarnings, // Preserve any dependency warnings
 	}
 
+	return output, nil
+}
+
+// PrintBeadCreate creates a new bead.
+// This is a thin wrapper around GetBeadCreate() for CLI output.
+func PrintBeadCreate(opts BeadCreateOptions) error {
+	output, err := GetBeadCreate(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -1576,17 +1830,20 @@ type BeadShowOptions struct {
 	IncludeComments bool   // Include comments in output
 }
 
-// PrintBeadShow outputs detailed bead information
-func PrintBeadShow(opts BeadShowOptions) error {
+// GetBeadShow returns detailed bead information.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetBeadShow(opts BeadShowOptions) (*BeadShowOutput, error) {
 	if opts.BeadID == "" {
-		return RobotError(
-			fmt.Errorf("bead ID required"),
-			ErrCodeInvalidFlag,
-			"Specify --robot-bead-show=BEAD_ID",
-		)
+		return &BeadShowOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("bead ID required"),
+				ErrCodeInvalidFlag,
+				"Specify --robot-bead-show=BEAD_ID",
+			),
+		}, nil
 	}
 
-	output := BeadShowOutput{
+	output := &BeadShowOutput{
 		RobotResponse: NewRobotResponse(true),
 		BeadID:        opts.BeadID,
 	}
@@ -1594,11 +1851,14 @@ func PrintBeadShow(opts BeadShowOptions) error {
 	// Get bead details
 	showOutput, err := bv.RunBd("", "show", opts.BeadID, "--json")
 	if err != nil {
-		return RobotError(
-			fmt.Errorf("bead '%s' not found: %w", opts.BeadID, err),
-			ErrCodeInvalidFlag,
-			"Use 'bd list' to see available beads",
-		)
+		return &BeadShowOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("bead '%s' not found: %w", opts.BeadID, err),
+				ErrCodeInvalidFlag,
+				"Use 'bd list' to see available beads",
+			),
+			BeadID: opts.BeadID,
+		}, nil
 	}
 
 	// Parse bead info - bd show returns an array with detailed info
@@ -1623,11 +1883,14 @@ func PrintBeadShow(opts BeadShowOptions) error {
 	}
 
 	if err := json.Unmarshal([]byte(showOutput), &beadInfo); err != nil || len(beadInfo) == 0 {
-		return RobotError(
-			fmt.Errorf("failed to parse bead info"),
-			ErrCodeInternalError,
-			"Bead data may be corrupted",
-		)
+		return &BeadShowOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("failed to parse bead info"),
+				ErrCodeInternalError,
+				"Bead data may be corrupted",
+			),
+			BeadID: opts.BeadID,
+		}, nil
 	}
 
 	info := beadInfo[0]
@@ -1683,6 +1946,16 @@ func PrintBeadShow(opts BeadShowOptions) error {
 		SuggestedActions: suggestions,
 	}
 
+	return output, nil
+}
+
+// PrintBeadShow outputs detailed bead information.
+// This is a thin wrapper around GetBeadShow() for CLI output.
+func PrintBeadShow(opts BeadShowOptions) error {
+	output, err := GetBeadShow(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -1704,17 +1977,20 @@ type BeadCloseOptions struct {
 	Reason string // Optional closure reason
 }
 
-// PrintBeadClose closes a bead
-func PrintBeadClose(opts BeadCloseOptions) error {
+// GetBeadClose closes a bead and returns the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetBeadClose(opts BeadCloseOptions) (*BeadCloseOutput, error) {
 	if opts.BeadID == "" {
-		return RobotError(
-			fmt.Errorf("bead ID required"),
-			ErrCodeInvalidFlag,
-			"Specify --robot-bead-close=BEAD_ID",
-		)
+		return &BeadCloseOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("bead ID required"),
+				ErrCodeInvalidFlag,
+				"Specify --robot-bead-close=BEAD_ID",
+			),
+		}, nil
 	}
 
-	output := BeadCloseOutput{
+	output := &BeadCloseOutput{
 		RobotResponse: NewRobotResponse(true),
 		BeadID:        opts.BeadID,
 		Reason:        opts.Reason,
@@ -1723,11 +1999,14 @@ func PrintBeadClose(opts BeadCloseOptions) error {
 	// Get current bead info first
 	showOutput, err := bv.RunBd("", "show", opts.BeadID, "--json")
 	if err != nil {
-		return RobotError(
-			fmt.Errorf("bead '%s' not found: %w", opts.BeadID, err),
-			ErrCodeInvalidFlag,
-			"Use 'bd list' to see available beads",
-		)
+		return &BeadCloseOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("bead '%s' not found: %w", opts.BeadID, err),
+				ErrCodeInvalidFlag,
+				"Use 'bd list' to see available beads",
+			),
+			BeadID: opts.BeadID,
+		}, nil
 	}
 
 	// Parse bead info
@@ -1737,11 +2016,14 @@ func PrintBeadClose(opts BeadCloseOptions) error {
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal([]byte(showOutput), &beadInfo); err != nil || len(beadInfo) == 0 {
-		return RobotError(
-			fmt.Errorf("failed to parse bead info"),
-			ErrCodeInternalError,
-			"Bead data may be corrupted",
-		)
+		return &BeadCloseOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("failed to parse bead info"),
+				ErrCodeInternalError,
+				"Bead data may be corrupted",
+			),
+			BeadID: opts.BeadID,
+		}, nil
 	}
 
 	output.Title = beadInfo[0].Title
@@ -1755,7 +2037,7 @@ func PrintBeadClose(opts BeadCloseOptions) error {
 			Summary:  fmt.Sprintf("Bead %s is already closed", opts.BeadID),
 			Warnings: []string{"Bead was already closed"},
 		}
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Close the bead
@@ -1766,11 +2048,16 @@ func PrintBeadClose(opts BeadCloseOptions) error {
 
 	_, err = bv.RunBd("", args...)
 	if err != nil {
-		return RobotError(
-			fmt.Errorf("failed to close bead: %w", err),
-			ErrCodeInternalError,
-			"Check bead status and dependencies",
-		)
+		return &BeadCloseOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("failed to close bead: %w", err),
+				ErrCodeInternalError,
+				"Check bead status and dependencies",
+			),
+			BeadID:     opts.BeadID,
+			Title:      output.Title,
+			PrevStatus: output.PrevStatus,
+		}, nil
 	}
 
 	output.NewStatus = "closed"
@@ -1780,5 +2067,15 @@ func PrintBeadClose(opts BeadCloseOptions) error {
 		Notes:   []string{"Remember to run 'bd sync' to push changes"},
 	}
 
+	return output, nil
+}
+
+// PrintBeadClose closes a bead.
+// This is a thin wrapper around GetBeadClose() for CLI output.
+func PrintBeadClose(opts BeadCloseOptions) error {
+	output, err := GetBeadClose(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }

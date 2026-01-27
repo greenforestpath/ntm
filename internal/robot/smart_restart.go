@@ -140,18 +140,18 @@ type SmartRestartOutput struct {
 }
 
 // PrintSmartRestart outputs the smart restart result in JSON format.
+// This is a thin wrapper around GetSmartRestart() for CLI output.
 func PrintSmartRestart(opts SmartRestartOptions) error {
-	output, err := SmartRestart(opts)
+	output, err := GetSmartRestart(opts)
 	if err != nil {
-		// SmartRestart already sets error fields on output
-		return encodeJSON(output)
+		return err
 	}
 	return encodeJSON(output)
 }
 
-// SmartRestart performs intelligent agent restart with safety checks.
-// It returns the structured result instead of printing JSON.
-func SmartRestart(opts SmartRestartOptions) (*SmartRestartOutput, error) {
+// GetSmartRestart performs intelligent agent restart with safety checks.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetSmartRestart(opts SmartRestartOptions) (*SmartRestartOutput, error) {
 	output := &SmartRestartOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
@@ -172,13 +172,16 @@ func SmartRestart(opts SmartRestartOptions) (*SmartRestartOutput, error) {
 		Verbose:       opts.Verbose,
 	}
 
-	isWorkingResult, err := IsWorking(isWorkingOpts)
+	isWorkingResult, err := GetIsWorking(isWorkingOpts)
 	if err != nil {
+		return output, err
+	}
+	if !isWorkingResult.Success {
 		output.Success = false
-		output.Error = err.Error()
+		output.Error = isWorkingResult.Error
 		output.ErrorCode = isWorkingResult.ErrorCode
 		output.Hint = isWorkingResult.Hint
-		return output, err
+		return output, nil
 	}
 
 	// Step 2: Process each pane
@@ -653,19 +656,19 @@ func isSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
-// Error helpers to avoid fmt import
-type simpleError struct {
-	msg string
-}
-
-func (e *simpleError) Error() string {
-	return e.msg
-}
-
+// Error helpers to avoid fmt import for performance
 func newError(msg string) error {
-	return &simpleError{msg: msg}
+	return &robotError{msg: msg}
 }
 
 func wrapError(prefix string, err error) error {
-	return &simpleError{msg: prefix + ": " + err.Error()}
+	return &robotError{msg: prefix + ": " + err.Error()}
+}
+
+type robotError struct {
+	msg string
+}
+
+func (e *robotError) Error() string {
+	return e.msg
 }

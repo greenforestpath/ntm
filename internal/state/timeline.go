@@ -216,7 +216,6 @@ func NewTimelineTracker(config *TimelineConfig) *TimelineTracker {
 // Returns the recorded event with computed fields (Duration, PreviousState).
 func (t *TimelineTracker) RecordEvent(event AgentEvent) AgentEvent {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	// Ensure timestamp is set
 	if event.Timestamp.IsZero() {
@@ -258,12 +257,16 @@ func (t *TimelineTracker) RecordEvent(event AgentEvent) AgentEvent {
 	callbacks := make([]func(AgentEvent), len(t.onStateChange))
 	copy(callbacks, t.onStateChange)
 
-	// Release lock before calling callbacks
+	// Release lock before calling callbacks to avoid deadlock
 	t.mu.Unlock()
+
+	// Call callbacks outside the lock; recover from panics to prevent crashes
 	for _, cb := range callbacks {
-		cb(event)
+		func() {
+			defer func() { _ = recover() }()
+			cb(event)
+		}()
 	}
-	t.mu.Lock()
 
 	return event
 }
@@ -576,7 +579,6 @@ func (t *TimelineTracker) GetStateTransitions(agentID string) map[string]int {
 // Returns the marker with its assigned ID.
 func (t *TimelineTracker) AddMarker(marker TimelineMarker) TimelineMarker {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	// Ensure timestamp is set
 	if marker.Timestamp.IsZero() {
@@ -591,15 +593,20 @@ func (t *TimelineTracker) AddMarker(marker TimelineMarker) TimelineMarker {
 
 	t.markers = append(t.markers, marker)
 
-	// Notify callbacks
+	// Notify callbacks (copy to avoid holding lock during callback)
 	callbacks := make([]func(TimelineMarker), len(t.onMarkerAdd))
 	copy(callbacks, t.onMarkerAdd)
 
+	// Release lock before calling callbacks to avoid deadlock
 	t.mu.Unlock()
+
+	// Call callbacks outside the lock; recover from panics to prevent crashes
 	for _, cb := range callbacks {
-		cb(marker)
+		func() {
+			defer func() { _ = recover() }()
+			cb(marker)
+		}()
 	}
-	t.mu.Lock()
 
 	return marker
 }

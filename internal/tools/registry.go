@@ -11,12 +11,20 @@ type Registry struct {
 	adapters map[ToolName]Adapter
 }
 
+// HealthReport summarizes tool health across the registry.
+type HealthReport struct {
+	Total     int               `json:"total"`
+	Healthy   int               `json:"healthy"`
+	Unhealthy int               `json:"unhealthy"`
+	Missing   int               `json:"missing"`
+	Tools     map[ToolName]bool `json:"tools"`
+}
+
 // globalRegistry is the default registry instance
 var (
 	globalRegistry = &Registry{
 		adapters: make(map[ToolName]Adapter),
 	}
-	globalMu sync.RWMutex
 )
 
 // NewRegistry creates a new adapter registry
@@ -79,54 +87,80 @@ func (r *Registry) Names() []ToolName {
 // GetAllInfo returns ToolInfo for all registered tools
 func (r *Registry) GetAllInfo(ctx context.Context) []*ToolInfo {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	infos := make([]*ToolInfo, 0, len(r.adapters))
+	adapters := make([]Adapter, 0, len(r.adapters))
 	for _, a := range r.adapters {
-		info, _ := a.Info(ctx)
-		if info != nil {
-			infos = append(infos, info)
-		}
+		adapters = append(adapters, a)
 	}
-	return infos
-}
+	r.mu.RUnlock()
 
-// HealthReport provides a summary of all tool health states
-type HealthReport struct {
-	Total     int               `json:"total"`
-	Healthy   int               `json:"healthy"`
-	Unhealthy int               `json:"unhealthy"`
-	Missing   int               `json:"missing"`
-	Tools     map[ToolName]bool `json:"tools"`
+	infos := make([]*ToolInfo, 0, len(adapters))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for _, a := range adapters {
+		wg.Add(1)
+		go func(adapter Adapter) {
+			defer wg.Done()
+			info, _ := adapter.Info(ctx)
+			if info != nil {
+				mu.Lock()
+				infos = append(infos, info)
+				mu.Unlock()
+			}
+		}(a)
+	}
+	wg.Wait()
+
+	return infos
 }
 
 // GetHealthReport returns a health summary for all registered tools
 func (r *Registry) GetHealthReport(ctx context.Context) *HealthReport {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
+	adapters := make([]Adapter, 0, len(r.adapters))
+	for _, a := range r.adapters {
+		adapters = append(adapters, a)
+	}
+	r.mu.RUnlock()
 
 	report := &HealthReport{
 		Tools: make(map[ToolName]bool),
 	}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 
-	for name, a := range r.adapters {
-		report.Total++
+	for _, a := range adapters {
+		wg.Add(1)
+		go func(adapter Adapter) {
+			defer wg.Done()
+			name := adapter.Name()
 
-		if _, installed := a.Detect(); !installed {
-			report.Missing++
-			report.Tools[name] = false
-			continue
-		}
+			// Check installation first (fast)
+			_, installed := adapter.Detect()
 
-		health, err := a.Health(ctx)
-		if err != nil || health == nil || !health.Healthy {
-			report.Unhealthy++
-			report.Tools[name] = false
-		} else {
-			report.Healthy++
-			report.Tools[name] = true
-		}
+			var healthy bool
+			if installed {
+				h, err := adapter.Health(ctx)
+				healthy = err == nil && h != nil && h.Healthy
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			report.Total++
+			if !installed {
+				report.Missing++
+				report.Tools[name] = false
+			} else if healthy {
+				report.Healthy++
+				report.Tools[name] = true
+			} else {
+				report.Unhealthy++
+				report.Tools[name] = false
+			}
+		}(a)
 	}
+	wg.Wait()
 
 	return report
 }
@@ -135,37 +169,26 @@ func (r *Registry) GetHealthReport(ctx context.Context) *HealthReport {
 
 // Register adds an adapter to the global registry
 func Register(adapter Adapter) {
-	globalMu.Lock()
-	defer globalMu.Unlock()
 	globalRegistry.Register(adapter)
 }
 
 // Get returns an adapter from the global registry
 func Get(name ToolName) (Adapter, bool) {
-	globalMu.RLock()
-	defer globalMu.RUnlock()
 	return globalRegistry.Get(name)
 }
 
 // GetAll returns all adapters from the global registry
 func GetAll() []Adapter {
-	globalMu.RLock()
-	defer globalMu.RUnlock()
 	return globalRegistry.All()
 }
 
 // GetDetected returns all detected tools from the global registry
 func GetDetected() []Adapter {
-	globalMu.RLock()
-	defer globalMu.RUnlock()
 	return globalRegistry.Detected()
 }
 
 // GetInfo returns tool info from the global registry
 func GetInfo(ctx context.Context, name ToolName) (*ToolInfo, error) {
-	globalMu.RLock()
-	defer globalMu.RUnlock()
-
 	adapter, ok := globalRegistry.Get(name)
 	if !ok {
 		return nil, ErrToolNotInstalled
@@ -175,15 +198,11 @@ func GetInfo(ctx context.Context, name ToolName) (*ToolInfo, error) {
 
 // GetAllInfo returns all tool info from the global registry
 func GetAllInfo(ctx context.Context) []*ToolInfo {
-	globalMu.RLock()
-	defer globalMu.RUnlock()
 	return globalRegistry.GetAllInfo(ctx)
 }
 
 // GetHealthReport returns health report from the global registry
 func GetHealthReport(ctx context.Context) *HealthReport {
-	globalMu.RLock()
-	defer globalMu.RUnlock()
 	return globalRegistry.GetHealthReport(ctx)
 }
 

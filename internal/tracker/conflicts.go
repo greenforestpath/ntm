@@ -4,6 +4,13 @@ import (
 	"time"
 )
 
+const (
+	// CriticalConflictAgentCount is the number of agents touching a file to trigger critical severity.
+	CriticalConflictAgentCount = 3
+	// CriticalConflictWindow is the time window within which multiple edits trigger critical severity.
+	CriticalConflictWindow = 10 * time.Minute
+)
+
 // Conflict represents a detected file conflict
 type Conflict struct {
 	Path     string               `json:"path"`
@@ -18,8 +25,10 @@ func DetectConflicts(changes []RecordedFileChange) []Conflict {
 	// Group by file path
 	byPath := make(map[string][]RecordedFileChange)
 	for _, change := range changes {
-		// Only care about modifications for now
-		if change.Change.Type == FileModified {
+		// Consider all change types for conflict detection
+		// Creation, modification, and deletion are all relevant
+		switch change.Change.Type {
+		case FileModified, FileAdded, FileDeleted:
 			byPath[change.Change.Path] = append(byPath[change.Change.Path], change)
 		}
 	}
@@ -85,7 +94,7 @@ func ConflictsSince(ts time.Time, session string) []Conflict {
 // - critical if edits occurred within a 10-minute window
 // otherwise warning.
 func conflictSeverity(pathChanges []RecordedFileChange, agentCount int) string {
-	if agentCount >= 3 {
+	if agentCount >= CriticalConflictAgentCount {
 		return "critical"
 	}
 	var minT, maxT time.Time
@@ -97,7 +106,7 @@ func conflictSeverity(pathChanges []RecordedFileChange, agentCount int) string {
 			maxT = c.Timestamp
 		}
 	}
-	if maxT.Sub(minT) <= 10*time.Minute {
+	if maxT.Sub(minT) <= CriticalConflictWindow {
 		return "critical"
 	}
 	return "warning"

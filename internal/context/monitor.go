@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,10 +70,20 @@ func GetContextLimit(model string) int64 {
 	}
 
 	// Try prefix matching for families
+	// Sort keys by length descending to ensure we match the longest prefix
+	// (e.g. match "gpt-4-turbo" before "gpt-4")
+	var keys []string
+	for k := range ContextLimits {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+
 	modelLower := strings.ToLower(model)
-	for key, limit := range ContextLimits {
+	for _, key := range keys {
 		if strings.HasPrefix(modelLower, key) {
-			return limit
+			return ContextLimits[key]
 		}
 	}
 
@@ -176,7 +187,13 @@ func ParseRobotModeContext(output string) *ContextEstimate {
 
 	if !found {
 		// Fallback: try unmarshalling the whole blob in case it's multiline JSON without noise
-		if err := json.Unmarshal([]byte(output), &data); err != nil {
+		// Only attempt if it looks like a JSON object
+		trimmed := strings.TrimSpace(output)
+		if strings.HasPrefix(trimmed, "{") {
+			if err := json.Unmarshal([]byte(trimmed), &data); err != nil {
+				return nil
+			}
+		} else {
 			return nil
 		}
 	}
@@ -357,22 +374,22 @@ type ContextMonitor struct {
 	mu         sync.RWMutex
 
 	// Configuration
-	warningThreshold float64 // Default 60%
-	rotateThreshold  float64 // Default 80%
+	warningThreshold float64 // Default 70%
+	rotateThreshold  float64 // Default 75%
 }
 
 // MonitorConfig holds configuration for the context monitor.
 type MonitorConfig struct {
-	WarningThreshold float64 // Percentage at which to warn (default 60)
-	RotateThreshold  float64 // Percentage at which to rotate (default 80)
+	WarningThreshold float64 // Percentage at which to warn (default 70)
+	RotateThreshold  float64 // Percentage at which to rotate (default 75)
 	TokensPerMessage int     // For message count estimation (default 1500)
 }
 
 // DefaultMonitorConfig returns sensible defaults.
 func DefaultMonitorConfig() MonitorConfig {
 	return MonitorConfig{
-		WarningThreshold: 60.0,
-		RotateThreshold:  80.0,
+		WarningThreshold: 70.0,
+		RotateThreshold:  75.0,
 		TokensPerMessage: 1500,
 	}
 }
@@ -380,10 +397,10 @@ func DefaultMonitorConfig() MonitorConfig {
 // NewContextMonitor creates a new context monitor with default estimators.
 func NewContextMonitor(cfg MonitorConfig) *ContextMonitor {
 	if cfg.WarningThreshold <= 0 {
-		cfg.WarningThreshold = 60.0
+		cfg.WarningThreshold = 70.0
 	}
 	if cfg.RotateThreshold <= 0 {
-		cfg.RotateThreshold = 80.0
+		cfg.RotateThreshold = 75.0
 	}
 	if cfg.TokensPerMessage <= 0 {
 		cfg.TokensPerMessage = 1500
@@ -426,6 +443,16 @@ func (m *ContextMonitor) RegisterAgent(agentID, paneID, model string) *ContextSt
 	}
 
 	return state
+}
+
+// SetAgentType updates the agent type for a monitored agent.
+func (m *ContextMonitor) SetAgentType(agentID, agentType string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if state, exists := m.states[agentID]; exists {
+		state.AgentType = agentType
+	}
 }
 
 // UnregisterAgent removes an agent from monitoring.
@@ -503,7 +530,7 @@ func (m *ContextMonitor) GetEstimate(agentID string) *ContextEstimate {
 }
 
 // AgentsAboveThreshold returns agents above the given usage percentage.
-// Results are sorted by confidence (higher confidence first).
+// Results are sorted by confidence (higher first), then by AgentID (lexicographically).
 func (m *ContextMonitor) AgentsAboveThreshold(threshold float64) []AgentContextInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -528,14 +555,13 @@ func (m *ContextMonitor) AgentsAboveThreshold(threshold float64) []AgentContextI
 		}
 	}
 
-	// Sort by confidence descending
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].Estimate.Confidence > results[i].Estimate.Confidence {
-				results[i], results[j] = results[j], results[i]
-			}
+	// Sort by confidence descending, then AgentID ascending for determinism
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Estimate.Confidence != results[j].Estimate.Confidence {
+			return results[i].Estimate.Confidence > results[j].Estimate.Confidence
 		}
-	}
+		return results[i].AgentID < results[j].AgentID
+	})
 
 	return results
 }
@@ -704,7 +730,7 @@ func (m *ContextMonitor) UpdateFromTranscript(agentID string) (int64, error) {
 	}
 
 	// Estimate tokens from file size (~4 bytes per token, conservative)
-	estimatedTokens := info.Size() / 4
+	estimatedTokens := int64(float64(info.Size()) / 4.0)
 
 	// Update the state with this estimate
 	m.mu.Lock()
@@ -729,7 +755,7 @@ type HandoffRecommendation struct {
 
 // ShouldTriggerHandoff checks if an agent should generate a handoff.
 // Returns a recommendation with reason explaining why.
-// Warning threshold is 70%, trigger threshold is 75%.
+// Uses configured thresholds (RotateThreshold, WarningThreshold).
 func (m *ContextMonitor) ShouldTriggerHandoff(agentID string, predictor *ContextPredictor) *HandoffRecommendation {
 	estimate := m.GetEstimate(agentID)
 	if estimate == nil {
@@ -744,18 +770,18 @@ func (m *ContextMonitor) ShouldTriggerHandoff(agentID string, predictor *Context
 		UsagePercent: estimate.UsagePercent,
 	}
 
-	// Hard threshold check (75%)
-	if estimate.UsagePercent >= 75 {
+	// Rotate threshold check
+	if estimate.UsagePercent >= m.rotateThreshold {
 		rec.ShouldTrigger = true
 		rec.ShouldWarn = true
-		rec.Reason = "usage " + strconv.FormatFloat(estimate.UsagePercent, 'f', 1, 64) + "% exceeds 75% threshold"
+		rec.Reason = "usage " + strconv.FormatFloat(estimate.UsagePercent, 'f', 1, 64) + "% exceeds " + strconv.FormatFloat(m.rotateThreshold, 'f', 1, 64) + "% threshold"
 		return rec
 	}
 
-	// Warning threshold check (70%)
-	if estimate.UsagePercent >= 70 {
+	// Warning threshold check
+	if estimate.UsagePercent >= m.warningThreshold {
 		rec.ShouldWarn = true
-		rec.Reason = "usage " + strconv.FormatFloat(estimate.UsagePercent, 'f', 1, 64) + "% exceeds 70% warning threshold"
+		rec.Reason = "usage " + strconv.FormatFloat(estimate.UsagePercent, 'f', 1, 64) + "% exceeds " + strconv.FormatFloat(m.warningThreshold, 'f', 1, 64) + "% warning threshold"
 	}
 
 	// Velocity-based prediction (if predictor available)
@@ -766,7 +792,7 @@ func (m *ContextMonitor) ShouldTriggerHandoff(agentID string, predictor *Context
 			if prediction != nil {
 				rec.TokenVelocity = prediction.TokenVelocity
 
-				// If velocity predicts hitting 85% in next 2 minutes, trigger
+				// If velocity predicts exhaustion in next 8 minutes, trigger
 				if prediction.TokenVelocity > 0 && prediction.MinutesToExhaustion > 0 && prediction.MinutesToExhaustion < 8 {
 					rec.ShouldTrigger = true
 					rec.ShouldWarn = true

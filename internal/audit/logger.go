@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -143,43 +144,94 @@ func (al *AuditLogger) loadLastHash() error {
 		return nil
 	}
 
-	// We need to read the file, but our main file handle is write-only
-	// Open a separate read handle to the same file
-	readFile, err := os.Open(al.file.Name())
+	// Read the last entry efficiently
+	lastEntry, err := al.readLastEntry(info.Size())
 	if err != nil {
-		return fmt.Errorf("failed to open audit log for reading: %w", err)
-	}
-	defer readFile.Close()
-
-	scanner := bufio.NewScanner(readFile)
-	var lastEntry AuditEntry
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			continue
-		}
-
-		var entry AuditEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			// Corrupted entry - we'll continue but log this
-			continue
-		}
-
-		lastEntry = entry
+		return fmt.Errorf("failed to read last entry: %w", err)
 	}
 
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error reading existing audit log: %w", err)
-	}
-
-	// Initialize state based on last entry
-	if lastEntry.Checksum != "" {
+	if lastEntry != nil && lastEntry.Checksum != "" {
 		al.lastHash = lastEntry.Checksum
 		al.sequenceNum = lastEntry.SequenceNum
 	}
 
 	return nil
+}
+
+// readLastEntry reads the last valid JSON entry from the file by scanning backwards
+func (al *AuditLogger) readLastEntry(fileSize int64) (*AuditEntry, error) {
+	// We need to read the file, but our main file handle is write-only
+	readFile, err := os.Open(al.file.Name())
+	if err != nil {
+		return nil, fmt.Errorf("failed to open audit log for reading: %w", err)
+	}
+	defer readFile.Close()
+
+	// Scan backwards for newlines
+	const bufferSize = 4096
+	buf := make([]byte, bufferSize)
+	offset := fileSize
+	
+	// We need to find the last line that contains valid JSON.
+	// We'll scan backward looking for newlines, and try to parse the content.
+	
+	// Start from end
+	for offset > 0 {
+		readSize := int64(bufferSize)
+		if offset < readSize {
+			readSize = offset
+		}
+		offset -= readSize
+
+		_, err := readFile.ReadAt(buf[:readSize], offset)
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+
+		// Scan from end of buffer to find newlines
+		for i := int(readSize) - 1; i >= 0; i-- {
+			if buf[i] == '\n' {
+				// Potential end of a line. 
+				// If this is the very last byte of file, it's just the terminator of the last line.
+				if offset+int64(i) == fileSize-1 {
+					continue
+				}
+				
+				// Found a newline. The line starts after this newline (or at file start).
+				lineStart := offset + int64(i) + 1
+				
+				// Read this line
+				if _, err := readFile.Seek(lineStart, io.SeekStart); err != nil {
+					return nil, err
+				}
+				
+				scanner := bufio.NewScanner(readFile)
+				if scanner.Scan() {
+					line := scanner.Text()
+					var entry AuditEntry
+					if err := json.Unmarshal([]byte(line), &entry); err == nil {
+						return &entry, nil
+					}
+					// If invalid JSON, keep searching backwards (skip corrupted tail)
+				}
+			}
+		}
+	}
+
+	// If we reached start of file, try reading the first line
+	if _, err := readFile.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	scanner := bufio.NewScanner(readFile)
+	if scanner.Scan() {
+		line := scanner.Text()
+		var entry AuditEntry
+		if err := json.Unmarshal([]byte(line), &entry); err == nil {
+			return &entry, nil
+		}
+	}
+
+	return nil, nil // No valid entry found
 }
 
 // startFlushTimer starts the periodic flush timer

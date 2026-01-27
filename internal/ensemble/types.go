@@ -4,6 +4,7 @@
 package ensemble
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -319,6 +320,8 @@ const (
 	EnsembleComplete EnsembleStatus = "complete"
 	// EnsembleError means an error occurred during the run.
 	EnsembleError EnsembleStatus = "error"
+	// EnsembleStopped means the ensemble was manually stopped.
+	EnsembleStopped EnsembleStatus = "stopped"
 )
 
 // String returns the status as a string.
@@ -326,9 +329,9 @@ func (s EnsembleStatus) String() string {
 	return string(s)
 }
 
-// IsTerminal returns true if this is a final status (complete or error).
+// IsTerminal returns true if this is a final status (complete, error, or stopped).
 func (s EnsembleStatus) IsTerminal() bool {
-	return s == EnsembleComplete || s == EnsembleError
+	return s == EnsembleComplete || s == EnsembleError || s == EnsembleStopped
 }
 
 // EnsembleSession tracks a reasoning ensemble session.
@@ -495,6 +498,9 @@ type CacheConfig struct {
 	// TTL is how long cached context packs remain valid.
 	TTL time.Duration `json:"ttl,omitempty" toml:"ttl,omitempty" yaml:"ttl,omitempty"`
 
+	// CacheDir overrides the default cache directory when set.
+	CacheDir string `json:"cache_dir,omitempty" toml:"cache_dir,omitempty" yaml:"cache_dir,omitempty"`
+
 	// MaxEntries is the maximum number of cached context packs.
 	MaxEntries int `json:"max_entries,omitempty" toml:"max_entries,omitempty" yaml:"max_entries,omitempty"`
 
@@ -506,7 +512,7 @@ type CacheConfig struct {
 func DefaultCacheConfig() CacheConfig {
 	return CacheConfig{
 		Enabled:          true,
-		TTL:              15 * time.Minute,
+		TTL:              time.Hour,
 		MaxEntries:       32,
 		ShareAcrossModes: true,
 	}
@@ -537,6 +543,9 @@ func DefaultAgentDistribution() AgentDistribution {
 type EnsemblePreset struct {
 	// Name is the unique identifier for this preset.
 	Name string `json:"name" toml:"name" yaml:"name"`
+
+	// Extends optionally references another preset to extend.
+	Extends string `json:"extends,omitempty" toml:"extends,omitempty" yaml:"extends,omitempty"`
 
 	// DisplayName is the human-facing name (e.g., "Architecture Review").
 	DisplayName string `json:"display_name,omitempty" toml:"display_name,omitempty" yaml:"display_name,omitempty"`
@@ -572,34 +581,10 @@ type EnsemblePreset struct {
 
 // Validate checks that the preset is valid and all mode refs resolve against the catalog.
 func (p *EnsemblePreset) Validate(catalog *ModeCatalog) error {
-	if p.Name == "" {
-		return errors.New("preset name is required")
+	report := ValidateEnsemblePreset(p, catalog, nil)
+	if err := report.Error(); err != nil {
+		return err
 	}
-	if len(p.Modes) == 0 {
-		return errors.New("preset must have at least one mode")
-	}
-
-	// Resolve all mode refs
-	resolved, err := ResolveModeRefs(p.Modes, catalog)
-	if err != nil {
-		return fmt.Errorf("preset %q: %w", p.Name, err)
-	}
-
-	// Check tier restrictions
-	if !p.AllowAdvanced {
-		for _, modeID := range resolved {
-			mode := catalog.GetMode(modeID)
-			if mode != nil && mode.Tier == TierAdvanced {
-				return fmt.Errorf("preset %q: mode %q is advanced tier but AllowAdvanced is false", p.Name, modeID)
-			}
-		}
-	}
-
-	// Validate synthesis config if strategy is set
-	if p.Synthesis.Strategy != "" && !p.Synthesis.Strategy.IsValid() {
-		return fmt.Errorf("preset %q: invalid synthesis strategy %q", p.Name, p.Synthesis.Strategy)
-	}
-
 	return nil
 }
 
@@ -866,6 +851,54 @@ func (c Confidence) String() string {
 	return fmt.Sprintf("%.0f%%", c*100)
 }
 
+// UnmarshalYAML implements yaml.Unmarshaler to support string confidence values.
+// Accepts floats (0.8), percentages ("80%"), or qualitative levels ("high", "medium", "low").
+func (c *Confidence) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Try as float first
+	var f float64
+	if err := unmarshal(&f); err == nil {
+		*c = Confidence(f)
+		return nil
+	}
+
+	// Try as string
+	var s string
+	if err := unmarshal(&s); err != nil {
+		return fmt.Errorf("confidence must be a number or string, got neither")
+	}
+
+	parsed, err := ParseConfidenceString(s)
+	if err != nil {
+		return err
+	}
+	*c = parsed
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler to support string confidence values.
+// Accepts floats (0.8), percentages ("80%"), or qualitative levels ("high", "medium", "low").
+func (c *Confidence) UnmarshalJSON(data []byte) error {
+	// Try as float first
+	var f float64
+	if err := json.Unmarshal(data, &f); err == nil {
+		*c = Confidence(f)
+		return nil
+	}
+
+	// Try as string
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("confidence must be a number or string, got neither")
+	}
+
+	parsed, err := ParseConfidenceString(s)
+	if err != nil {
+		return err
+	}
+	*c = parsed
+	return nil
+}
+
 // Finding represents a specific discovery or insight from reasoning.
 type Finding struct {
 	// Finding is the description of what was discovered.
@@ -1108,6 +1141,12 @@ type BudgetConfig struct {
 	// MaxTotalTokens is the total token budget across all modes.
 	MaxTotalTokens int `json:"max_total_tokens,omitempty" toml:"max_total_tokens" yaml:"max_total_tokens,omitempty"`
 
+	// SynthesisReserveTokens reserves tokens for the synthesizer agent.
+	SynthesisReserveTokens int `json:"synthesis_reserve_tokens,omitempty" toml:"synthesis_reserve_tokens" yaml:"synthesis_reserve_tokens,omitempty"`
+
+	// ContextReserveTokens reserves tokens for context packs or shared context.
+	ContextReserveTokens int `json:"context_reserve_tokens,omitempty" toml:"context_reserve_tokens" yaml:"context_reserve_tokens,omitempty"`
+
 	// TimeoutPerMode is the max duration for each mode to complete.
 	TimeoutPerMode time.Duration `json:"timeout_per_mode,omitempty" toml:"timeout_per_mode" yaml:"timeout_per_mode,omitempty"`
 
@@ -1145,6 +1184,9 @@ type SynthesisConfig struct {
 
 	// ConflictResolution specifies how to handle disagreements.
 	ConflictResolution string `json:"conflict_resolution,omitempty" toml:"conflict_resolution" yaml:"conflict_resolution,omitempty"`
+
+	// IncludeExplanation generates detailed reasoning for each conclusion.
+	IncludeExplanation bool `json:"include_explanation,omitempty" toml:"include_explanation" yaml:"include_explanation,omitempty"`
 }
 
 // DefaultSynthesisConfig returns sensible default synthesis settings.

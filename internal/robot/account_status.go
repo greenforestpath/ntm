@@ -27,12 +27,9 @@ type AccountStatusOptions struct {
 	Provider string // Optional filter for a specific provider (claude, openai, gemini)
 }
 
-// PrintAccountStatus handles the --robot-account-status command
-// Usage:
-//
-//	ntm --robot-account-status              # Status for all providers
-//	ntm --robot-account-status --provider claude  # Status for Claude only
-func PrintAccountStatus(opts AccountStatusOptions) error {
+// GetAccountStatus returns account status information.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetAccountStatus(opts AccountStatusOptions) (*AccountStatusOutput, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -40,22 +37,21 @@ func PrintAccountStatus(opts AccountStatusOptions) error {
 
 	// Check if CAAM is available
 	if _, installed := adapter.Detect(); !installed {
-		output := AccountStatusOutput{
+		output := &AccountStatusOutput{
 			RobotResponse: NewErrorResponse(nil, ErrCodeDependencyMissing, "Install caam to manage coding agent accounts"),
 			Accounts:      make(map[string]ProviderStatus),
 		}
 		output.Error = "caam not installed"
-		return outputJSON(output)
+		return output, nil
 	}
 
 	// Get all accounts from CAAM
 	status, err := adapter.GetStatus(ctx)
 	if err != nil {
-		output := AccountStatusOutput{
+		return &AccountStatusOutput{
 			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Check if caam is configured correctly"),
 			Accounts:      make(map[string]ProviderStatus),
-		}
-		return outputJSON(output)
+		}, nil
 	}
 
 	// Build per-provider status map
@@ -65,7 +61,7 @@ func PrintAccountStatus(opts AccountStatusOptions) error {
 	}
 
 	// Build output
-	output := AccountStatusOutput{
+	output := &AccountStatusOutput{
 		RobotResponse: NewRobotResponse(true),
 		Accounts:      make(map[string]ProviderStatus),
 	}
@@ -109,5 +105,15 @@ func PrintAccountStatus(opts AccountStatusOptions) error {
 		}
 	}
 
+	return output, nil
+}
+
+// PrintAccountStatus handles the --robot-account-status command.
+// This is a thin wrapper around GetAccountStatus() for CLI output.
+func PrintAccountStatus(opts AccountStatusOptions) error {
+	output, err := GetAccountStatus(opts)
+	if err != nil {
+		return err
+	}
 	return outputJSON(output)
 }

@@ -50,11 +50,9 @@ type LastBlockedCommand struct {
 	Pane      string `json:"pane"`
 }
 
-// PrintDCGStatus handles the --robot-dcg-status command
-// Usage:
-//
-//	ntm --robot-dcg-status
-func PrintDCGStatus() error {
+// GetDCGStatus returns DCG status information.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetDCGStatus() (*DCGStatusOutput, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -63,14 +61,13 @@ func PrintDCGStatus() error {
 	// Check DCG availability
 	availability, err := adapter.GetAvailability(ctx)
 	if err != nil {
-		output := DCGStatusOutput{
+		return &DCGStatusOutput{
 			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Failed to check DCG availability"),
 			DCG: DCGStatus{
 				Enabled:   false,
 				Available: false,
 			},
-		}
-		return outputJSON(output)
+		}, nil
 	}
 
 	// Build status
@@ -103,11 +100,19 @@ func PrintDCGStatus() error {
 	}
 	status.Stats = stats
 
-	output := DCGStatusOutput{
+	return &DCGStatusOutput{
 		RobotResponse: NewRobotResponse(true),
 		DCG:           status,
-	}
+	}, nil
+}
 
+// PrintDCGStatus handles the --robot-dcg-status command.
+// This is a thin wrapper around GetDCGStatus() for CLI output.
+func PrintDCGStatus() error {
+	output, err := GetDCGStatus()
+	if err != nil {
+		return err
+	}
 	return outputJSON(output)
 }
 

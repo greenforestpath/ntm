@@ -81,28 +81,16 @@ func setupReassignSession(t *testing.T, tmpDir string) (string, tmux.Pane, tmux.
 		t.Fatalf("spawnSessionLogic failed: %v", err)
 	}
 
-	time.Sleep(400 * time.Millisecond)
+	if err := testutil.WaitForSession(sessionName, 5*time.Second); err != nil {
+		t.Fatalf("WaitForSession failed: %v", err)
+	}
 
-	panes, err := tmux.GetPanes(sessionName)
+	claudePane, codexPane, err := waitForAgentPanes(sessionName, 5*time.Second)
 	if err != nil {
-		t.Fatalf("GetPanes failed: %v", err)
+		t.Fatalf("waitForAgentPanes failed: %v", err)
 	}
 
-	var claudePane *tmux.Pane
-	var codexPane *tmux.Pane
-	for i := range panes {
-		switch panes[i].Type {
-		case tmux.AgentClaude:
-			claudePane = &panes[i]
-		case tmux.AgentCodex:
-			codexPane = &panes[i]
-		}
-	}
-	if claudePane == nil || codexPane == nil {
-		t.Fatalf("expected claude and codex panes, found claude=%v codex=%v", claudePane != nil, codexPane != nil)
-	}
-
-	return sessionName, *claudePane, *codexPane
+	return sessionName, claudePane, codexPane
 }
 
 func agentTypeLabel(pane tmux.Pane) string {
@@ -116,6 +104,42 @@ func agentTypeLabel(pane tmux.Pane) string {
 	default:
 		return "unknown"
 	}
+}
+
+func waitForAgentPanes(sessionName string, timeout time.Duration) (tmux.Pane, tmux.Pane, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		panes, err := tmux.GetPanes(sessionName)
+		if err != nil {
+			lastErr = err
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		var claudePane *tmux.Pane
+		var codexPane *tmux.Pane
+		for i := range panes {
+			switch panes[i].Type {
+			case tmux.AgentClaude:
+				claudePane = &panes[i]
+			case tmux.AgentCodex:
+				codexPane = &panes[i]
+			}
+		}
+
+		if claudePane != nil && codexPane != nil {
+			return *claudePane, *codexPane, nil
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if lastErr != nil {
+		return tmux.Pane{}, tmux.Pane{}, fmt.Errorf("last tmux error: %w", lastErr)
+	}
+	return tmux.Pane{}, tmux.Pane{}, fmt.Errorf("timed out waiting for claude+codex panes in %s", sessionName)
 }
 
 func TestRunReassignment_ToPane_Success(t *testing.T) {

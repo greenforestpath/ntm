@@ -42,11 +42,9 @@ var RequiredTools = map[tools.ToolName]bool{
 	tools.ToolBV: true, // bv is required for triage
 }
 
-// PrintTools outputs tool inventory and health as JSON
-func PrintTools() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
+// GetTools collects tool inventory and health.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetTools(ctx context.Context) (*ToolsOutput, error) {
 	// Get all tool info from registry
 	allInfo := tools.GetAllInfo(ctx)
 
@@ -94,12 +92,23 @@ func PrintTools() error {
 	// Get health report summary
 	healthReport := tools.GetHealthReport(ctx)
 
-	output := ToolsOutput{
+	return &ToolsOutput{
 		RobotResponse: NewRobotResponse(true),
 		Tools:         toolOutputs,
 		HealthReport:  healthReport,
-	}
+	}, nil
+}
 
+// PrintTools outputs tool inventory and health as JSON.
+// This is a thin wrapper around GetTools() for CLI output.
+func PrintTools() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	output, err := GetTools(ctx)
+	if err != nil {
+		return err
+	}
 	return outputJSON(output)
 }
 

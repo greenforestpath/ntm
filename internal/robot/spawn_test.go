@@ -93,6 +93,8 @@ func TestIsAgentReady_Patterns(t *testing.T) {
 
 		// Codex indicators
 		{"codex_prompt", "codex>", "codex", true},
+		{"codex_context_left", "42% context left · ? for shortcuts", "codex", true},
+		{"codex_chevron_prompt", "› Write tests for @filename", "codex", true},
 		{"codex_ready", "Ready for input", "codex", true},
 
 		// Gemini indicators

@@ -15,6 +15,7 @@ func withDetector(t *testing.T, detector func() bool) {
 
 func TestCurrentAutoUsesLightThemeWhenBackgroundIsLight(t *testing.T) {
 	t.Setenv("NTM_THEME", "")
+	t.Setenv("NTM_NO_COLOR", "0")
 	withDetector(t, func() bool { return false })
 
 	if got := Current(); got.Base != CatppuccinLatte.Base {
@@ -24,6 +25,7 @@ func TestCurrentAutoUsesLightThemeWhenBackgroundIsLight(t *testing.T) {
 
 func TestCurrentAutoUsesDarkThemeWhenBackgroundIsDark(t *testing.T) {
 	t.Setenv("NTM_THEME", "")
+	t.Setenv("NTM_NO_COLOR", "0")
 	withDetector(t, func() bool { return true })
 
 	if got := Current(); got.Base != CatppuccinMocha.Base {
@@ -33,6 +35,7 @@ func TestCurrentAutoUsesDarkThemeWhenBackgroundIsDark(t *testing.T) {
 
 func TestCurrentRespectsExplicitThemeOverrides(t *testing.T) {
 	t.Setenv("NTM_THEME", "latte")
+	t.Setenv("NTM_NO_COLOR", "0")
 	withDetector(t, func() bool { return true })
 
 	if got := Current(); got.Base != CatppuccinLatte.Base {
@@ -49,6 +52,7 @@ func TestCurrentRespectsExplicitThemeOverrides(t *testing.T) {
 
 func TestCurrentTreatsAutoValueAsDetection(t *testing.T) {
 	t.Setenv("NTM_THEME", "auto")
+	t.Setenv("NTM_NO_COLOR", "0")
 	withDetector(t, func() bool { return false })
 
 	if got := Current(); got.Base != CatppuccinLatte.Base {
@@ -58,6 +62,7 @@ func TestCurrentTreatsAutoValueAsDetection(t *testing.T) {
 
 func TestCurrentMacchiatoTheme(t *testing.T) {
 	t.Setenv("NTM_THEME", "macchiato")
+	t.Setenv("NTM_NO_COLOR", "0")
 	withDetector(t, func() bool { return true })
 
 	if got := Current(); got.Base != CatppuccinMacchiato.Base {
@@ -67,6 +72,7 @@ func TestCurrentMacchiatoTheme(t *testing.T) {
 
 func TestCurrentNordTheme(t *testing.T) {
 	t.Setenv("NTM_THEME", "nord")
+	t.Setenv("NTM_NO_COLOR", "0")
 	withDetector(t, func() bool { return true })
 
 	if got := Current(); got.Base != Nord.Base {
@@ -76,6 +82,7 @@ func TestCurrentNordTheme(t *testing.T) {
 
 func TestCurrentLightAlias(t *testing.T) {
 	t.Setenv("NTM_THEME", "light")
+	t.Setenv("NTM_NO_COLOR", "0")
 	withDetector(t, func() bool { return true })
 
 	if got := Current(); got.Base != CatppuccinLatte.Base {
@@ -85,6 +92,7 @@ func TestCurrentLightAlias(t *testing.T) {
 
 func TestCurrentUnknownFallsBackToAuto(t *testing.T) {
 	t.Setenv("NTM_THEME", "unknown-theme")
+	t.Setenv("NTM_NO_COLOR", "0")
 	withDetector(t, func() bool { return true })
 
 	// Unknown should fall through to autoTheme()
@@ -302,6 +310,7 @@ func TestPlainThemeHasEmptyColors(t *testing.T) {
 
 func TestAutoThemeFallsBackToDarkOnPanic(t *testing.T) {
 	t.Setenv("NTM_THEME", "")
+	t.Setenv("NTM_NO_COLOR", "0")
 	// Set up a detector that panics
 	withDetector(t, func() bool {
 		panic("simulated terminal detection failure")

@@ -47,7 +47,7 @@ func (a *RCHAdapter) Version(ctx context.Context) (Version, error) {
 		return Version{}, fmt.Errorf("failed to get rch version: %w", err)
 	}
 
-	return parseVersion(stdout.String())
+	return ParseStandardVersion(stdout.String())
 }
 
 // Capabilities returns the list of rch capabilities
@@ -269,8 +269,9 @@ func (a *RCHAdapter) GetStatus(ctx context.Context) (*RCHStatus, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "status", "--json")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {

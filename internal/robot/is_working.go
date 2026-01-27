@@ -88,160 +88,12 @@ type IsWorkingOutput struct {
 }
 
 // PrintIsWorking outputs the work state for specified panes in a session.
+// This is a thin wrapper around GetIsWorking() for CLI output.
 func PrintIsWorking(opts IsWorkingOptions) error {
-	output := IsWorkingOutput{
-		RobotResponse: NewRobotResponse(true),
-		Session:       opts.Session,
-		Query: IsWorkingQuery{
-			PanesRequested: opts.Panes,
-			LinesCaptured:  opts.LinesCaptured,
-		},
-		Panes: make(map[string]PaneWorkStatus),
-		Summary: IsWorkingSummary{
-			ByRecommendation: make(map[string][]int),
-		},
-	}
-
-	// Validate session exists
-	if !tmux.SessionExists(opts.Session) {
-		output.Success = false
-		output.Error = fmt.Sprintf("session '%s' not found", opts.Session)
-		output.ErrorCode = ErrCodeSessionNotFound
-		output.Hint = "Use 'ntm list' to see available sessions"
-		return encodeJSON(output)
-	}
-
-	// Get all panes in session
-	allPanes, err := tmux.GetPanes(opts.Session)
+	output, err := GetIsWorking(opts)
 	if err != nil {
-		output.Success = false
-		output.Error = fmt.Sprintf("failed to get panes: %v", err)
-		output.ErrorCode = ErrCodeInternalError
-		return encodeJSON(output)
+		return err
 	}
-
-	// Determine which panes to check
-	panesToCheck := opts.Panes
-	if len(panesToCheck) == 0 {
-		// Default: all panes except pane 0 (control pane)
-		for _, p := range allPanes {
-			if p.Index > 0 { // Skip control pane
-				panesToCheck = append(panesToCheck, p.Index)
-			}
-		}
-	}
-
-	// Validate requested panes exist
-	paneExists := make(map[int]bool)
-	for _, p := range allPanes {
-		paneExists[p.Index] = true
-	}
-
-	// Create parser
-	parser := agent.NewParser()
-
-	// Process each pane
-	for _, paneIdx := range panesToCheck {
-		paneKey := strconv.Itoa(paneIdx)
-
-		if !paneExists[paneIdx] {
-			// Pane doesn't exist - record error
-			output.Panes[paneKey] = PaneWorkStatus{
-				AgentType:            string(agent.AgentTypeUnknown),
-				Recommendation:       string(agent.RecommendErrorState),
-				RecommendationReason: fmt.Sprintf("Pane %d not found in session", paneIdx),
-				Confidence:           0.0,
-				Indicators:           WorkIndicators{Work: []string{}, Limit: []string{}},
-			}
-			output.Summary.ErrorCount++
-			continue
-		}
-
-		// Capture pane output
-		target := fmt.Sprintf("%s:1.%d", opts.Session, paneIdx)
-		content, err := tmux.CapturePaneOutput(target, opts.LinesCaptured)
-		if err != nil {
-			output.Panes[paneKey] = PaneWorkStatus{
-				AgentType:            string(agent.AgentTypeUnknown),
-				Recommendation:       string(agent.RecommendErrorState),
-				RecommendationReason: fmt.Sprintf("Failed to capture output: %v", err),
-				Confidence:           0.0,
-				Indicators:           WorkIndicators{Work: []string{}, Limit: []string{}},
-			}
-			output.Summary.ErrorCount++
-			continue
-		}
-
-		// Parse the output
-		state, err := parser.Parse(content)
-		if err != nil {
-			output.Panes[paneKey] = PaneWorkStatus{
-				AgentType:            string(agent.AgentTypeUnknown),
-				Recommendation:       string(agent.RecommendUnknown),
-				RecommendationReason: fmt.Sprintf("Parse failed: %v", err),
-				Confidence:           0.0,
-				Indicators:           WorkIndicators{Work: []string{}, Limit: []string{}},
-			}
-			continue
-		}
-
-		// Build the pane status
-		status := PaneWorkStatus{
-			AgentType:        string(state.Type),
-			IsWorking:        state.IsWorking,
-			IsIdle:           state.IsIdle,
-			IsRateLimited:    state.IsRateLimited,
-			IsContextLow:     state.IsContextLow,
-			ContextRemaining: state.ContextRemaining,
-			Confidence:       state.Confidence,
-			Indicators: WorkIndicators{
-				Work:  state.WorkIndicators,
-				Limit: state.LimitIndicators,
-			},
-			Recommendation:       string(state.GetRecommendation()),
-			RecommendationReason: getRecommendationReason(state),
-		}
-
-		// Ensure indicators are never nil (for clean JSON)
-		if status.Indicators.Work == nil {
-			status.Indicators.Work = []string{}
-		}
-		if status.Indicators.Limit == nil {
-			status.Indicators.Limit = []string{}
-		}
-
-		// Include raw sample if verbose
-		if opts.Verbose {
-			status.RawSample = state.RawSample
-		}
-
-		output.Panes[paneKey] = status
-
-		// Update summary counts
-		if state.IsWorking {
-			output.Summary.WorkingCount++
-		}
-		if state.IsIdle {
-			output.Summary.IdleCount++
-		}
-		if state.IsRateLimited {
-			output.Summary.RateLimitedCount++
-		}
-		if state.IsContextLow {
-			output.Summary.ContextLowCount++
-		}
-
-		// Track by recommendation
-		rec := string(state.GetRecommendation())
-		if output.Summary.ByRecommendation[rec] == nil {
-			output.Summary.ByRecommendation[rec] = []int{}
-		}
-		output.Summary.ByRecommendation[rec] = append(output.Summary.ByRecommendation[rec], paneIdx)
-	}
-
-	output.Summary.TotalPanes = len(panesToCheck)
-	output.Query.PanesRequested = panesToCheck
-
 	return encodeJSON(output)
 }
 
@@ -295,9 +147,9 @@ func ParsePanesArg(panesArg string) ([]int, error) {
 	return panes, nil
 }
 
-// IsWorking is the core function for programmatic use.
-// It returns the structured result instead of printing JSON.
-func IsWorking(opts IsWorkingOptions) (*IsWorkingOutput, error) {
+// GetIsWorking returns the work state for specified panes in a session.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetIsWorking(opts IsWorkingOptions) (*IsWorkingOutput, error) {
 	output := &IsWorkingOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       opts.Session,
@@ -313,19 +165,23 @@ func IsWorking(opts IsWorkingOptions) (*IsWorkingOutput, error) {
 
 	// Validate session exists
 	if !tmux.SessionExists(opts.Session) {
-		output.Success = false
-		output.Error = fmt.Sprintf("session '%s' not found", opts.Session)
-		output.ErrorCode = ErrCodeSessionNotFound
-		return output, fmt.Errorf("session '%s' not found", opts.Session)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("session '%s' not found", opts.Session),
+			ErrCodeSessionNotFound,
+			"Use 'ntm list' to see available sessions",
+		)
+		return output, nil
 	}
 
 	// Get all panes in session
 	allPanes, err := tmux.GetPanes(opts.Session)
 	if err != nil {
-		output.Success = false
-		output.Error = fmt.Sprintf("failed to get panes: %v", err)
-		output.ErrorCode = ErrCodeInternalError
-		return output, err
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("failed to get panes: %w", err),
+			ErrCodeInternalError,
+			"Check tmux session state",
+		)
+		return output, nil
 	}
 
 	// Determine which panes to check

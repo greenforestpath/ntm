@@ -89,6 +89,8 @@ func defaultPatterns() []Pattern {
 
 		// Codex patterns
 		{Name: "codex_prompt", RegexStr: `(?i)codex\s*>?\s*$`, Agent: "codex", State: StateWaiting, Category: CategoryIdle, Priority: 100, Description: "Codex prompt"},
+		{Name: "codex_context_left", RegexStr: `(?i)\b\d{1,3}%\s*context\s*left\b`, Agent: "codex", State: StateWaiting, Category: CategoryIdle, Priority: 96, Description: "Codex context status line"},
+		{Name: "codex_chevron_prompt", RegexStr: `(?m)^\s*›\s*.*$`, Agent: "codex", State: StateWaiting, Category: CategoryIdle, Priority: 92, Description: "Codex chevron prompt"},
 		{Name: "codex_dollar", RegexStr: `\$\s*$`, Agent: "codex", State: StateWaiting, Category: CategoryIdle, Priority: 50, Description: "Codex dollar prompt"},
 
 		// Gemini patterns

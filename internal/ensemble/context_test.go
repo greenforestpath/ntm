@@ -131,6 +131,9 @@ func TestUserContext_Fields(t *testing.T) {
 		FocusAreas:       []string{"database", "caching"},
 		Constraints:      []string{"must be backward compatible", "no new dependencies"},
 		Stakeholders:     []string{"backend team", "devops"},
+		Decisions:        []string{"prioritize latency"},
+		History:          []string{"tried indexing"},
+		SuccessCriteria:  []string{"p95 < 200ms"},
 	}
 
 	if ctx.ProblemStatement != "How do I improve performance?" {
@@ -144,6 +147,15 @@ func TestUserContext_Fields(t *testing.T) {
 	}
 	if len(ctx.Stakeholders) != 2 {
 		t.Errorf("Stakeholders count = %d, want 2", len(ctx.Stakeholders))
+	}
+	if len(ctx.Decisions) != 1 {
+		t.Errorf("Decisions count = %d, want 1", len(ctx.Decisions))
+	}
+	if len(ctx.History) != 1 {
+		t.Errorf("History count = %d, want 1", len(ctx.History))
+	}
+	if len(ctx.SuccessCriteria) != 1 {
+		t.Errorf("SuccessCriteria count = %d, want 1", len(ctx.SuccessCriteria))
 	}
 }
 

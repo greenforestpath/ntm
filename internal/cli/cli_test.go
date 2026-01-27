@@ -48,8 +48,10 @@ func resetFlags() {
 func TestResolveRobotFormat_DefaultAuto(t *testing.T) {
 	resetFlags()
 	t.Setenv("NTM_ROBOT_FORMAT", "")
+	t.Setenv("NTM_OUTPUT_FORMAT", "")
+	t.Setenv("TOON_DEFAULT_FORMAT", "")
 
-	resolveRobotFormat()
+	resolveRobotFormat(nil)
 
 	if robot.OutputFormat != robot.FormatAuto {
 		t.Errorf("OutputFormat default = %q, want %q", robot.OutputFormat, robot.FormatAuto)
@@ -59,11 +61,39 @@ func TestResolveRobotFormat_DefaultAuto(t *testing.T) {
 func TestResolveRobotFormat_EnvFallback(t *testing.T) {
 	resetFlags()
 	t.Setenv("NTM_ROBOT_FORMAT", "toon")
+	t.Setenv("NTM_OUTPUT_FORMAT", "")
+	t.Setenv("TOON_DEFAULT_FORMAT", "")
 
-	resolveRobotFormat()
+	resolveRobotFormat(nil)
 
 	if robot.OutputFormat != robot.FormatTOON {
 		t.Errorf("OutputFormat from env = %q, want %q", robot.OutputFormat, robot.FormatTOON)
+	}
+}
+
+func TestResolveRobotFormat_NtmOutputFormatFallback(t *testing.T) {
+	resetFlags()
+	t.Setenv("NTM_ROBOT_FORMAT", "")
+	t.Setenv("NTM_OUTPUT_FORMAT", "toon")
+	t.Setenv("TOON_DEFAULT_FORMAT", "")
+
+	resolveRobotFormat(nil)
+
+	if robot.OutputFormat != robot.FormatTOON {
+		t.Errorf("OutputFormat from NTM_OUTPUT_FORMAT = %q, want %q", robot.OutputFormat, robot.FormatTOON)
+	}
+}
+
+func TestResolveRobotFormat_ToonDefaultFallback(t *testing.T) {
+	resetFlags()
+	t.Setenv("NTM_ROBOT_FORMAT", "")
+	t.Setenv("NTM_OUTPUT_FORMAT", "")
+	t.Setenv("TOON_DEFAULT_FORMAT", "toon")
+
+	resolveRobotFormat(nil)
+
+	if robot.OutputFormat != robot.FormatTOON {
+		t.Errorf("OutputFormat from TOON_DEFAULT_FORMAT = %q, want %q", robot.OutputFormat, robot.FormatTOON)
 	}
 }
 
@@ -72,7 +102,7 @@ func TestResolveRobotFormat_FlagOverridesEnv(t *testing.T) {
 	t.Setenv("NTM_ROBOT_FORMAT", "toon")
 	robotFormat = "json"
 
-	resolveRobotFormat()
+	resolveRobotFormat(nil)
 
 	if robot.OutputFormat != robot.FormatJSON {
 		t.Errorf("OutputFormat from flag = %q, want %q", robot.OutputFormat, robot.FormatJSON)
@@ -83,10 +113,31 @@ func TestResolveRobotFormat_InvalidValueFallsBack(t *testing.T) {
 	resetFlags()
 	robotFormat = "xml"
 
-	resolveRobotFormat()
+	resolveRobotFormat(nil)
 
 	if robot.OutputFormat != robot.FormatAuto {
 		t.Errorf("OutputFormat invalid = %q, want %q", robot.OutputFormat, robot.FormatAuto)
+	}
+}
+
+func TestResolveRobotFormat_ConfigFallback(t *testing.T) {
+	resetFlags()
+	t.Setenv("NTM_ROBOT_FORMAT", "")
+	t.Setenv("NTM_OUTPUT_FORMAT", "")
+	t.Setenv("TOON_DEFAULT_FORMAT", "")
+
+	cfg := &config.Config{
+		Robot: config.RobotConfig{
+			Output: config.RobotOutputConfig{
+				Format: "toon",
+			},
+		},
+	}
+
+	resolveRobotFormat(cfg)
+
+	if robot.OutputFormat != robot.FormatTOON {
+		t.Errorf("OutputFormat from config = %q, want %q", robot.OutputFormat, robot.FormatTOON)
 	}
 }
 
@@ -1942,6 +1993,177 @@ func TestProgressWriter(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("formatSize(%d) = %q, want %q", tc.bytes, got, tc.want)
 			}
+		}
+	})
+}
+
+// TestHasLegacyShellIntegration tests detection of legacy "ntm init" shell commands
+func TestHasLegacyShellIntegration(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "ntm-shell-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	t.Run("detects legacy ntm init bash", func(t *testing.T) {
+		rcFile := filepath.Join(tempDir, ".bashrc")
+		content := `# Some config
+export PATH="/usr/local/bin:$PATH"
+
+# NTM - Named Tmux Manager
+eval "$(ntm init bash)"
+`
+		if err := os.WriteFile(rcFile, []byte(content), 0644); err != nil {
+			t.Fatalf("Failed to write test file: %v", err)
+		}
+
+		if !hasLegacyShellIntegration(rcFile) {
+			t.Error("Expected to detect legacy shell integration")
+		}
+	})
+
+	t.Run("detects legacy ntm init zsh", func(t *testing.T) {
+		rcFile := filepath.Join(tempDir, ".zshrc")
+		content := `# Some config
+eval "$(ntm init zsh)"
+`
+		if err := os.WriteFile(rcFile, []byte(content), 0644); err != nil {
+			t.Fatalf("Failed to write test file: %v", err)
+		}
+
+		if !hasLegacyShellIntegration(rcFile) {
+			t.Error("Expected to detect legacy shell integration")
+		}
+	})
+
+	t.Run("detects legacy ntm init fish", func(t *testing.T) {
+		rcFile := filepath.Join(tempDir, "config.fish")
+		content := `# Fish config
+ntm init fish | source
+`
+		if err := os.WriteFile(rcFile, []byte(content), 0644); err != nil {
+			t.Fatalf("Failed to write test file: %v", err)
+		}
+
+		if !hasLegacyShellIntegration(rcFile) {
+			t.Error("Expected to detect legacy shell integration")
+		}
+	})
+
+	t.Run("does not detect current ntm shell", func(t *testing.T) {
+		rcFile := filepath.Join(tempDir, ".bashrc-current")
+		content := `# Some config
+eval "$(ntm shell bash)"
+`
+		if err := os.WriteFile(rcFile, []byte(content), 0644); err != nil {
+			t.Fatalf("Failed to write test file: %v", err)
+		}
+
+		if hasLegacyShellIntegration(rcFile) {
+			t.Error("Should not detect current shell command as legacy")
+		}
+	})
+
+	t.Run("handles nonexistent file", func(t *testing.T) {
+		if hasLegacyShellIntegration(filepath.Join(tempDir, "nonexistent")) {
+			t.Error("Should return false for nonexistent file")
+		}
+	})
+}
+
+// TestUpgradeShellRCFile tests the shell rc file upgrade function
+func TestUpgradeShellRCFile(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "ntm-upgrade-shell-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	t.Run("upgrades ntm init to ntm shell for bash", func(t *testing.T) {
+		rcFile := filepath.Join(tempDir, ".bashrc")
+		originalContent := `# Some config
+export PATH="/usr/local/bin:$PATH"
+
+# NTM - Named Tmux Manager
+eval "$(ntm init bash)"
+`
+		if err := os.WriteFile(rcFile, []byte(originalContent), 0644); err != nil {
+			t.Fatalf("Failed to write test file: %v", err)
+		}
+
+		if err := upgradeShellRCFile(rcFile); err != nil {
+			t.Fatalf("upgradeShellRCFile failed: %v", err)
+		}
+
+		content, err := os.ReadFile(rcFile)
+		if err != nil {
+			t.Fatalf("Failed to read upgraded file: %v", err)
+		}
+
+		if strings.Contains(string(content), "ntm init") {
+			t.Error("File should not contain 'ntm init' after upgrade")
+		}
+		if !strings.Contains(string(content), "ntm shell bash") {
+			t.Error("File should contain 'ntm shell bash' after upgrade")
+		}
+
+		// Verify backup was created
+		backupPath := rcFile + ".ntm-backup"
+		backupContent, err := os.ReadFile(backupPath)
+		if err != nil {
+			t.Fatalf("Failed to read backup file: %v", err)
+		}
+		if string(backupContent) != originalContent {
+			t.Error("Backup should contain original content")
+		}
+	})
+
+	t.Run("upgrades ntm init to ntm shell for zsh", func(t *testing.T) {
+		rcFile := filepath.Join(tempDir, ".zshrc")
+		originalContent := `eval "$(ntm init zsh)"`
+		if err := os.WriteFile(rcFile, []byte(originalContent), 0644); err != nil {
+			t.Fatalf("Failed to write test file: %v", err)
+		}
+
+		if err := upgradeShellRCFile(rcFile); err != nil {
+			t.Fatalf("upgradeShellRCFile failed: %v", err)
+		}
+
+		content, err := os.ReadFile(rcFile)
+		if err != nil {
+			t.Fatalf("Failed to read upgraded file: %v", err)
+		}
+
+		if !strings.Contains(string(content), "ntm shell zsh") {
+			t.Error("File should contain 'ntm shell zsh' after upgrade")
+		}
+	})
+
+	t.Run("upgrades ntm init to ntm shell for fish", func(t *testing.T) {
+		rcFile := filepath.Join(tempDir, "config.fish")
+		originalContent := `ntm init fish | source`
+		if err := os.WriteFile(rcFile, []byte(originalContent), 0644); err != nil {
+			t.Fatalf("Failed to write test file: %v", err)
+		}
+
+		if err := upgradeShellRCFile(rcFile); err != nil {
+			t.Fatalf("upgradeShellRCFile failed: %v", err)
+		}
+
+		content, err := os.ReadFile(rcFile)
+		if err != nil {
+			t.Fatalf("Failed to read upgraded file: %v", err)
+		}
+
+		if !strings.Contains(string(content), "ntm shell fish") {
+			t.Error("File should contain 'ntm shell fish' after upgrade")
+		}
+	})
+
+	t.Run("returns error for nonexistent file", func(t *testing.T) {
+		err := upgradeShellRCFile(filepath.Join(tempDir, "nonexistent"))
+		if err == nil {
+			t.Error("Expected error for nonexistent file")
 		}
 	})
 }

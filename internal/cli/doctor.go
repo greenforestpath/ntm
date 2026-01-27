@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -311,9 +310,26 @@ func checkDependencies(ctx context.Context) []DepCheck {
 		Name:       "go",
 		MinVersion: "1.25",
 	}
-	goCheck.Version = runtime.Version()
-	goCheck.Installed = true
-	goCheck.Status = "ok"
+	if path, err := exec.LookPath("go"); err == nil {
+		goCheck.Installed = true
+		cmd := exec.CommandContext(ctx, path, "version")
+		if out, err := cmd.Output(); err == nil {
+			parts := strings.Fields(string(out))
+			if len(parts) >= 3 && parts[0] == "go" && parts[1] == "version" {
+				goCheck.Version = parts[2]
+			} else {
+				goCheck.Version = "unknown"
+			}
+			goCheck.Status = "ok"
+		} else {
+			goCheck.Status = "warning"
+			goCheck.Message = "version check failed"
+		}
+	} else {
+		goCheck.Installed = false
+		goCheck.Status = "warning"
+		goCheck.Message = "not found (needed for plugins)"
+	}
 	checks = append(checks, goCheck)
 
 	return checks

@@ -372,6 +372,13 @@ func TestFormatContextPack_Full(t *testing.T) {
 			ProblemStatement: "Testing focus",
 			FocusAreas:       []string{"API"},
 			Constraints:      []string{"No breaking changes"},
+			Stakeholders:     []string{"Product"},
+			Decisions:        []string{"Ship this week"},
+			History:          []string{"Prototype v1"},
+			SuccessCriteria:  []string{"Green tests"},
+		},
+		Questions: []TargetedQuestion{
+			{ID: "goal", Question: "What is the primary goal of this analysis?", Required: true},
 		},
 	}
 
@@ -387,6 +394,11 @@ func TestFormatContextPack_Full(t *testing.T) {
 		"Testing focus",
 		"API",
 		"No breaking changes",
+		"Product",
+		"Ship this week",
+		"Prototype v1",
+		"Green tests",
+		"What is the primary goal of this analysis?",
 	}
 
 	for _, check := range checks {

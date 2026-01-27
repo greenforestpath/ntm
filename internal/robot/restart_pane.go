@@ -9,6 +9,7 @@ import (
 
 // RestartPaneOutput is the structured output for --robot-restart-pane
 type RestartPaneOutput struct {
+	RobotResponse
 	Session     string         `json:"session"`
 	RestartedAt time.Time      `json:"restarted_at"`
 	Restarted   []string       `json:"restarted"`
@@ -32,13 +33,15 @@ type RestartPaneOptions struct {
 	DryRun  bool     // Preview mode
 }
 
-// PrintRestartPane restarts panes (respawn-pane -k)
-func PrintRestartPane(opts RestartPaneOptions) error {
-	output := RestartPaneOutput{
-		Session:     opts.Session,
-		RestartedAt: time.Now().UTC(),
-		Restarted:   []string{},
-		Failed:      []RestartError{},
+// GetRestartPane restarts panes (respawn-pane -k) and returns the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetRestartPane(opts RestartPaneOptions) (*RestartPaneOutput, error) {
+	output := &RestartPaneOutput{
+		RobotResponse: NewRobotResponse(true),
+		Session:       opts.Session,
+		RestartedAt:   time.Now().UTC(),
+		Restarted:     []string{},
+		Failed:        []RestartError{},
 	}
 
 	if !tmux.SessionExists(opts.Session) {
@@ -46,7 +49,12 @@ func PrintRestartPane(opts RestartPaneOptions) error {
 			Pane:   "session",
 			Reason: fmt.Sprintf("session '%s' not found", opts.Session),
 		})
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("session '%s' not found", opts.Session),
+			ErrCodeSessionNotFound,
+			"Use --robot-status to list available sessions",
+		)
+		return output, nil
 	}
 
 	panes, err := tmux.GetPanes(opts.Session)
@@ -55,7 +63,12 @@ func PrintRestartPane(opts RestartPaneOptions) error {
 			Pane:   "panes",
 			Reason: fmt.Sprintf("failed to get panes: %v", err),
 		})
-		return encodeJSON(output)
+		output.RobotResponse = NewErrorResponse(
+			err,
+			ErrCodeInternalError,
+			"Check tmux session state",
+		)
+		return output, nil
 	}
 
 	// Build pane filter map
@@ -101,7 +114,7 @@ func PrintRestartPane(opts RestartPaneOptions) error {
 	}
 
 	if len(targetPanes) == 0 {
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Dry-run mode
@@ -111,7 +124,7 @@ func PrintRestartPane(opts RestartPaneOptions) error {
 			paneKey := fmt.Sprintf("%d", pane.Index)
 			output.WouldAffect = append(output.WouldAffect, paneKey)
 		}
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Restart targets
@@ -130,5 +143,15 @@ func PrintRestartPane(opts RestartPaneOptions) error {
 		}
 	}
 
+	return output, nil
+}
+
+// PrintRestartPane handles the --robot-restart-pane command.
+// This is a thin wrapper around GetRestartPane() for CLI output.
+func PrintRestartPane(opts RestartPaneOptions) error {
+	output, err := GetRestartPane(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }

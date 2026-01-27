@@ -47,7 +47,7 @@ func (a *RanoAdapter) Version(ctx context.Context) (Version, error) {
 		return Version{}, fmt.Errorf("failed to get rano version: %w", err)
 	}
 
-	return parseVersion(stdout.String())
+	return ParseStandardVersion(stdout.String())
 }
 
 // Capabilities returns the list of rano capabilities
@@ -281,10 +281,10 @@ func (a *RanoAdapter) checkPermissions(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Try running 'rano status' - if it fails with permission error, we don't have caps
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "status", "--json")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
@@ -321,8 +321,9 @@ func (a *RanoAdapter) GetStatus(ctx context.Context) (*RanoStatus, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "status", "--json")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
@@ -360,8 +361,9 @@ func (a *RanoAdapter) GetProcessStats(ctx context.Context, pid int) (*RanoProces
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "stats", "--pid", fmt.Sprintf("%d", pid), "--json")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
@@ -390,8 +392,9 @@ func (a *RanoAdapter) GetAllProcessStats(ctx context.Context) ([]RanoProcessStat
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "stats", "--all", "--json")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {

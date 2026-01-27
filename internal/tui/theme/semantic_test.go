@@ -134,6 +134,8 @@ func TestStatusColor(t *testing.T) {
 
 func TestSemantic(t *testing.T) {
 	// Test the global Semantic function
+	t.Setenv("NTM_NO_COLOR", "0")
+	t.Setenv("NTM_THEME", "mocha")
 	p := Semantic()
 
 	if p.BgPrimary == "" {

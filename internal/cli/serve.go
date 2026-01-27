@@ -16,9 +16,11 @@ import (
 )
 
 func newServeCmd() *cobra.Command {
-	var (
-		port int
-	)
+	opts := serveOptions{
+		Host:     "127.0.0.1",
+		Port:     7337,
+		AuthMode: "local",
+	}
 
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -37,19 +39,45 @@ API Endpoints:
   GET /health                Health check
 
 Examples:
-  ntm serve                  # Start on default port 7337
-  ntm serve --port 8080      # Start on custom port`,
+  ntm serve                              # Start on 127.0.0.1:7337
+  ntm serve --port 8080                  # Start on custom port
+  ntm serve --host 0.0.0.0 --auth-mode api_key --api-key $KEY
+  ntm serve --auth-mode oidc --oidc-issuer https://issuer --oidc-jwks-url https://issuer/.well-known/jwks.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServe(port)
+			return runServe(opts)
 		},
 	}
 
-	cmd.Flags().IntVar(&port, "port", 7337, "HTTP server port")
+	cmd.Flags().StringVar(&opts.Host, "host", opts.Host, "HTTP bind host (default 127.0.0.1)")
+	cmd.Flags().IntVar(&opts.Port, "port", opts.Port, "HTTP server port")
+	cmd.Flags().StringVar(&opts.AuthMode, "auth-mode", opts.AuthMode, "Auth mode: local|api_key|oidc|mtls")
+	cmd.Flags().StringVar(&opts.APIKey, "api-key", "", "API key for api_key auth mode")
+	cmd.Flags().StringVar(&opts.OIDCIssuer, "oidc-issuer", "", "OIDC issuer URL for oidc auth mode")
+	cmd.Flags().StringVar(&opts.OIDCAudience, "oidc-audience", "", "OIDC audience for oidc auth mode")
+	cmd.Flags().StringVar(&opts.OIDCJWKSURL, "oidc-jwks-url", "", "JWKS URL for oidc auth mode")
+	cmd.Flags().StringVar(&opts.MTLSCert, "mtls-cert", "", "Server TLS cert file for mtls auth mode")
+	cmd.Flags().StringVar(&opts.MTLSKey, "mtls-key", "", "Server TLS key file for mtls auth mode")
+	cmd.Flags().StringVar(&opts.MTLSCA, "mtls-ca", "", "Client CA bundle for mtls auth mode")
+	cmd.Flags().StringArrayVar(&opts.CORSAllowOrigins, "cors-allow-origin", nil, "Allowed CORS origins (repeatable). Defaults to localhost only.")
 
 	return cmd
 }
 
-func runServe(port int) error {
+type serveOptions struct {
+	Host             string
+	Port             int
+	AuthMode         string
+	APIKey           string
+	OIDCIssuer       string
+	OIDCAudience     string
+	OIDCJWKSURL      string
+	MTLSCert         string
+	MTLSKey          string
+	MTLSCA           string
+	CORSAllowOrigins []string
+}
+
+func runServe(opts serveOptions) error {
 	// Get state store path
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -69,12 +97,36 @@ func runServe(port int) error {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
 
+	mode, err := serve.ParseAuthMode(opts.AuthMode)
+	if err != nil {
+		return err
+	}
+	cfg := serve.Config{
+		Host:           opts.Host,
+		Port:           opts.Port,
+		EventBus:       events.DefaultBus,
+		StateStore:     stateStore,
+		AllowedOrigins: opts.CORSAllowOrigins,
+		Auth: serve.AuthConfig{
+			Mode:   mode,
+			APIKey: opts.APIKey,
+			OIDC: serve.OIDCConfig{
+				Issuer:   opts.OIDCIssuer,
+				Audience: opts.OIDCAudience,
+				JWKSURL:  opts.OIDCJWKSURL,
+			},
+			MTLS: serve.MTLSConfig{
+				CertFile:     opts.MTLSCert,
+				KeyFile:      opts.MTLSKey,
+				ClientCAFile: opts.MTLSCA,
+			},
+		},
+	}
+	if err := serve.ValidateConfig(cfg); err != nil {
+		return err
+	}
 	// Create server with default event bus
-	srv := serve.New(serve.Config{
-		Port:       port,
-		EventBus:   events.DefaultBus,
-		StateStore: stateStore,
-	})
+	srv := serve.New(cfg)
 
 	// Setup signal handling for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -89,7 +141,11 @@ func runServe(port int) error {
 		cancel()
 	}()
 
-	fmt.Printf("Starting NTM server on http://localhost:%d\n", port)
+	scheme := "http"
+	if mode == serve.AuthModeMTLS {
+		scheme = "https"
+	}
+	fmt.Printf("Starting NTM server on %s://%s:%d\n", scheme, opts.Host, opts.Port)
 	fmt.Println("Press Ctrl+C to stop")
 
 	return srv.Start(ctx)

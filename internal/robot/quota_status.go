@@ -44,11 +44,9 @@ type QuotaCheckOutput struct {
 	Quota    ProviderQuota `json:"quota"`
 }
 
-// PrintQuotaStatus handles the --robot-quota-status command
-// Usage:
-//
-//	ntm --robot-quota-status
-func PrintQuotaStatus() error {
+// GetQuotaStatus returns quota status information.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetQuotaStatus() (*QuotaStatusOutput, error) {
 	poller := caut.GetGlobalPoller()
 	cache := poller.GetCache()
 
@@ -118,34 +116,43 @@ func PrintQuotaStatus() error {
 
 	// Check for cache errors
 	if err, errTime := cache.GetLastError(); err != nil && !errTime.IsZero() {
-		output := QuotaStatusOutput{
+		output := &QuotaStatusOutput{
 			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "caut polling error - data may be stale"),
 			Quota:         quotaInfo,
 		}
 		// Still include the data even with error
 		output.Success = true // Partial success
-		return outputJSON(output)
+		return output, nil
 	}
 
-	output := QuotaStatusOutput{
+	return &QuotaStatusOutput{
 		RobotResponse: NewRobotResponse(true),
 		Quota:         quotaInfo,
-	}
+	}, nil
+}
 
+// PrintQuotaStatus handles the --robot-quota-status command.
+// This is a thin wrapper around GetQuotaStatus() for CLI output.
+func PrintQuotaStatus() error {
+	output, err := GetQuotaStatus()
+	if err != nil {
+		return err
+	}
 	return outputJSON(output)
 }
 
-// PrintQuotaCheck handles the --robot-quota-check command
-// Usage:
-//
-//	ntm --robot-quota-check claude
-func PrintQuotaCheck(provider string) error {
+// GetQuotaCheck returns quota check for a specific provider.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetQuotaCheck(provider string) (*QuotaCheckOutput, error) {
 	if provider == "" {
-		return RobotError(
-			nil,
-			ErrCodeInvalidFlag,
-			"Specify a provider with --quota-check-provider=<name>",
-		)
+		return &QuotaCheckOutput{
+			RobotResponse: NewErrorResponse(
+				nil,
+				ErrCodeInvalidFlag,
+				"Specify a provider with --quota-check-provider=<name>",
+			),
+			Provider: provider,
+		}, nil
 	}
 
 	poller := caut.GetGlobalPoller()
@@ -159,24 +166,26 @@ func PrintQuotaCheck(provider string) error {
 		if status != nil {
 			for _, p := range status.Providers {
 				if p.Name == provider {
-					output := QuotaCheckOutput{
+					return &QuotaCheckOutput{
 						RobotResponse: NewRobotResponse(true),
 						Provider:      provider,
 						Quota: ProviderQuota{
 							UsagePercent: p.QuotaUsed,
 							Status:       getQuotaStatus(p.QuotaUsed),
 						},
-					}
-					return outputJSON(output)
+					}, nil
 				}
 			}
 		}
 
-		return RobotError(
-			nil,
-			ErrCodePaneNotFound, // Reusing as "not found"
-			"Provider '"+provider+"' not found. Use --robot-quota-status to see available providers.",
-		)
+		return &QuotaCheckOutput{
+			RobotResponse: NewErrorResponse(
+				nil,
+				ErrCodePaneNotFound, // Reusing as "not found"
+				"Provider '"+provider+"' not found. Use --robot-quota-status to see available providers.",
+			),
+			Provider: provider,
+		}, nil
 	}
 
 	// Build provider quota from usage data
@@ -199,12 +208,20 @@ func PrintQuotaCheck(provider string) error {
 		}
 	}
 
-	output := QuotaCheckOutput{
+	return &QuotaCheckOutput{
 		RobotResponse: NewRobotResponse(true),
 		Provider:      provider,
 		Quota:         providerQuota,
-	}
+	}, nil
+}
 
+// PrintQuotaCheck handles the --robot-quota-check command.
+// This is a thin wrapper around GetQuotaCheck() for CLI output.
+func PrintQuotaCheck(provider string) error {
+	output, err := GetQuotaCheck(provider)
+	if err != nil {
+		return err
+	}
 	return outputJSON(output)
 }
 

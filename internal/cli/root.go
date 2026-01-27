@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/pipeline"
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
@@ -39,6 +42,11 @@ var (
 	Date    = "unknown"
 	BuiltBy = "unknown"
 )
+
+// VersionInput is the kernel input for core.version.
+type VersionInput struct {
+	Short bool `json:"short,omitempty"`
+}
 
 var rootCmd = &cobra.Command{
 	Use:   "ntm",
@@ -113,7 +121,7 @@ Shell Integration:
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		// Resolve robot output format and verbosity: CLI flag > env var > config > default
-		resolveRobotFormat()
+		resolveRobotFormat(cfg)
 		resolveRobotVerbosity(cfg)
 		robotDryRunEffective := robotDryRun || robotRestoreDry
 
@@ -275,6 +283,53 @@ Shell Integration:
 				scrollbackLines = 1000 // Default to capturing more for context estimation
 			}
 			if err := robot.PrintContext(robotContext, scrollbackLines); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotEnsembleSpawn != "" {
+			applyRobotEnsembleConfigDefaults(cmd, cfg)
+			opts := robot.EnsembleSpawnOptions{
+				Session:       robotEnsembleSpawn,
+				Preset:        robotEnsemblePreset,
+				Modes:         robotEnsembleModes,
+				Question:      robotEnsembleQuestion,
+				Agents:        robotEnsembleAgents,
+				Assignment:    robotEnsembleAssignment,
+				AllowAdvanced: robotEnsembleAllowAdvanced,
+				BudgetTotal:   robotEnsembleBudgetTotal,
+				BudgetPerMode: robotEnsembleBudgetPerMode,
+				NoCache:       robotEnsembleNoCache,
+				NoQuestions:   robotEnsembleNoQuestions,
+				ProjectDir:    robotEnsembleProject,
+			}
+			if err := robot.PrintEnsembleSpawn(opts, cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotEnsemble != "" {
+			if err := robot.PrintEnsemble(robotEnsemble); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotEnsembleSuggest != "" {
+			if err := robot.PrintEnsembleSuggest(robotEnsembleSuggest, robotEnsembleSuggestIDOnly); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotEnsembleStop != "" {
+			opts := robot.EnsembleStopOptions{
+				Force:     robotEnsembleStopForce,
+				NoCollect: robotEnsembleStopNoCollect,
+			}
+			if err := robot.PrintEnsembleStop(robotEnsembleStop, opts); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -1305,11 +1360,25 @@ func loadRobotSendMessage(msg, msgFile string) (string, error) {
 	if msgFile == "" {
 		return msg, nil
 	}
-	data, err := os.ReadFile(msgFile)
+
+	f, err := os.Open(msgFile)
+	if err != nil {
+		return "", fmt.Errorf("open msg file: %w", err)
+	}
+	defer f.Close()
+
+	// Read up to 10MB + 1 byte to detect truncation
+	limit := int64(10 * 1024 * 1024)
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return "", fmt.Errorf("read msg file: %w", err)
 	}
-	if strings.TrimSpace(string(data)) == "" {
+
+	if int64(len(data)) > limit {
+		return "", fmt.Errorf("message file too large (max 10MB)")
+	}
+
+	if len(data) == 0 || strings.TrimSpace(string(data)) == "" {
 		return "", fmt.Errorf("message file is empty")
 	}
 	return string(data), nil
@@ -1317,22 +1386,40 @@ func loadRobotSendMessage(msg, msgFile string) (string, error) {
 
 // Robot output flags for AI agent integration
 var (
-	robotHelp         bool
-	robotStatus       bool
-	robotVersion      bool
-	robotCapabilities bool
-	robotPlan         bool
-	robotSnapshot     bool   // unified state query
-	robotSince        string // ISO8601 timestamp for delta snapshot
-	robotTail         string // session name for tail
-	robotErrors       string // session name for errors
-	robotErrorsSince  string // duration for errors filter (e.g., 5m, 1h)
-	robotLines        int    // number of lines to capture
-	robotPanes        string // comma-separated pane filter
-	robotGraph        bool   // bv insights passthrough
-	robotBeadLimit    int    // limit for ready/in-progress beads in snapshot
-	robotDashboard    bool   // dashboard summary output
-	robotContext      string // session name for context usage
+	robotHelp                  bool
+	robotStatus                bool
+	robotVersion               bool
+	robotCapabilities          bool
+	robotPlan                  bool
+	robotSnapshot              bool   // unified state query
+	robotSince                 string // ISO8601 timestamp for delta snapshot
+	robotTail                  string // session name for tail
+	robotErrors                string // session name for errors
+	robotErrorsSince           string // duration for errors filter (e.g., 5m, 1h)
+	robotLines                 int    // number of lines to capture
+	robotPanes                 string // comma-separated pane filter
+	robotGraph                 bool   // bv insights passthrough
+	robotBeadLimit             int    // limit for ready/in-progress beads in snapshot
+	robotDashboard             bool   // dashboard summary output
+	robotContext               string // session name for context usage
+	robotEnsemble              string // session name for ensemble state
+	robotEnsembleSpawn         string // session name for ensemble spawn
+	robotEnsemblePreset        string // preset name for ensemble spawn
+	robotEnsembleModes         string // mode IDs/codes for ensemble spawn
+	robotEnsembleQuestion      string // question for ensemble spawn
+	robotEnsembleAgents        string // agent mix for ensemble spawn
+	robotEnsembleAssignment    string // assignment strategy for ensemble spawn
+	robotEnsembleAllowAdvanced bool   // allow advanced modes
+	robotEnsembleBudgetTotal   int    // total token budget override
+	robotEnsembleBudgetPerMode int    // per-mode token budget override
+	robotEnsembleNoCache       bool   // disable context cache
+	robotEnsembleNoQuestions   bool   // skip targeted questions
+	robotEnsembleProject       string // project directory override
+	robotEnsembleSuggest       string // question for ensemble suggestion
+	robotEnsembleSuggestIDOnly bool   // output only preset name
+	robotEnsembleStop          string // session name to stop
+	robotEnsembleStopForce     bool   // force kill without graceful shutdown
+	robotEnsembleStopNoCollect bool   // skip partial output collection
 
 	// Robot-send flags
 	robotSend        string // session name for send
@@ -1683,6 +1770,24 @@ func init() {
 	rootCmd.Flags().IntVar(&robotTriageLimit, "triage-limit", 10, "Max recommendations per category. Optional with --robot-triage. Example: --triage-limit=20")
 	rootCmd.Flags().BoolVar(&robotDashboard, "robot-dashboard", false, "Get dashboard summary as markdown (or JSON with --json). Token-efficient overview")
 	rootCmd.Flags().StringVar(&robotContext, "robot-context", "", "Get context window usage for all agents in a session. Required: SESSION. Example: ntm --robot-context=myproject")
+	rootCmd.Flags().StringVar(&robotEnsemble, "robot-ensemble", "", "Get ensemble state for a session. Required: SESSION. Example: ntm --robot-ensemble=myproject")
+	rootCmd.Flags().StringVar(&robotEnsembleSpawn, "robot-ensemble-spawn", "", "Spawn a reasoning ensemble. Required: SESSION. Example: ntm --robot-ensemble-spawn=myproject --preset=project-diagnosis --question='...'")
+	rootCmd.Flags().StringVar(&robotEnsemblePreset, "preset", "", "Ensemble preset name. Required with --robot-ensemble-spawn unless --modes is set")
+	rootCmd.Flags().StringVar(&robotEnsembleModes, "modes", "", "Explicit mode IDs or codes (comma-separated). Used with --robot-ensemble-spawn")
+	rootCmd.Flags().StringVar(&robotEnsembleQuestion, "question", "", "Question for ensemble spawn. Required with --robot-ensemble-spawn")
+	rootCmd.Flags().StringVar(&robotEnsembleAgents, "agents", "", "Agent mix for ensemble spawn (e.g., cc=2,cod=1,gmi=1)")
+	rootCmd.Flags().StringVar(&robotEnsembleAssignment, "assignment", "affinity", "Assignment strategy for ensemble spawn: round-robin, affinity, category, explicit")
+	rootCmd.Flags().BoolVar(&robotEnsembleAllowAdvanced, "allow-advanced", false, "Allow advanced/experimental modes with --robot-ensemble-spawn")
+	rootCmd.Flags().IntVar(&robotEnsembleBudgetTotal, "budget-total", 0, "Override total token budget for ensemble spawn")
+	rootCmd.Flags().IntVar(&robotEnsembleBudgetPerMode, "budget-per-agent", 0, "Override per-agent token cap for ensemble spawn")
+	rootCmd.Flags().BoolVar(&robotEnsembleNoCache, "no-cache", false, "Bypass context cache for ensemble spawn")
+	rootCmd.Flags().BoolVar(&robotEnsembleNoQuestions, "no-questions", false, "Skip targeted questions during ensemble spawn (future)")
+	rootCmd.Flags().StringVar(&robotEnsembleProject, "project", "", "Project directory override for ensemble spawn")
+	rootCmd.Flags().StringVar(&robotEnsembleSuggest, "robot-ensemble-suggest", "", "Suggest best ensemble preset for a question. Example: ntm --robot-ensemble-suggest=\"What security issues exist?\"")
+	rootCmd.Flags().BoolVar(&robotEnsembleSuggestIDOnly, "suggest-id-only", false, "Output only preset name with --robot-ensemble-suggest")
+	rootCmd.Flags().StringVar(&robotEnsembleStop, "robot-ensemble-stop", "", "Stop an ensemble and save partial state. Required: SESSION. Example: ntm --robot-ensemble-stop=myproject")
+	rootCmd.Flags().BoolVar(&robotEnsembleStopForce, "stop-force", false, "Force kill without graceful shutdown. Optional with --robot-ensemble-stop")
+	rootCmd.Flags().BoolVar(&robotEnsembleStopNoCollect, "stop-no-collect", false, "Skip partial output collection. Optional with --robot-ensemble-stop")
 	rootCmd.Flags().IntVar(&robotBeadLimit, "bead-limit", 5, "Max beads per category in snapshot. Optional with --robot-snapshot, --robot-status. Example: --bead-limit=10")
 	rootCmd.Flags().StringVar(&robotVerbosity, "robot-verbosity", "", "Robot verbosity profile for JSON/TOON: terse, default, or debug. Env: NTM_ROBOT_VERBOSITY")
 
@@ -1788,7 +1893,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotTerse, "robot-terse", false, "Single-line state: S:session|A:ready/total|W:working|I:idle|B:beads|M:mail|!:alerts. Minimal tokens")
 
 	// Robot-format flag for output serialization format
-	rootCmd.Flags().StringVar(&robotFormat, "robot-format", "", "Output format for robot commands: json (default), toon (token-efficient), or auto. Env: NTM_ROBOT_FORMAT")
+	rootCmd.Flags().StringVar(&robotFormat, "robot-format", "", "Output format for robot commands: json (default), toon (token-efficient), or auto. Env: NTM_ROBOT_FORMAT, NTM_OUTPUT_FORMAT, TOON_DEFAULT_FORMAT")
 
 	// Robot-markdown flags for token-efficient markdown output
 	rootCmd.Flags().BoolVar(&robotMarkdown, "robot-markdown", false, "System state as markdown tables. LLM-friendly, ~50% fewer tokens than JSON")
@@ -2305,6 +2410,7 @@ func init() {
 		newMetricsCmd(),
 		newWorkCmd(),
 		newEnsembleCmd(),
+		newModesCmd(),
 
 		// Internal commands
 		newMonitorCmd(),
@@ -2388,34 +2494,105 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version information",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if IsJSONOutput() {
-				response := output.VersionResponse{
-					TimestampedResponse: output.NewTimestamped(),
-					Version:             Version,
-					Commit:              Commit,
-					BuiltAt:             Date,
-					BuiltBy:             BuiltBy,
-					GoVersion:           goVersion(),
-					Platform:            goPlatform(),
-				}
-				return output.PrintJSON(response)
-			}
-
-			if short {
-				fmt.Println(Version)
-				return nil
-			}
-			fmt.Printf("ntm version %s\n", Version)
-			fmt.Printf("  commit:    %s\n", Commit)
-			fmt.Printf("  built:     %s\n", Date)
-			fmt.Printf("  builder:   %s\n", BuiltBy)
-			fmt.Printf("  go:        %s\n", goVersion())
-			fmt.Printf("  platform:  %s\n", goPlatform())
-			return nil
+			return runVersion(short)
 		},
 	}
 	cmd.Flags().BoolVarP(&short, "short", "s", false, "Print only version number")
 	return cmd
+}
+
+func init() {
+	kernel.MustRegister(kernel.Command{
+		Name:        "core.version",
+		Description: "Return NTM version and build info",
+		Category:    "core",
+		Input: &kernel.SchemaRef{
+			Name: "VersionInput",
+			Ref:  "cli.VersionInput",
+		},
+		Output: &kernel.SchemaRef{
+			Name: "VersionResponse",
+			Ref:  "output.VersionResponse",
+		},
+		REST: &kernel.RESTBinding{
+			Method: "GET",
+			Path:   "/version",
+		},
+		Examples: []kernel.Example{
+			{
+				Name:        "version",
+				Description: "Show version info",
+				Command:     "ntm version",
+			},
+			{
+				Name:        "version-short",
+				Description: "Show only the version number",
+				Command:     "ntm version --short",
+			},
+		},
+		SafetyLevel: kernel.SafetySafe,
+		Idempotent:  true,
+	})
+	kernel.MustRegisterHandler("core.version", func(ctx context.Context, _ any) (any, error) {
+		return buildVersionResponse(), nil
+	})
+}
+
+func runVersion(short bool) error {
+	result, err := kernel.Run(context.Background(), "core.version", VersionInput{Short: short})
+	if err != nil {
+		if IsJSONOutput() {
+			_ = output.PrintJSON(output.NewError(err.Error()))
+		}
+		return err
+	}
+
+	resp, err := coerceVersionResponse(result)
+	if err != nil {
+		return err
+	}
+
+	if IsJSONOutput() {
+		return output.PrintJSON(resp)
+	}
+
+	if short {
+		fmt.Println(resp.Version)
+		return nil
+	}
+	fmt.Printf("ntm version %s\n", resp.Version)
+	fmt.Printf("  commit:    %s\n", resp.Commit)
+	fmt.Printf("  built:     %s\n", resp.BuiltAt)
+	fmt.Printf("  builder:   %s\n", resp.BuiltBy)
+	fmt.Printf("  go:        %s\n", resp.GoVersion)
+	fmt.Printf("  platform:  %s\n", resp.Platform)
+	return nil
+}
+
+func coerceVersionResponse(result any) (output.VersionResponse, error) {
+	switch value := result.(type) {
+	case output.VersionResponse:
+		return value, nil
+	case *output.VersionResponse:
+		if value != nil {
+			return *value, nil
+		}
+		return output.VersionResponse{}, fmt.Errorf("core.version returned nil response")
+	default:
+		return output.VersionResponse{}, fmt.Errorf("core.version returned unexpected type %T", result)
+	}
+}
+
+func buildVersionResponse() output.VersionResponse {
+	return output.VersionResponse{
+		TimestampedResponse: output.NewTimestamped(),
+		Version:             Version,
+		Commit:              Commit,
+		BuiltAt:             Date,
+		BuiltBy:             BuiltBy,
+		GoVersion:           goVersion(),
+		Platform:            goPlatform(),
+	}
 }
 
 func newConfigCmd() *cobra.Command {
@@ -2752,14 +2929,25 @@ func GetFormatter() *output.Formatter {
 	return output.New(output.WithJSON(jsonOutput))
 }
 
-// resolveRobotFormat determines the robot output format from CLI flag, env var, or default.
-// Priority: --robot-format flag > NTM_ROBOT_FORMAT env var > default (auto)
-func resolveRobotFormat() {
+// resolveRobotFormat determines the robot output format from CLI flag, env var, config, or default.
+// Priority: --robot-format flag > NTM_ROBOT_FORMAT > NTM_OUTPUT_FORMAT > TOON_DEFAULT_FORMAT > config > auto
+func resolveRobotFormat(cfg *config.Config) {
 	formatStr := robotFormat
 
 	// Fall back to environment variable if flag not set
 	if formatStr == "" {
 		formatStr = os.Getenv("NTM_ROBOT_FORMAT")
+	}
+	if formatStr == "" {
+		formatStr = os.Getenv("NTM_OUTPUT_FORMAT")
+	}
+	if formatStr == "" {
+		formatStr = os.Getenv("TOON_DEFAULT_FORMAT")
+	}
+
+	// Fall back to config if available
+	if formatStr == "" && cfg != nil {
+		formatStr = cfg.Robot.Output.Format
 	}
 
 	// Parse and set the format
@@ -2805,6 +2993,45 @@ func resolveRobotVerbosity(cfg *config.Config) {
 	robot.OutputVerbosity = verbosity
 }
 
+func applyRobotEnsembleConfigDefaults(cmd *cobra.Command, cfg *config.Config) {
+	if cmd == nil {
+		return
+	}
+	if cfg == nil {
+		cfg = config.Default()
+	}
+
+	ensCfg := cfg.Ensemble
+	flags := cmd.Flags()
+
+	if robotEnsemblePreset == "" && strings.TrimSpace(robotEnsembleModes) == "" && strings.TrimSpace(ensCfg.DefaultEnsemble) != "" {
+		robotEnsemblePreset = ensCfg.DefaultEnsemble
+	}
+	if !flags.Changed("agents") && strings.TrimSpace(robotEnsembleAgents) == "" && strings.TrimSpace(ensCfg.AgentMix) != "" {
+		robotEnsembleAgents = ensCfg.AgentMix
+	}
+	if !flags.Changed("assignment") && strings.TrimSpace(ensCfg.Assignment) != "" {
+		robotEnsembleAssignment = ensCfg.Assignment
+	}
+	if !flags.Changed("allow-advanced") {
+		allow := ensCfg.AllowAdvanced
+		switch strings.ToLower(strings.TrimSpace(ensCfg.ModeTierDefault)) {
+		case "advanced", "experimental":
+			allow = true
+		}
+		robotEnsembleAllowAdvanced = allow
+	}
+	if !flags.Changed("budget-total") && robotEnsembleBudgetTotal == 0 && ensCfg.Budget.Total > 0 {
+		robotEnsembleBudgetTotal = ensCfg.Budget.Total
+	}
+	if !flags.Changed("budget-per-agent") && robotEnsembleBudgetPerMode == 0 && ensCfg.Budget.PerAgent > 0 {
+		robotEnsembleBudgetPerMode = ensCfg.Budget.PerAgent
+	}
+	if !flags.Changed("no-cache") && !ensCfg.Cache.Enabled {
+		robotEnsembleNoCache = true
+	}
+}
+
 // canSkipConfigLoading returns true if we can skip Phase 2 config loading.
 // This checks both subcommand names and robot flags for Phase 1 only operations.
 func canSkipConfigLoading(cmdName string) bool {
@@ -2843,7 +3070,7 @@ func needsConfigLoading(cmdName string) bool {
 			robotSend != "" || robotAck != "" || robotSpawn != "" ||
 			robotInterrupt != "" || robotRestartPane != "" || robotGraph || robotMail || robotHealth != "" ||
 			robotDiagnose != "" || robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
-			robotContext != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" ||
+			robotContext != "" || robotEnsemble != "" || robotEnsembleSpawn != "" || robotEnsembleSuggest != "" || robotEnsembleStop != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" ||
 			robotSmartRestart != "" || robotMonitor != "" {
 			return true
 		}

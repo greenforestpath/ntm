@@ -53,25 +53,42 @@ type RestorePreview struct {
 	Actions     []string `json:"actions"`
 }
 
-// PrintSave saves a session state and outputs JSON.
-func PrintSave(opts SaveOptions) error {
+// GetSave saves a session state and returns the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetSave(opts SaveOptions) (*SaveResult, error) {
 	if err := tmux.EnsureInstalled(); err != nil {
-		return outputSaveError(opts.Session, err)
+		return &SaveResult{
+			Success: false,
+			Session: opts.Session,
+			Error:   err.Error(),
+		}, nil
 	}
 
 	sessionName := opts.Session
 	if sessionName == "" {
-		return outputSaveError("", fmt.Errorf("session name is required"))
+		return &SaveResult{
+			Success: false,
+			Session: "",
+			Error:   "session name is required",
+		}, nil
 	}
 
 	if !tmux.SessionExists(sessionName) {
-		return outputSaveError(sessionName, fmt.Errorf("session '%s' not found", sessionName))
+		return &SaveResult{
+			Success: false,
+			Session: sessionName,
+			Error:   fmt.Sprintf("session '%s' not found", sessionName),
+		}, nil
 	}
 
 	// Capture session state
 	state, err := session.Capture(sessionName)
 	if err != nil {
-		return outputSaveError(sessionName, fmt.Errorf("failed to capture session state: %w", err))
+		return &SaveResult{
+			Success: false,
+			Session: sessionName,
+			Error:   fmt.Sprintf("failed to capture session state: %v", err),
+		}, nil
 	}
 
 	// Save state
@@ -80,64 +97,100 @@ func PrintSave(opts SaveOptions) error {
 	}
 	path, err := session.Save(state, saveOpts)
 	if err != nil {
-		return outputSaveError(sessionName, fmt.Errorf("failed to save session state: %w", err))
+		return &SaveResult{
+			Success: false,
+			Session: sessionName,
+			Error:   fmt.Sprintf("failed to save session state: %v", err),
+		}, nil
 	}
 
 	// If custom output file requested, also write there
 	if opts.OutputFile != "" {
 		data, err := json.MarshalIndent(state, "", "  ")
 		if err != nil {
-			return outputSaveError(sessionName, fmt.Errorf("failed to marshal state: %w", err))
+			return &SaveResult{
+				Success: false,
+				Session: sessionName,
+				Error:   fmt.Sprintf("failed to marshal state: %v", err),
+			}, nil
 		}
 		if err := os.WriteFile(opts.OutputFile, data, 0644); err != nil {
-			return outputSaveError(sessionName, fmt.Errorf("failed to write to %s: %w", opts.OutputFile, err))
+			return &SaveResult{
+				Success: false,
+				Session: sessionName,
+				Error:   fmt.Sprintf("failed to write to %s: %v", opts.OutputFile, err),
+			}, nil
 		}
 		path = opts.OutputFile
 	}
 
-	result := SaveResult{
+	return &SaveResult{
 		Success:  true,
 		Session:  sessionName,
 		SavedAs:  sessionName,
 		FilePath: path,
 		State:    state,
-	}
+	}, nil
+}
 
+// PrintSave saves a session state and outputs JSON.
+// This is a thin wrapper around GetSave() for CLI output.
+func PrintSave(opts SaveOptions) error {
+	result, err := GetSave(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(result)
 }
 
-// PrintRestore restores a session from saved state and outputs JSON.
-func PrintRestore(opts RestoreOptions) error {
+// GetRestore restores a session from saved state and returns the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetRestore(opts RestoreOptions) (*RestoreResult, error) {
 	if err := tmux.EnsureInstalled(); err != nil {
-		return outputRestoreError(opts.SavedName, err)
+		return &RestoreResult{
+			Success:   false,
+			SavedName: opts.SavedName,
+			Error:     err.Error(),
+		}, nil
 	}
 
 	if opts.SavedName == "" {
-		return outputRestoreError("", fmt.Errorf("saved state name is required"))
+		return &RestoreResult{
+			Success:   false,
+			SavedName: "",
+			Error:     "saved state name is required",
+		}, nil
 	}
 
 	// Load saved state
 	state, err := session.Load(opts.SavedName)
 	if err != nil {
-		return outputRestoreError(opts.SavedName, fmt.Errorf("failed to load saved state: %w", err))
+		return &RestoreResult{
+			Success:   false,
+			SavedName: opts.SavedName,
+			Error:     fmt.Sprintf("failed to load saved state: %v", err),
+		}, nil
 	}
 
 	// Dry run mode - preview what would happen
 	if opts.DryRun {
 		preview := buildRestorePreview(state)
-		result := RestoreResult{
+		return &RestoreResult{
 			Success:   true,
 			SavedName: opts.SavedName,
 			DryRun:    true,
 			State:     state,
 			Preview:   preview,
-		}
-		return encodeJSON(result)
+		}, nil
 	}
 
 	// Check if session already exists
 	if tmux.SessionExists(state.Name) {
-		return outputRestoreError(opts.SavedName, fmt.Errorf("session '%s' already exists (use 'ntm sessions restore' with --force to overwrite)", state.Name))
+		return &RestoreResult{
+			Success:   false,
+			SavedName: opts.SavedName,
+			Error:     fmt.Sprintf("session '%s' already exists (use 'ntm sessions restore' with --force to overwrite)", state.Name),
+		}, nil
 	}
 
 	// Restore session
@@ -145,17 +198,29 @@ func PrintRestore(opts RestoreOptions) error {
 		Force: false, // Robot mode is cautious by default
 	}
 	if err := session.Restore(state, restoreOpts); err != nil {
-		return outputRestoreError(opts.SavedName, fmt.Errorf("failed to restore session: %w", err))
+		return &RestoreResult{
+			Success:   false,
+			SavedName: opts.SavedName,
+			Error:     fmt.Sprintf("failed to restore session: %v", err),
+		}, nil
 	}
 
-	result := RestoreResult{
+	return &RestoreResult{
 		Success:    true,
 		SavedName:  opts.SavedName,
 		RestoredAs: state.Name,
 		DryRun:     false,
 		State:      state,
-	}
+	}, nil
+}
 
+// PrintRestore restores a session from saved state and outputs JSON.
+// This is a thin wrapper around GetRestore() for CLI output.
+func PrintRestore(opts RestoreOptions) error {
+	result, err := GetRestore(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(result)
 }
 
@@ -187,22 +252,4 @@ func buildRestorePreview(state *session.SessionState) *RestorePreview {
 		Layout:      state.Layout,
 		Actions:     actions,
 	}
-}
-
-func outputSaveError(sessionName string, err error) error {
-	result := SaveResult{
-		Success: false,
-		Session: sessionName,
-		Error:   err.Error(),
-	}
-	return encodeJSON(result)
-}
-
-func outputRestoreError(savedName string, err error) error {
-	result := RestoreResult{
-		Success:   false,
-		SavedName: savedName,
-		Error:     err.Error(),
-	}
-	return encodeJSON(result)
 }

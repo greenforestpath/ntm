@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -26,7 +27,7 @@ func NewAMAdapter() *AMAdapter {
 
 // SetServerURL updates the Agent Mail server URL
 func (a *AMAdapter) SetServerURL(url string) {
-	a.serverURL = url
+	a.serverURL = strings.TrimSuffix(url, "/")
 }
 
 // Detect checks if Agent Mail CLI is installed
@@ -51,7 +52,7 @@ func (a *AMAdapter) Version(ctx context.Context) (Version, error) {
 		return Version{}, fmt.Errorf("failed to get am version: %w", err)
 	}
 
-	return parseVersion(stdout.String())
+	return ParseStandardVersion(stdout.String())
 }
 
 // Capabilities returns Agent Mail capabilities

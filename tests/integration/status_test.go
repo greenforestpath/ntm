@@ -21,7 +21,16 @@ func TestMain(m *testing.M) {
 		// tmux is required for these integration tests
 		return
 	}
-	os.Exit(m.Run())
+
+	// Clean up any orphan test sessions from previous runs
+	testutil.KillAllTestSessionsSilent()
+
+	code := m.Run()
+
+	// Clean up after all tests complete
+	testutil.KillAllTestSessionsSilent()
+
+	os.Exit(code)
 }
 
 func TestStatusDetectsIdlePrompt(t *testing.T) {

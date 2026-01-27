@@ -38,6 +38,7 @@ var promptPatterns = []PromptPattern{
 
 	// Codex CLI patterns
 	{AgentType: "cod", Regex: regexp.MustCompile(`(?i)codex>?\s*$`), Description: "Codex prompt"},
+	{AgentType: "cod", Regex: regexp.MustCompile(`^\s*›\s*.*$`), Description: "Codex chevron prompt"},
 
 	// Gemini CLI patterns
 	{AgentType: "gmi", Regex: regexp.MustCompile(`(?i)gemini>?\s*$`), Description: "Gemini prompt"},

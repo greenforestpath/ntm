@@ -50,7 +50,7 @@ func (a *CAAMAdapter) Version(ctx context.Context) (Version, error) {
 		return Version{}, fmt.Errorf("failed to get caam version: %w", err)
 	}
 
-	return parseVersion(stdout.String())
+	return ParseStandardVersion(stdout.String())
 }
 
 // Capabilities returns the list of caam capabilities
@@ -263,8 +263,9 @@ func (a *CAAMAdapter) fetchStatus(ctx context.Context) (*CAAMStatus, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "list", "--json")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
@@ -344,8 +345,9 @@ func (a *CAAMAdapter) GetCurrentCredentials(ctx context.Context, provider string
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "creds", provider, "--json")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
@@ -447,8 +449,9 @@ func (a *CAAMAdapter) SwitchToNextAccount(ctx context.Context, provider string) 
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "switch", provider, "--next", "--json")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()

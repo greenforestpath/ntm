@@ -92,6 +92,7 @@ These flags are shared across many commands and MUST NOT be tool-prefixed:
 | `--since=DATE` | Start date filter | search, history, diff |
 | `--until=DATE` | End date filter | search commands |
 | `--panes=1,2,3` | Filter to specific panes | session commands |
+| `--all` | Include user pane (default: agent panes only) | send, interrupt |
 | `--lines=N` | Lines to capture | tail, inspect |
 | `--query=Q` | Search query | search commands |
 | `--type=T` | Filter by type | activity, alerts, beads |
@@ -615,6 +616,7 @@ GLOBAL MODIFIERS (unprefixed)
   --query=Q               Search query
   --type=T                Type filter
   --panes=1,2             Pane filter
+  --all                   Include user pane (default: agent panes only)
   --timeout=D             Timeout
   --verbose               Detailed output
   --dry-run               Preview mode

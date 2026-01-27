@@ -3,7 +3,10 @@
 // and recommending actions based on current state.
 package agent
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // AgentType identifies which CLI agent is running in a pane.
 type AgentType string
@@ -12,6 +15,10 @@ const (
 	AgentTypeClaudeCode AgentType = "cc"      // Claude Code CLI
 	AgentTypeCodex      AgentType = "cod"     // Codex CLI (OpenAI)
 	AgentTypeGemini     AgentType = "gmi"     // Gemini CLI (Google)
+	AgentTypeCursor     AgentType = "cursor"  // Cursor AI
+	AgentTypeWindsurf   AgentType = "windsurf" // Windsurf IDE
+	AgentTypeAider      AgentType = "aider"   // Aider CLI
+	AgentTypeUser       AgentType = "user"    // User/Shell pane
 	AgentTypeUnknown    AgentType = "unknown" // Unable to determine agent type
 )
 
@@ -29,15 +36,50 @@ func (t AgentType) DisplayName() string {
 		return "Codex CLI"
 	case AgentTypeGemini:
 		return "Gemini CLI"
+	case AgentTypeCursor:
+		return "Cursor"
+	case AgentTypeWindsurf:
+		return "Windsurf"
+	case AgentTypeAider:
+		return "Aider"
+	case AgentTypeUser:
+		return "User"
 	default:
 		return "Unknown"
+	}
+}
+
+// ProfileName returns the friendly display name for the agent type (short form).
+func (t AgentType) ProfileName() string {
+	switch t {
+	case AgentTypeClaudeCode:
+		return "Claude"
+	case AgentTypeCodex:
+		return "Codex"
+	case AgentTypeGemini:
+		return "Gemini"
+	case AgentTypeCursor:
+		return "Cursor"
+	case AgentTypeWindsurf:
+		return "Windsurf"
+	case AgentTypeAider:
+		return "Aider"
+	case AgentTypeUser:
+		return "User"
+	default:
+		// Capitalize first letter for unknown types
+		s := string(t)
+		if len(s) > 0 {
+			return strings.ToUpper(s[:1]) + s[1:]
+		}
+		return s
 	}
 }
 
 // IsValid returns true if this is a known agent type.
 func (t AgentType) IsValid() bool {
 	switch t {
-	case AgentTypeClaudeCode, AgentTypeCodex, AgentTypeGemini:
+	case AgentTypeClaudeCode, AgentTypeCodex, AgentTypeGemini, AgentTypeCursor, AgentTypeWindsurf, AgentTypeAider, AgentTypeUser:
 		return true
 	default:
 		return false

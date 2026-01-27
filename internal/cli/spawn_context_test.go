@@ -65,8 +65,8 @@ func TestAgentSpawnContextEnvVarPrefix(t *testing.T) {
 
 	prefix := agentCtx.EnvVarPrefix()
 
-	if !strings.HasPrefix(prefix, "export ") {
-		t.Errorf("expected prefix to start with 'export ', got %s", prefix)
+	if !strings.HasPrefix(prefix, "NTM_SPAWN_ORDER=1 ") {
+		t.Errorf("expected prefix to start with 'NTM_SPAWN_ORDER=1 ', got %s", prefix)
 	}
 	if !strings.Contains(prefix, "NTM_SPAWN_ORDER=1") {
 		t.Errorf("expected prefix to contain NTM_SPAWN_ORDER=1, got %s", prefix)
@@ -77,8 +77,11 @@ func TestAgentSpawnContextEnvVarPrefix(t *testing.T) {
 	if !strings.Contains(prefix, "NTM_SPAWN_BATCH_ID=") {
 		t.Errorf("expected prefix to contain NTM_SPAWN_BATCH_ID=, got %s", prefix)
 	}
-	if !strings.HasSuffix(prefix, "; ") {
-		t.Errorf("expected prefix to end with '; ', got %s", prefix)
+	if strings.Contains(prefix, ";") {
+		t.Errorf("expected prefix not to contain ';' (to preserve `cd && cmd` semantics), got %s", prefix)
+	}
+	if !strings.HasSuffix(prefix, " ") {
+		t.Errorf("expected prefix to end with a space, got %s", prefix)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 	"gopkg.in/yaml.v3"
 )
 
@@ -422,9 +423,13 @@ func extractPendingInline(lines []string) []string {
 		if trimmed == "" {
 			continue
 		}
-		lower := strings.ToLower(trimmed)
+		cleaned := cleanContextLine(trimmed)
+		if cleaned == "" {
+			continue
+		}
+		lower := strings.ToLower(cleaned)
 		if strings.Contains(lower, "todo") || strings.HasPrefix(lower, "next:") || strings.HasPrefix(lower, "pending:") || strings.HasPrefix(lower, "remaining:") {
-			item := strings.TrimSpace(strings.TrimPrefix(trimmed, "TODO"))
+			item := strings.TrimSpace(strings.TrimPrefix(cleaned, "TODO"))
 			item = strings.TrimSpace(strings.TrimPrefix(item, "todo"))
 			item = strings.TrimSpace(strings.TrimPrefix(item, "Next:"))
 			item = strings.TrimSpace(strings.TrimPrefix(item, "next:"))
@@ -465,6 +470,9 @@ func extractKeyActions(lines []string) []string {
 		if trimmed == "" || len(trimmed) > 200 {
 			continue
 		}
+		if isFileOnlyActionLine(trimmed) {
+			continue
+		}
 		lower := strings.ToLower(trimmed)
 		for _, p := range patterns {
 			if strings.Contains(lower, p) {
@@ -478,6 +486,32 @@ func extractKeyActions(lines []string) []string {
 		}
 	}
 	return actions
+}
+
+func isFileOnlyActionLine(line string) bool {
+	cleaned := cleanContextLine(line)
+	if cleaned == "" {
+		return false
+	}
+	paths := extractPathsFromLine(cleaned)
+	if len(paths) == 0 {
+		return false
+	}
+
+	lower := strings.ToLower(strings.TrimSpace(cleaned))
+	lower = strings.TrimSuffix(lower, ".")
+	lower = strings.TrimSuffix(lower, ",")
+
+	verbs := []string{"created ", "modified ", "updated ", "deleted ", "added ", "renamed ", "removed "}
+	for _, path := range paths {
+		pathLower := strings.ToLower(path)
+		for _, verb := range verbs {
+			if lower == verb+pathLower {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func extractChangeHighlights(lines []string) []string {
@@ -604,7 +638,7 @@ func cleanContextLine(line string) string {
 		}
 	}
 	if len(trimmed) > 120 {
-		trimmed = truncateAtRuneBoundary(trimmed, 120) + "..."
+		trimmed = util.SafeSlice(trimmed, 120) + "..."
 	}
 	return trimmed
 }
@@ -960,7 +994,7 @@ func truncateToTokens(text string, maxTokens int) string {
 	if len(text) <= maxChars {
 		return text
 	}
-	truncated := truncateAtRuneBoundary(text, maxChars)
+	truncated := util.SafeSlice(text, maxChars)
 	lastPeriod := strings.LastIndex(truncated, ".")
 	lastNewline := strings.LastIndex(truncated, "\n")
 
@@ -974,19 +1008,13 @@ func truncateToTokens(text string, maxTokens int) string {
 	return text[:cutPoint] + "\n\n[Summary truncated due to token limit]"
 }
 
+// truncateAtRuneBoundary truncates a string to at most maxBytes bytes,
+// ensuring the cut is at a valid UTF-8 rune boundary.
 func truncateAtRuneBoundary(s string, maxBytes int) string {
-	if len(s) <= maxBytes {
-		return s
-	}
-	lastValid := 0
-	for i := range s {
-		if i > maxBytes {
-			break
-		}
-		lastValid = i
-	}
-	return s[:lastValid]
+	return util.SafeSlice(s, maxBytes)
 }
+
+
 
 // yamlMarshal is a small wrapper to avoid leaking yaml dependency in callers.
 func yamlMarshal(h *handoff.Handoff) ([]byte, error) {

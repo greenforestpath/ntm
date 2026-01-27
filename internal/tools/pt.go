@@ -47,7 +47,7 @@ func (a *PTAdapter) Version(ctx context.Context) (Version, error) {
 		return Version{}, fmt.Errorf("failed to get pt version: %w", err)
 	}
 
-	return parseVersion(stdout.String())
+	return ParseStandardVersion(stdout.String())
 }
 
 // Capabilities returns the list of pt capabilities
@@ -272,8 +272,9 @@ func (a *PTAdapter) ClassifyProcess(ctx context.Context, pid int) (*PTProcessRes
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "classify", "--pid", fmt.Sprintf("%d", pid), "--json")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
@@ -308,8 +309,9 @@ func (a *PTAdapter) ClassifyProcesses(ctx context.Context, pids []int) ([]PTProc
 	}
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
@@ -338,8 +340,9 @@ func (a *PTAdapter) WatchSession(ctx context.Context, sessionName string) ([]PTP
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), "watch", "--session", sessionName, "--json", "--once")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {

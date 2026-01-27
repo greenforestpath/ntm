@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -797,7 +798,7 @@ func determineAgentState(scrollback, agentType string) string {
 
 	// Look for common idle patterns
 	idlePatterns := []string{
-		"$", ">", ">>> ", "claude>", "codex>", "gemini>",
+		"$", ">", ">>> ", "claude>", "codex>", "gemini>", "›", "context left",
 		"What would you like", "How can I help",
 		"Ready for", "Waiting for",
 	}
@@ -1039,18 +1040,38 @@ func executeAssignments(session string, recommendations []robot.AssignRecommend)
 	fmt.Println()
 	fmt.Println("Executing assignments...")
 
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		return fmt.Errorf("failed to get panes: %w", err)
+	}
+	paneByIndex := make(map[int]tmux.Pane, len(panes))
+	for _, p := range panes {
+		paneByIndex[p.Index] = p
+	}
+
 	for _, rec := range recommendations {
 		// Build the prompt to send to the agent
 		prompt := fmt.Sprintf("Please work on bead %s: %s", rec.AssignBead, rec.BeadTitle)
 
 		// Send to the pane
-		paneID := fmt.Sprintf("%s:%s", session, rec.Agent)
-		if err := sendPromptWithDoubleEnter(paneID, prompt); err != nil {
-			fmt.Printf("  Failed to assign to pane %s: %v\n", rec.Agent, err)
+		paneIdx, err := strconv.Atoi(rec.Agent)
+		if err != nil {
+			fmt.Printf("  Failed to assign to pane %s: invalid pane index: %v\n", rec.Agent, err)
 			continue
 		}
 
-		fmt.Printf("  Assigned %s to pane %s (%s)\n", rec.AssignBead, rec.Agent, rec.AgentType)
+		p, ok := paneByIndex[paneIdx]
+		if !ok {
+			fmt.Printf("  Failed to assign to pane %d: pane not found\n", paneIdx)
+			continue
+		}
+
+		if err := sendPromptWithDoubleEnter(p.ID, prompt); err != nil {
+			fmt.Printf("  Failed to assign to pane %d: %v\n", paneIdx, err)
+			continue
+		}
+
+		fmt.Printf("  Assigned %s to pane %d (%s)\n", rec.AssignBead, paneIdx, rec.AgentType)
 	}
 
 	fmt.Println()
@@ -1714,6 +1735,15 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 
 	var successCount, failCount, reservedCount int
 
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		return fmt.Errorf("failed to get panes: %w", err)
+	}
+	paneIDByIndex := make(map[int]string, len(panes))
+	for _, p := range panes {
+		paneIDByIndex[p.Index] = p.ID
+	}
+
 	for _, item := range out.Assignments {
 		// Try to reserve file paths if manager is available
 		if reservationMgr != nil {
@@ -1759,7 +1789,14 @@ func executeAssignmentsEnhanced(session string, out *AssignOutputEnhanced, opts 
 		prompt := expandPromptTemplate(item.BeadID, item.BeadTitle, opts.Template, opts.TemplateFile)
 
 		// Send to the pane
-		paneID := fmt.Sprintf("%s:%d", session, item.Pane)
+		paneID, ok := paneIDByIndex[item.Pane]
+		if !ok {
+			if !opts.Quiet {
+				fmt.Printf("  ✗ Failed to assign %s to pane %d: pane not found\n", item.BeadID, item.Pane)
+			}
+			failCount++
+			continue
+		}
 		if err := sendPromptWithDoubleEnter(paneID, prompt); err != nil {
 			if !opts.Quiet {
 				fmt.Printf("  ✗ Failed to assign %s to pane %d: %v\n", item.BeadID, item.Pane, err)
@@ -2195,9 +2232,8 @@ func runRetryAssignments(cmd *cobra.Command, session string) error {
 		}
 
 		// Send prompt to pane
-		paneID := fmt.Sprintf("%s:%d", session, targetPane.Index)
 		promptSent := true
-		if err := sendPromptWithDoubleEnter(paneID, prompt); err != nil {
+		if err := sendPromptWithDoubleEnter(targetPane.ID, prompt); err != nil {
 			promptSent = false
 			warnings = append(warnings, fmt.Sprintf("failed to send prompt to pane %d for %s: %v",
 				targetPane.Index, failed.BeadID, err))
@@ -2768,9 +2804,8 @@ func runReassignment(cmd *cobra.Command, session string) error {
 	}
 
 	// Send prompt to new agent
-	paneID := fmt.Sprintf("%s:%d", session, targetPane.Index)
 	promptSent := true
-	if err := sendPromptWithDoubleEnter(paneID, prompt); err != nil {
+	if err := sendPromptWithDoubleEnter(targetPane.ID, prompt); err != nil {
 		promptSent = false
 		warnings = append(warnings, fmt.Sprintf("failed to send prompt: %v", err))
 	}
@@ -3454,8 +3489,7 @@ func runDirectPaneAssignment(cmd *cobra.Command, opts *AssignCommandOptions) err
 	assignItem.PromptSent = true
 
 	// Execute the assignment
-	paneID := fmt.Sprintf("%s:%d", opts.Session, opts.Pane)
-	if err := sendPromptWithDoubleEnter(paneID, prompt); err != nil {
+	if err := sendPromptWithDoubleEnter(targetPane.ID, prompt); err != nil {
 		assignItem.PromptSent = false
 		errMsg := fmt.Sprintf("failed to send prompt: %v", err)
 

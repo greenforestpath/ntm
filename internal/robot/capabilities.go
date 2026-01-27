@@ -44,8 +44,9 @@ var categoryOrder = []string{
 	"utility",
 }
 
-// PrintCapabilities outputs robot mode capabilities as JSON
-func PrintCapabilities() error {
+// GetCapabilities collects robot mode capabilities.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetCapabilities() (*CapabilitiesOutput, error) {
 	commands := buildCommandRegistry()
 
 	// Sort commands by category then name for stable output
@@ -56,13 +57,21 @@ func PrintCapabilities() error {
 		return commands[i].Name < commands[j].Name
 	})
 
-	output := CapabilitiesOutput{
+	return &CapabilitiesOutput{
 		RobotResponse: NewRobotResponse(true),
 		Version:       Version,
 		Commands:      commands,
 		Categories:    categoryOrder,
-	}
+	}, nil
+}
 
+// PrintCapabilities outputs robot mode capabilities as JSON.
+// This is a thin wrapper around GetCapabilities() for CLI output.
+func PrintCapabilities() error {
+	output, err := GetCapabilities()
+	if err != nil {
+		return err
+	}
 	return outputJSON(output)
 }
 
@@ -96,6 +105,16 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "session", Flag: "--robot-context", Type: "string", Required: true, Description: "Session name to analyze"},
 			},
 			Examples: []string{"ntm --robot-context=myproject"},
+		},
+		{
+			Name:        "ensemble",
+			Flag:        "--robot-ensemble",
+			Category:    "state",
+			Description: "Get ensemble state for a session including modes, status, and synthesis readiness.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-ensemble", Type: "string", Required: true, Description: "Session name to inspect"},
+			},
+			Examples: []string{"ntm --robot-ensemble=myproject"},
 		},
 		{
 			Name:        "snapshot",
@@ -380,6 +399,30 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Examples: []string{
 				"ntm --robot-spawn=myproject --spawn-cc=2 --spawn-cod=1",
 				"ntm --robot-spawn=myproject --spawn-preset=standard",
+			},
+		},
+		{
+			Name:        "ensemble_spawn",
+			Flag:        "--robot-ensemble-spawn",
+			Category:    "spawn",
+			Description: "Spawn a reasoning ensemble session (experimental build tag required).",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-ensemble-spawn", Type: "string", Required: true, Description: "Session name to create"},
+				{Name: "preset", Flag: "--preset", Type: "string", Required: false, Description: "Ensemble preset name (required unless --modes is set)"},
+				{Name: "modes", Flag: "--modes", Type: "string", Required: false, Description: "Explicit mode IDs or codes (comma-separated)"},
+				{Name: "question", Flag: "--question", Type: "string", Required: true, Description: "Question for the ensemble to analyze"},
+				{Name: "agents", Flag: "--agents", Type: "string", Required: false, Description: "Agent mix (e.g., cc=2,cod=1,gmi=1)"},
+				{Name: "assignment", Flag: "--assignment", Type: "string", Required: false, Default: "affinity", Description: "Assignment strategy: round-robin, affinity, category, explicit"},
+				{Name: "allow-advanced", Flag: "--allow-advanced", Type: "bool", Required: false, Description: "Allow advanced/experimental modes"},
+				{Name: "budget-total", Flag: "--budget-total", Type: "int", Required: false, Description: "Override total token budget"},
+				{Name: "budget-per-agent", Flag: "--budget-per-agent", Type: "int", Required: false, Description: "Override per-agent token cap"},
+				{Name: "no-cache", Flag: "--no-cache", Type: "bool", Required: false, Description: "Bypass context pack cache"},
+				{Name: "no-questions", Flag: "--no-questions", Type: "bool", Required: false, Description: "Skip targeted questions (future)"},
+				{Name: "project", Flag: "--project", Type: "string", Required: false, Description: "Project directory override"},
+			},
+			Examples: []string{
+				"ntm --robot-ensemble-spawn=myproject --preset=project-diagnosis --question='Review architecture'",
+				"ntm --robot-ensemble-spawn=myproject --modes=A1,B13 --allow-advanced --question='Analyze risks'",
 			},
 		},
 		{

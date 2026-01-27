@@ -120,7 +120,10 @@ func TestSessionTemplateSpawn_Builtin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CapturePaneOutput failed: %v", err)
 	}
-	if tmpl.Spec.Prompts.Initial != "" && !strings.Contains(output, "code review team") {
+	// Check for substring that won't be wrapped by batcat/terminal formatting.
+	// The full prompt contains "You are part of a code review team" but terminal
+	// wrapping can split "team" onto the next line, so check for a shorter phrase.
+	if tmpl.Spec.Prompts.Initial != "" && !strings.Contains(output, "code review") {
 		t.Errorf("expected initial prompt to be delivered; output:\n%s", output)
 	}
 }

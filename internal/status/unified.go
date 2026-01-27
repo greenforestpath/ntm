@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -109,7 +110,10 @@ func (d *UnifiedDetector) determineState(output, agentType string, lastActivity 
 // working/idle behavior (cc=Claude Code, cod=Codex, gmi=Gemini).
 func isKnownAgentType(agentType string) bool {
 	switch agentType {
-	case "cc", "cod", "gmi", "cursor", "windsurf", "aider":
+	case string(agent.AgentTypeClaudeCode),
+		string(agent.AgentTypeCodex),
+		string(agent.AgentTypeGemini),
+		"cursor", "windsurf", "aider":
 		return true
 	default:
 		return false

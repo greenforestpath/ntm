@@ -85,6 +85,12 @@ func TestMatchAnyRegex(t *testing.T) {
 			want:     true,
 		},
 		{
+			name:     "codex chevron prompt",
+			text:     "› Write tests for @filename",
+			patterns: codIdlePatterns,
+			want:     true,
+		},
+		{
 			name:     "no match",
 			text:     "Processing your request...",
 			patterns: ccIdlePatterns,

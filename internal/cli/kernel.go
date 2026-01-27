@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -34,12 +35,13 @@ func init() {
 		SafetyLevel: kernel.SafetySafe,
 		Idempotent:  true,
 	})
-}
-
-// KernelListResult is the JSON output for kernel list.
-type KernelListResult struct {
-	Commands []kernel.Command `json:"commands"`
-	Count    int              `json:"count"`
+	kernel.MustRegisterHandler("kernel.list", func(ctx context.Context, _ any) (any, error) {
+		commands := kernel.List()
+		return kernel.ListResponse{
+			Commands: commands,
+			Count:    len(commands),
+		}, nil
+	})
 }
 
 func newKernelCmd() *cobra.Command {
@@ -70,24 +72,35 @@ func newKernelListCmd() *cobra.Command {
 }
 
 func runKernelList() error {
-	commands := kernel.List()
-	result := KernelListResult{
-		Commands: commands,
-		Count:    len(commands),
+	result, err := kernel.Run(context.Background(), "kernel.list", nil)
+	if err != nil {
+		return err
+	}
+
+	var payload kernel.ListResponse
+	switch value := result.(type) {
+	case kernel.ListResponse:
+		payload = value
+	case *kernel.ListResponse:
+		if value != nil {
+			payload = *value
+		}
+	default:
+		return fmt.Errorf("kernel.list returned unexpected type %T", result)
 	}
 
 	if jsonOutput {
-		return json.NewEncoder(os.Stdout).Encode(result)
+		return json.NewEncoder(os.Stdout).Encode(payload)
 	}
 
-	if len(commands) == 0 {
+	if len(payload.Commands) == 0 {
 		fmt.Println("No kernel commands registered.")
 		return nil
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tCATEGORY\tREST\tDESCRIPTION")
-	for _, cmd := range commands {
+	for _, cmd := range payload.Commands {
 		rest := ""
 		if cmd.REST != nil {
 			rest = fmt.Sprintf("%s %s", cmd.REST.Method, cmd.REST.Path)

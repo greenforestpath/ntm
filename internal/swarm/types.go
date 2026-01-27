@@ -40,6 +40,18 @@ type SwarmPlan struct {
 
 	// Session names to create
 	Sessions []SessionSpec `json:"sessions"`
+
+	// Ensemble config for ensemble-aware session creation (optional).
+	Ensemble *EnsemblePlan `json:"ensemble,omitempty"`
+}
+
+// EnsemblePlan describes an ensemble configuration embedded in a swarm plan.
+type EnsemblePlan struct {
+	Question  string         `json:"question"`
+	Preset    string         `json:"preset,omitempty"`
+	Modes     []string       `json:"modes,omitempty"`
+	AgentMix  map[string]int `json:"agent_mix,omitempty"`
+	Synthesis string         `json:"synthesis,omitempty"`
 }
 
 // SessionSpec describes a tmux session to create.

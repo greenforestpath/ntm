@@ -1471,7 +1471,15 @@ func (m *Model) startSessionFetch() tea.Cmd {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	m.sessionFetchCancel = cancel
 
-	return m.fetchSessionDataWithOutputsCtx(ctx)
+	cmd := m.fetchSessionDataWithOutputsCtx(ctx)
+	if cmd == nil {
+		cancel()
+		return nil
+	}
+	return func() tea.Msg {
+		defer cancel()
+		return cmd()
+	}
 }
 
 func (m *Model) finishSessionFetch() tea.Cmd {
@@ -1535,7 +1543,15 @@ func (m *Model) startScanFetch() tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.scanFetchCancel = cancel
 
-	return m.fetchScanStatusWithContext(ctx)
+	cmd := m.fetchScanStatusWithContext(ctx)
+	if cmd == nil {
+		cancel()
+		return nil
+	}
+	return func() tea.Msg {
+		defer cancel()
+		return cmd()
+	}
 }
 
 func (m *Model) finishScanFetch() tea.Cmd {
@@ -3508,7 +3524,10 @@ func formatRelativeTime(d time.Duration) string {
 	if d < time.Hour {
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	}
-	return fmt.Sprintf("%dh", int(d.Hours()))
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
 // formatDuration formats a duration for display (e.g., "1m 30s", "45s").
@@ -3518,13 +3537,13 @@ func formatDuration(d time.Duration) string {
 	}
 
 	d = d.Round(time.Second)
-	minutes := int(d.Minutes())
-	seconds := int(d.Seconds()) % 60
-
-	if minutes > 0 {
-		return fmt.Sprintf("%dm %02ds", minutes, seconds)
+	if d >= time.Hour {
+		return fmt.Sprintf("%dh", int(d.Hours()))
 	}
-	return fmt.Sprintf("%ds", seconds)
+	if d >= time.Minute {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%ds", int(d.Seconds()))
 }
 
 func (m Model) renderDiagnosticsBar(width int) string {
@@ -3848,7 +3867,7 @@ func (m Model) renderHeaderHandoffLine(width int) string {
 		parts = append(parts, "now: "+layout.TruncateWidthDefault(now, 40))
 	}
 	if m.handoffAge > 0 {
-		parts = append(parts, formatRelativeTime(m.handoffAge))
+		parts = append(parts, formatRelativeTime(m.handoffAge)+" ago")
 	}
 	if status != "" {
 		parts = append(parts, status)

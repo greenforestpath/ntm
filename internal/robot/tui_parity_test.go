@@ -381,9 +381,22 @@ func TestPrintDismissAlertNoID(t *testing.T) {
 		DismissAll: false,
 	}
 
-	err := PrintDismissAlert(opts)
-	if err == nil {
-		t.Fatal("expected error when no alert ID provided")
+	output, err := captureStdout(t, func() error {
+		return PrintDismissAlert(opts)
+	})
+	if err != nil {
+		t.Fatalf("PrintDismissAlert returned error: %v", err)
+	}
+
+	var result DismissAlertOutput
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("failed to parse output as JSON: %v", err)
+	}
+	if result.Success {
+		t.Fatal("expected success=false when no alert ID provided")
+	}
+	if result.ErrorCode != ErrCodeInvalidFlag {
+		t.Fatalf("expected error_code %s, got %s", ErrCodeInvalidFlag, result.ErrorCode)
 	}
 }
 
@@ -816,9 +829,22 @@ func TestPrintReplayMissingID(t *testing.T) {
 		HistoryID: "",
 	}
 
-	err := PrintReplay(opts)
-	if err == nil {
-		t.Error("expected error when history ID is missing")
+	output, err := captureStdout(t, func() error {
+		return PrintReplay(opts)
+	})
+	if err != nil {
+		t.Fatalf("PrintReplay returned error: %v", err)
+	}
+
+	var result ReplayOutput
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("failed to parse output as JSON: %v", err)
+	}
+	if result.Success {
+		t.Error("expected success=false when history ID is missing")
+	}
+	if result.ErrorCode != ErrCodeInvalidFlag {
+		t.Errorf("expected error_code %s, got %s", ErrCodeInvalidFlag, result.ErrorCode)
 	}
 }
 
@@ -923,9 +949,22 @@ func TestPrintBeadClaimMissingID(t *testing.T) {
 		BeadID: "",
 	}
 
-	err := PrintBeadClaim(opts)
-	if err == nil {
-		t.Error("expected error when bead ID is missing")
+	output, err := captureStdout(t, func() error {
+		return PrintBeadClaim(opts)
+	})
+	if err != nil {
+		t.Fatalf("PrintBeadClaim returned error: %v", err)
+	}
+
+	var result BeadClaimOutput
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("failed to parse output as JSON: %v", err)
+	}
+	if result.Success {
+		t.Error("expected success=false when bead ID is missing")
+	}
+	if result.ErrorCode != ErrCodeInvalidFlag {
+		t.Errorf("expected error_code %s, got %s", ErrCodeInvalidFlag, result.ErrorCode)
 	}
 }
 
@@ -963,9 +1002,22 @@ func TestPrintBeadCreateMissingTitle(t *testing.T) {
 		Type:  "task",
 	}
 
-	err := PrintBeadCreate(opts)
-	if err == nil {
-		t.Error("expected error when title is missing")
+	output, err := captureStdout(t, func() error {
+		return PrintBeadCreate(opts)
+	})
+	if err != nil {
+		t.Fatalf("PrintBeadCreate returned error: %v", err)
+	}
+
+	var result BeadCreateOutput
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("failed to parse output as JSON: %v", err)
+	}
+	if result.Success {
+		t.Error("expected success=false when title is missing")
+	}
+	if result.ErrorCode != ErrCodeInvalidFlag {
+		t.Errorf("expected error_code %s, got %s", ErrCodeInvalidFlag, result.ErrorCode)
 	}
 }
 
@@ -1002,9 +1054,22 @@ func TestPrintBeadShowMissingID(t *testing.T) {
 		BeadID: "",
 	}
 
-	err := PrintBeadShow(opts)
-	if err == nil {
-		t.Error("expected error when bead ID is missing")
+	output, err := captureStdout(t, func() error {
+		return PrintBeadShow(opts)
+	})
+	if err != nil {
+		t.Fatalf("PrintBeadShow returned error: %v", err)
+	}
+
+	var result BeadShowOutput
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("failed to parse output as JSON: %v", err)
+	}
+	if result.Success {
+		t.Error("expected success=false when bead ID is missing")
+	}
+	if result.ErrorCode != ErrCodeInvalidFlag {
+		t.Errorf("expected error_code %s, got %s", ErrCodeInvalidFlag, result.ErrorCode)
 	}
 }
 
@@ -1041,9 +1106,22 @@ func TestPrintBeadCloseMissingID(t *testing.T) {
 		BeadID: "",
 	}
 
-	err := PrintBeadClose(opts)
-	if err == nil {
-		t.Error("expected error when bead ID is missing")
+	output, err := captureStdout(t, func() error {
+		return PrintBeadClose(opts)
+	})
+	if err != nil {
+		t.Fatalf("PrintBeadClose returned error: %v", err)
+	}
+
+	var result BeadCloseOutput
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("failed to parse output as JSON: %v", err)
+	}
+	if result.Success {
+		t.Error("expected success=false when bead ID is missing")
+	}
+	if result.ErrorCode != ErrCodeInvalidFlag {
+		t.Errorf("expected error_code %s, got %s", ErrCodeInvalidFlag, result.ErrorCode)
 	}
 }
 

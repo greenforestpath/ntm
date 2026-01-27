@@ -116,6 +116,7 @@ func (t *CompactionTrigger) Stop() {
 func (t *CompactionTrigger) monitorLoop() {
 	defer t.wg.Done()
 
+	// ubs:ignore - ticker stopped via defer below
 	ticker := time.NewTicker(t.config.PollInterval)
 	defer ticker.Stop()
 
@@ -208,7 +209,15 @@ func (t *CompactionTrigger) triggerCompaction(agentID string, state *ContextStat
 	}()
 
 	// Determine agent type from pane
-	agentType := t.detectAgentType(state.PaneID)
+	var agentType tmux.AgentType
+	if state.AgentType != "" {
+		agentType = tmux.AgentType(state.AgentType)
+	} else {
+		agentType = t.detectAgentType(state.PaneID)
+		if agentType != tmux.AgentUser {
+			t.monitor.SetAgentType(agentID, string(agentType))
+		}
+	}
 
 	event := CompactionTriggerEvent{
 		AgentID:     agentID,

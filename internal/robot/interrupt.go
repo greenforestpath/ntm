@@ -57,8 +57,9 @@ type InterruptOptions struct {
 	DryRun          bool     // Preview mode: show what would happen without executing
 }
 
-// PrintInterrupt sends Ctrl+C to panes and optionally a follow-up message
-func PrintInterrupt(opts InterruptOptions) error {
+// GetInterrupt sends Ctrl+C to panes and optionally a follow-up message, returning the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetInterrupt(opts InterruptOptions) (*InterruptOutput, error) {
 	if opts.TimeoutMs <= 0 {
 		opts.TimeoutMs = 10000 // Default 10s timeout
 	}
@@ -67,7 +68,7 @@ func PrintInterrupt(opts InterruptOptions) error {
 	}
 
 	interruptedAt := time.Now().UTC()
-	output := InterruptOutput{
+	output := &InterruptOutput{
 		RobotResponse:  NewRobotResponse(true),
 		Session:        opts.Session,
 		InterruptedAt:  interruptedAt,
@@ -97,7 +98,7 @@ func PrintInterrupt(opts InterruptOptions) error {
 			"Use --robot-status to list available sessions",
 		)
 		output.CompletedAt = time.Now().UTC()
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	panes, err := tmux.GetPanes(opts.Session)
@@ -112,7 +113,7 @@ func PrintInterrupt(opts InterruptOptions) error {
 			"Check tmux session state",
 		)
 		output.CompletedAt = time.Now().UTC()
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Build pane filter map
@@ -148,7 +149,7 @@ func PrintInterrupt(opts InterruptOptions) error {
 
 	if len(targetPanes) == 0 {
 		output.CompletedAt = time.Now().UTC()
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Capture previous state for each pane before interrupting
@@ -189,7 +190,7 @@ func PrintInterrupt(opts InterruptOptions) error {
 			output.WouldAffect = append(output.WouldAffect, paneKey)
 		}
 		output.CompletedAt = time.Now().UTC()
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Send Ctrl+C to all targets
@@ -218,7 +219,7 @@ func PrintInterrupt(opts InterruptOptions) error {
 	// If we have nothing to wait for, finish early
 	if len(output.Interrupted) == 0 && opts.Message == "" {
 		output.CompletedAt = time.Now().UTC()
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Wait for agents to reach ready state (unless --no-wait)
@@ -320,6 +321,16 @@ func PrintInterrupt(opts InterruptOptions) error {
 	}
 
 	output.CompletedAt = time.Now().UTC()
+	return output, nil
+}
+
+// PrintInterrupt sends Ctrl+C to panes and optionally a follow-up message.
+// This is a thin wrapper around GetInterrupt() for CLI output.
+func PrintInterrupt(opts InterruptOptions) error {
+	output, err := GetInterrupt(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 

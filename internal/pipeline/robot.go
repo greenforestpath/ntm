@@ -639,6 +639,29 @@ func GetAllPipelines() []*PipelineExecution {
 	return result
 }
 
+// CancelPipeline cancels a running pipeline by run ID (exported for REST API)
+func CancelPipeline(runID string) {
+	exec := getPipeline(runID)
+	if exec == nil {
+		return
+	}
+
+	// Cancel the execution
+	if exec.cancelFn != nil {
+		exec.cancelFn()
+	}
+	if exec.executor != nil {
+		exec.executor.Cancel()
+	}
+
+	// Update status
+	pipelineMu.Lock()
+	exec.Status = "cancelled"
+	now := time.Now()
+	exec.FinishedAt = &now
+	pipelineMu.Unlock()
+}
+
 func updatePipelineFromState(runID string, state *ExecutionState) {
 	if state == nil {
 		return

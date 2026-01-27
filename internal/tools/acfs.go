@@ -44,31 +44,7 @@ func (a *ACFSAdapter) Version(ctx context.Context) (Version, error) {
 		return Version{}, fmt.Errorf("failed to get acfs version: %w", err)
 	}
 
-	return parseACFSVersion(stdout.String())
-}
-
-// parseACFSVersion extracts version from acfs --version output
-// Format: "0.1.0"
-func parseACFSVersion(output string) (Version, error) {
-	output = strings.TrimSpace(output)
-
-	// Use the shared version regex from bv.go
-	matches := versionRegex.FindStringSubmatch(output)
-	if len(matches) < 4 {
-		return Version{Raw: output}, nil
-	}
-
-	var major, minor, patch int
-	fmt.Sscanf(matches[1], "%d", &major)
-	fmt.Sscanf(matches[2], "%d", &minor)
-	fmt.Sscanf(matches[3], "%d", &patch)
-
-	return Version{
-		Major: major,
-		Minor: minor,
-		Patch: patch,
-		Raw:   output,
-	}, nil
+	return ParseStandardVersion(stdout.String())
 }
 
 // Capabilities returns the list of acfs capabilities
@@ -163,13 +139,19 @@ func (a *ACFSAdapter) runCommand(ctx context.Context, args ...string) (json.RawM
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	
+	// Limit output to 10MB
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, ErrTimeout
+		}
+		if strings.Contains(err.Error(), ErrOutputLimitExceeded.Error()) {
+			return nil, fmt.Errorf("acfs output exceeded 10MB limit")
 		}
 		return nil, fmt.Errorf("acfs %s failed: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}

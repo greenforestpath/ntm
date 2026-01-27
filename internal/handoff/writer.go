@@ -420,7 +420,9 @@ func (w *Writer) Delete(path string) error {
 	if err != nil {
 		return fmt.Errorf("invalid base dir: %w", err)
 	}
-	if !strings.HasPrefix(absPath, absBase) {
+	// Use path separator suffix to prevent sibling directory bypass
+	// (e.g., "handoffsXXX" shouldn't match "handoffs")
+	if !strings.HasPrefix(absPath, absBase+string(filepath.Separator)) && absPath != absBase {
 		return fmt.Errorf("path %s is not within handoff directory", path)
 	}
 
@@ -450,7 +452,9 @@ func (w *Writer) Archive(path string) error {
 	if err != nil {
 		return fmt.Errorf("invalid base dir: %w", err)
 	}
-	if !strings.HasPrefix(absPath, absBase) {
+	// Use path separator suffix to prevent sibling directory bypass
+	// (e.g., "handoffsXXX" shouldn't match "handoffs")
+	if !strings.HasPrefix(absPath, absBase+string(filepath.Separator)) && absPath != absBase {
 		return fmt.Errorf("path %s is not within handoff directory", path)
 	}
 

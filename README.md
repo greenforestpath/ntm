@@ -28,6 +28,21 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/ntm/main/install
 
 ---
 
+## 🤖 Agent Quickstart (Robot Mode)
+
+**Use `--robot-*` output for automation.** stdout = JSON, stderr = diagnostics, exit 0 = success.
+
+```bash
+# Triage status (machine-readable)
+ntm --robot-status
+
+# List sessions (machine-readable)
+ntm --robot-list
+
+# Send prompt to a session (robot API)
+ntm --robot-send=myproject --message "Summarize this repo and propose next steps."
+```
+
 ## Quick Start
 
 ```bash
@@ -591,7 +606,7 @@ NTM provides machine-readable output for integration with AI coding agents and a
 
 **Robot Output Formats + Verbosity:**
 
-- `--robot-format=json|toon|auto` (Env: `NTM_ROBOT_FORMAT`). `auto` currently resolves to JSON.
+- `--robot-format=json|toon|auto` (Env: `NTM_ROBOT_FORMAT`, `NTM_OUTPUT_FORMAT`, `TOON_DEFAULT_FORMAT`; Config: `[robot.output] format` = json|toon). `auto` currently resolves to JSON.
 - `--robot-verbosity=terse|default|debug` (Env: `NTM_ROBOT_VERBOSITY`). Applies to JSON/TOON only.
 - Config default for verbosity: `~/.config/ntm/config.toml` → `[robot] verbosity = "default"`.
 - `--robot-terse` is a **separate single-line format** and ignores `--robot-format` / `--robot-verbosity`.
@@ -614,6 +629,45 @@ success: true
 timestamp: 2026-01-22T01:23:00Z
 sessions[1]{attached,name,windows}:
   true	myproject	1
+```
+
+**Robot JSON Envelope Spec (v1.0.0):**
+
+All robot outputs share a common envelope structure:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `success` | boolean | Yes | Whether the operation succeeded |
+| `timestamp` | string | Yes | RFC3339 timestamp (UTC) |
+| `version` | string | Yes | Envelope schema version (semver, currently "1.0.0") |
+| `output_format` | string | Yes | Output format used ("json" or "toon") |
+| `error` | string | No | Human-readable error message (on failure) |
+| `error_code` | string | No | Machine-parseable error code (e.g., "SESSION_NOT_FOUND") |
+| `hint` | string | No | Suggested remediation action |
+| `_meta` | object | No | Optional timing/debug metadata |
+
+The `_meta` field (when present) contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `duration_ms` | integer | Command execution time in milliseconds |
+| `exit_code` | integer | Process exit code (0=success) |
+| `command` | string | The robot command that was executed |
+
+Example envelope:
+
+```json
+{
+  "success": true,
+  "timestamp": "2026-01-27T07:00:00Z",
+  "version": "1.0.0",
+  "output_format": "json",
+  "_meta": {
+    "duration_ms": 42,
+    "command": "robot-status"
+  },
+  "sessions": [...]
+}
 ```
 
 **State Inspection:**
@@ -681,7 +735,7 @@ ntm --robot-tokens --tokens-group-by=model               # Token usage analytics
 |------|----------|-------------|
 | `--panes=1,2,3` | tail, send, ack, interrupt | Filter to specific pane indices |
 | `--type=claude` | send, ack, interrupt | Filter by agent type (claude/cc, codex/cod, gemini/gmi) |
-| `--all` | send, interrupt | Include user pane |
+| `--all` | send, interrupt | Include user pane (default: agent panes only) |
 | `--lines=N` | tail | Lines per pane (default 20) |
 | `--since=TIMESTAMP` | snapshot | RFC3339 timestamp for delta |
 | `--track` | send | Combined send+ack mode |
@@ -705,6 +759,14 @@ ntm --robot-tokens --tokens-group-by=model               # Token usage analytics
 | `--bead-depends-on=id1,id2` | bead-create | Comma-separated dependency IDs |
 | `--bead-assignee=NAME` | bead-claim | Assignee name for claim |
 | `--bead-close-reason=TEXT` | bead-close | Reason for closing |
+
+**User Pane Note (Robot Mode):**
+By default, robot pane-targeting commands act on agent panes only. Add `--all` to include the user pane.
+
+```bash
+ntm --robot-send=myproject --msg="status update"       # agents only
+ntm --robot-send=myproject --msg="status update" --all # include user pane
+```
 
 This enables AI agents to:
 - Discover existing sessions and their agent configurations
@@ -988,6 +1050,48 @@ Provide a brief status update:
 2. What you're currently working on
 3. Any blockers or questions
 """
+```
+
+### Ensemble Defaults (Optional)
+
+These defaults apply when you run `ntm ensemble` or `--robot-ensemble-spawn`
+without providing the corresponding flags.
+
+```toml
+[ensemble]
+# Defaults used when flags are not provided
+default_ensemble = "architecture-review"
+agent_mix = "cc=3,cod=2,gmi=1"
+assignment = "affinity"
+mode_tier_default = "core"   # core|advanced|experimental
+allow_advanced = false
+
+[ensemble.synthesis]
+strategy = "deliberative"
+min_confidence = 0.50
+max_findings = 10
+include_raw_outputs = false
+conflict_resolution = "highlight"
+
+[ensemble.cache]
+enabled = true
+ttl_minutes = 60
+cache_dir = "~/.cache/ntm/context-packs"
+max_entries = 32
+share_across_modes = true
+
+[ensemble.budget]
+per_agent = 5000
+total = 30000
+synthesis = 8000
+context_pack = 2000
+
+[ensemble.early_stop]
+enabled = true
+min_agents = 3
+findings_threshold = 0.15
+similarity_threshold = 0.7
+window_size = 3
 ```
 
 ### Project Config (`.ntm/`)
@@ -3592,6 +3696,183 @@ Focus on:
 Additional context: {{context}}
 {{/context}}
 ```
+
+---
+
+## Ensembles: Validation Rules and Examples
+
+Ensemble presets live in `~/.config/ntm/ensembles.toml` (user) and `.ntm/ensembles.toml` (project). Validation runs when presets are loaded or when you spawn an ensemble. Errors reference the exact field path.
+
+### Minimal valid example
+
+```toml
+[[ensembles]]
+name = "project-diagnosis"
+display_name = "Project Diagnosis"
+description = "Baseline health review"
+modes = [
+  { id = "deductive" },
+  { code = "A7" }, # resolves to "type-theoretic"
+]
+allow_advanced = false
+
+[synthesis]
+strategy = "consensus"
+
+[budget]
+max_tokens_per_mode = 4000
+max_total_tokens = 50000
+synthesis_reserve_tokens = 5000
+context_reserve_tokens = 5000
+```
+
+### Mode refs: id vs code
+
+- `id` must be lowercase and match `^[a-z][a-z0-9-]*$`.
+- `code` must match `[A-L][0-9]+` (e.g., `A4`) and is resolved to a mode id.
+- Exactly one of `id` or `code` is required.
+
+Invalid examples and actual messages:
+
+```toml
+modes = [{ id = "deductive", code = "A1" }]
+```
+```
+modes[0]: mode ref must specify id or code, not both
+```
+
+```toml
+modes = [{}]
+```
+```
+modes[0]: mode ref must specify either id or code
+```
+
+```toml
+modes = [{ code = "Z9" }]
+```
+```
+modes[0]: invalid mode code "Z9"
+```
+
+### Valid/invalid preset examples
+
+```toml
+[[ensembles]]
+name = "Project Diagnosis"
+description = "Bad preset name + single mode"
+modes = [{ id = "deductive" }]
+```
+```
+name: invalid mode ID "Project Diagnosis": must be lowercase, start with a letter, and contain only alphanumeric characters and hyphens
+modes: mode count must be between 2 and 10 (got 1)
+```
+
+### Strategy compatibility (manual/voting/argumentation-graph)
+
+Supported strategies:
+`manual`, `voting` (no synthesizer agent) and
+`adversarial`, `consensus`, `creative`, `analytical`, `deliberative`, `prioritized`,
+`dialectical`, `meta-reasoning`, `argumentation-graph` (require a synthesizer mode).
+
+Deprecated or unknown strategy examples:
+
+```toml
+[synthesis]
+strategy = "debate"
+```
+```
+strategy "debate" is deprecated; use "dialectical" instead
+```
+
+```toml
+[synthesis]
+strategy = "mystery"
+```
+```
+unknown synthesis strategy "mystery"; use ListStrategies() for valid options
+```
+
+Notes:
+- `argumentation-graph` uses a synthesizer mode named `argumentation`.
+- If the synthesizer mode is missing from the catalog you will see:
+  `synthesis.strategy: synthesizer mode "argumentation" not found in catalog`.
+
+### Budget validation
+
+```toml
+[budget]
+max_tokens_per_mode = 60000
+max_total_tokens = 20000
+synthesis_reserve_tokens = 15000
+context_reserve_tokens = 10000
+```
+```
+budget.max_tokens_per_mode: per-mode budget exceeds total budget
+budget: reserved tokens exceed total budget
+```
+
+```toml
+[budget]
+max_total_tokens = -1
+```
+```
+budget: budget values must be non-negative
+```
+
+Upper bounds enforced:
+- `budget.max_tokens_per_mode: per-mode budget exceeds reasonable upper bound (200000)`
+- `budget.max_total_tokens: total budget exceeds reasonable upper bound (1000000)`
+
+### Extension chains and circular detection
+
+```toml
+[[ensembles]]
+name = "child"
+extends = "missing"
+description = "Missing parent"
+modes = [{ id = "deductive" }, { id = "type-theoretic" }]
+```
+```
+extends: extended preset "missing" not found
+```
+
+```toml
+[[ensembles]]
+name = "a"
+extends = "b"
+description = "Cycle A"
+modes = [{ id = "deductive" }, { id = "type-theoretic" }]
+
+[[ensembles]]
+name = "b"
+extends = "a"
+description = "Cycle B"
+modes = [{ id = "deductive" }, { id = "type-theoretic" }]
+```
+```
+presets.a.extends: circular extension detected
+```
+
+Extension depth is capped at 3:
+```
+presets.child.extends: extension depth exceeds 3
+```
+
+### Tier gating (advanced/experimental)
+
+```toml
+[[ensembles]]
+name = "advanced-demo"
+description = "Uses an advanced mode"
+modes = [{ id = "equational" }, { id = "deductive" }]
+allow_advanced = false
+```
+```
+modes[0]: mode "equational" is tier "advanced" but allow_advanced is false
+```
+
+Set `allow_advanced = true` to include advanced/experimental modes.
 
 ---
 

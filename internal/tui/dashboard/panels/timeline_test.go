@@ -110,6 +110,8 @@ func TestTimelinePanel_GetAgentList(t *testing.T) {
 
 func TestTimelinePanel_StateColors(t *testing.T) {
 	t.Log("TIMELINE_TEST: TestTimelinePanel_StateColors | Testing state-to-color mapping")
+	t.Setenv("NTM_NO_COLOR", "0")
+	t.Setenv("NTM_THEME", "mocha")
 
 	panel := NewTimelinePanel()
 
@@ -363,6 +365,8 @@ func TestTimelinePanel_Keybindings(t *testing.T) {
 
 func TestTimelinePanel_AgentColors(t *testing.T) {
 	t.Log("TIMELINE_TEST: TestTimelinePanel_AgentColors | Testing agent type colors")
+	t.Setenv("NTM_NO_COLOR", "0")
+	t.Setenv("NTM_THEME", "mocha")
 
 	panel := NewTimelinePanel()
 
@@ -617,6 +621,8 @@ func TestTimelinePanel_MarkerTypes(t *testing.T) {
 
 func TestTimelinePanel_MarkerColors(t *testing.T) {
 	t.Log("TIMELINE_TEST: TestTimelinePanel_MarkerColors | Testing marker color mapping")
+	t.Setenv("NTM_NO_COLOR", "0")
+	t.Setenv("NTM_THEME", "mocha")
 
 	panel := NewTimelinePanel()
 

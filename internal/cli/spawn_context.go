@@ -52,7 +52,13 @@ func (asc *AgentSpawnContext) EnvVars() map[string]string {
 	}
 }
 
-// EnvVarPrefix returns a shell command prefix that exports the spawn context.
+// EnvVarPrefix returns a shell command prefix that sets the spawn context for
+// the following command (VAR=... form).
+//
+// We intentionally avoid `export ...;` here because callers often wrap the
+// command as `cd <dir> && <command>`, and a `;` would break the conditional
+// chain.
+//
 // Example: "NTM_SPAWN_ORDER=2 NTM_SPAWN_TOTAL=4 NTM_SPAWN_BATCH_ID='spawn-abc123' "
 func (asc *AgentSpawnContext) EnvVarPrefix() string {
 	return fmt.Sprintf(

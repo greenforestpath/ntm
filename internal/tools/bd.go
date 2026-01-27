@@ -44,7 +44,7 @@ func (a *BDAdapter) Version(ctx context.Context) (Version, error) {
 		return Version{}, fmt.Errorf("failed to get bd version: %w", err)
 	}
 
-	return parseVersion(stdout.String())
+	return ParseStandardVersion(stdout.String())
 }
 
 // Capabilities returns the list of bd capabilities
@@ -159,13 +159,18 @@ func (a *BDAdapter) runCommand(ctx context.Context, dir string, args ...string) 
 		cmd.Dir = dir
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	// Limit output to 10MB
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, ErrTimeout
+		}
+		if strings.Contains(err.Error(), ErrOutputLimitExceeded.Error()) {
+			return nil, fmt.Errorf("bd output exceeded 10MB limit")
 		}
 		return nil, fmt.Errorf("bd %s failed: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}

@@ -1,6 +1,7 @@
 package robot
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -66,7 +67,7 @@ func TestBulkAssignImpactStrategySorting(t *testing.T) {
 
 func TestBulkAssignReadyStrategyFilters(t *testing.T) {
 	recs := []bv.TriageRecommendation{
-		{ID: "bd-1", Title: "Ready low", Status: "ready", Priority: 2},
+		{ID: "bd-1", Title: "Open low", Status: "open", Priority: 2},
 		{ID: "bd-2", Title: "Blocked", Status: "blocked", Priority: 0},
 		{ID: "bd-3", Title: "Ready high", Status: "ready", Priority: 1},
 	}
@@ -408,9 +409,25 @@ func TestBulkAssignBVFailure(t *testing.T) {
 		Cwd: func() (string, error) { return "/tmp", nil },
 	}
 
-	err := PrintBulkAssign(BulkAssignOptions{Session: "proj", FromBV: true, Deps: &deps})
-	if err == nil {
-		t.Fatal("expected error when bv triage fails")
+	output, err := captureStdout(t, func() error {
+		return PrintBulkAssign(BulkAssignOptions{Session: "proj", FromBV: true, Deps: &deps})
+	})
+	if err != nil {
+		t.Fatalf("PrintBulkAssign returned error: %v", err)
+	}
+
+	var result BulkAssignOutput
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("failed to parse output as JSON: %v", err)
+	}
+	if result.Success {
+		t.Fatal("expected success=false when bv triage fails")
+	}
+	if result.ErrorCode != ErrCodeInternalError {
+		t.Fatalf("expected error_code %s, got %s", ErrCodeInternalError, result.ErrorCode)
+	}
+	if !strings.Contains(result.Error, "bv triage failed") {
+		t.Fatalf("expected error to mention triage failure, got: %s", result.Error)
 	}
 }
 

@@ -1716,6 +1716,15 @@ func runDistributeMode(session, strategy string, limit int, autoExecute bool) er
 	}
 
 	// Execute distribution - send each task to its assigned agent
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		return fmt.Errorf("failed to get panes: %w", err)
+	}
+	paneIDByIndex := make(map[int]string, len(panes))
+	for _, p := range panes {
+		paneIDByIndex[p.Index] = p.ID
+	}
+
 	var delivered, failed int
 	for _, rec := range recs {
 		// Build the prompt for this task
@@ -1723,7 +1732,14 @@ func runDistributeMode(session, strategy string, limit int, autoExecute bool) er
 			rec.BeadID, rec.Title, rec.BeadID)
 
 		// Send to the specific pane
-		paneID := fmt.Sprintf("%s:%d", session, rec.PaneIndex)
+		paneID, ok := paneIDByIndex[rec.PaneIndex]
+		if !ok {
+			if !jsonOutput {
+				fmt.Printf("  ✗ Failed to send to pane %d: pane not found\n", rec.PaneIndex)
+			}
+			failed++
+			continue
+		}
 		if err := sendPromptWithDoubleEnter(paneID, taskPrompt); err != nil {
 			if !jsonOutput {
 				fmt.Printf("  ✗ Failed to send to pane %d: %v\n", rec.PaneIndex, err)
@@ -1956,6 +1972,11 @@ func runSendBatch(opts SendOptions) error {
 		return errors.New("no matching agent panes found in session (check --cc/--cod/--gmi/--tag filters)")
 	}
 
+	paneByIndex := make(map[int]tmux.Pane, len(panes))
+	for _, p := range panes {
+		paneByIndex[p.Index] = p
+	}
+
 	// Set up signal handling for graceful Ctrl+C
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -2053,8 +2074,13 @@ func runSendBatch(opts SendOptions) error {
 		var paneDelivered, paneFailed int
 		var sendErr error
 		for _, paneIdx := range targetPanes {
-			paneID := fmt.Sprintf("%s:%d", opts.Session, paneIdx)
-			if err := sendPromptWithDoubleEnter(paneID, promptText); err != nil {
+			p, ok := paneByIndex[paneIdx]
+			if !ok {
+				paneFailed++
+				sendErr = fmt.Errorf("pane %d not found", paneIdx)
+				continue
+			}
+			if err := sendPromptToPane(p, promptText); err != nil {
 				paneFailed++
 				sendErr = err
 			} else {

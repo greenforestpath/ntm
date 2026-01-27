@@ -1775,6 +1775,277 @@ claude = "bash"
 	logger.Log("[E2E-ROBOT-SEND-ADVANCED] All advanced filtering tests completed")
 }
 
+// TestRobotEnsembleSuggest tests the --robot-ensemble-suggest flag.
+func TestRobotEnsembleSuggest(t *testing.T) {
+	testutil.RequireNTMBinary(t)
+
+	logger := testutil.NewTestLoggerStdout(t)
+
+	testCases := []struct {
+		name           string
+		question       string
+		expectedPreset string
+	}{
+		{
+			name:           "security_question",
+			question:       "What security vulnerabilities exist in this codebase?",
+			expectedPreset: "safety-risk",
+		},
+		{
+			name:           "bug_question",
+			question:       "Debug the crash in the login flow",
+			expectedPreset: "bug-hunt",
+		},
+		{
+			name:           "idea_question",
+			question:       "What features should we add next?",
+			expectedPreset: "idea-forge",
+		},
+		{
+			name:           "architecture_question",
+			question:       "Review the system architecture",
+			expectedPreset: "architecture-review",
+		},
+		{
+			name:           "root_cause_question",
+			question:       "5 whys analysis on the incident",
+			expectedPreset: "root-cause-analysis",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			logger.LogSection("Testing: " + tc.name)
+			out := testutil.AssertCommandSuccess(t, logger,
+				"ntm", "--robot-ensemble-suggest="+tc.question)
+			logger.Log("FULL JSON OUTPUT:\n%s", string(out))
+
+			var payload struct {
+				Success     bool   `json:"success"`
+				Question    string `json:"question"`
+				TopPick     *struct {
+					PresetName  string   `json:"preset_name"`
+					DisplayName string   `json:"display_name"`
+					Description string   `json:"description"`
+					Score       float64  `json:"score"`
+					Reasons     []string `json:"reasons"`
+					ModeCount   int      `json:"mode_count"`
+					SpawnCmd    string   `json:"spawn_cmd"`
+				} `json:"top_pick"`
+				Suggestions []struct {
+					PresetName string  `json:"preset_name"`
+					Score      float64 `json:"score"`
+				} `json:"suggestions"`
+				AgentHints *struct {
+					Summary      string `json:"summary"`
+					SpawnCommand string `json:"spawn_command"`
+				} `json:"_agent_hints"`
+			}
+
+			if err := json.Unmarshal(out, &payload); err != nil {
+				t.Fatalf("invalid JSON: %v", err)
+			}
+
+			if !payload.Success {
+				t.Errorf("expected success=true, got false")
+			}
+
+			if payload.Question != tc.question {
+				t.Errorf("question = %q, want %q", payload.Question, tc.question)
+			}
+
+			if payload.TopPick == nil {
+				t.Fatalf("expected top_pick to be present")
+			}
+
+			if payload.TopPick.PresetName != tc.expectedPreset {
+				t.Errorf("top_pick.preset_name = %q, want %q",
+					payload.TopPick.PresetName, tc.expectedPreset)
+			}
+
+			if payload.TopPick.Score <= 0 {
+				t.Errorf("expected positive score, got %f", payload.TopPick.Score)
+			}
+
+			if payload.TopPick.SpawnCmd == "" {
+				t.Errorf("expected spawn_cmd to be non-empty")
+			}
+
+			if !strings.Contains(payload.TopPick.SpawnCmd, "ntm ensemble") {
+				t.Errorf("spawn_cmd should contain 'ntm ensemble': %s", payload.TopPick.SpawnCmd)
+			}
+
+			if len(payload.Suggestions) == 0 {
+				t.Errorf("expected at least one suggestion")
+			}
+
+			if payload.AgentHints == nil {
+				t.Errorf("expected _agent_hints to be present")
+			} else {
+				if payload.AgentHints.Summary == "" {
+					t.Errorf("expected agent hints summary to be non-empty")
+				}
+				if payload.AgentHints.SpawnCommand == "" {
+					t.Errorf("expected agent hints spawn_command to be non-empty")
+				}
+			}
+
+			logger.Log("Test %s PASSED: got preset %s with score %f",
+				tc.name, payload.TopPick.PresetName, payload.TopPick.Score)
+		})
+	}
+}
+
+// TestEnsembleSuggestIDOnly tests the --suggest-id-only flag.
+func TestEnsembleSuggestIDOnly(t *testing.T) {
+	testutil.RequireNTMBinary(t)
+
+	logger := testutil.NewTestLoggerStdout(t)
+
+	out := testutil.AssertCommandSuccess(t, logger,
+		"ntm", "--robot-ensemble-suggest=What security issues exist?", "--suggest-id-only")
+	logger.Log("ID-ONLY OUTPUT:\n%s", string(out))
+
+	var payload struct {
+		Success    bool   `json:"success"`
+		PresetName string `json:"preset_name"`
+		SpawnCmd   string `json:"spawn_cmd"`
+	}
+
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	if !payload.Success {
+		t.Errorf("expected success=true")
+	}
+
+	if payload.PresetName != "safety-risk" {
+		t.Errorf("preset_name = %q, want 'safety-risk'", payload.PresetName)
+	}
+
+	if payload.SpawnCmd == "" {
+		t.Errorf("expected spawn_cmd to be non-empty")
+	}
+
+	logger.Log("ID-Only test PASSED: preset=%s", payload.PresetName)
+}
+
+// TestEnsembleSuggestCLI tests the 'ntm ensemble suggest' CLI command.
+func TestEnsembleSuggestCLI(t *testing.T) {
+	testutil.RequireNTMBinary(t)
+
+	logger := testutil.NewTestLoggerStdout(t)
+
+	t.Run("table_output", func(t *testing.T) {
+		logger.LogSection("Testing table output")
+		out := testutil.AssertCommandSuccess(t, logger,
+			"ntm", "ensemble", "suggest", "What security vulnerabilities exist?")
+		logger.Log("TABLE OUTPUT:\n%s", string(out))
+
+		if !strings.Contains(string(out), "Recommended:") {
+			t.Errorf("expected 'Recommended:' in table output")
+		}
+		if !strings.Contains(string(out), "Safety") || !strings.Contains(string(out), "Risk") {
+			t.Errorf("expected 'Safety / Risk' preset in output")
+		}
+		if !strings.Contains(string(out), "Spawn command:") {
+			t.Errorf("expected 'Spawn command:' in output")
+		}
+	})
+
+	t.Run("json_output", func(t *testing.T) {
+		logger.LogSection("Testing JSON output")
+		out := testutil.AssertCommandSuccess(t, logger,
+			"ntm", "ensemble", "suggest", "What bugs exist?", "--json")
+		logger.Log("JSON OUTPUT:\n%s", string(out))
+
+		var payload struct {
+			Question string `json:"question"`
+			TopPick  *struct {
+				Name string `json:"name"`
+			} `json:"top_pick"`
+			Suggestions []struct {
+				Name  string  `json:"name"`
+				Score float64 `json:"score"`
+			} `json:"suggestions"`
+			SpawnCmd string `json:"spawn_cmd"`
+		}
+
+		if err := json.Unmarshal(out, &payload); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+
+		if payload.TopPick == nil {
+			t.Fatalf("expected top_pick in JSON output")
+		}
+
+		if len(payload.Suggestions) == 0 {
+			t.Errorf("expected suggestions in JSON output")
+		}
+	})
+
+	t.Run("id_only_output", func(t *testing.T) {
+		logger.LogSection("Testing --id-only output")
+		out := testutil.AssertCommandSuccess(t, logger,
+			"ntm", "ensemble", "suggest", "What features should we add?", "--id-only")
+		logger.Log("ID-ONLY OUTPUT:\n%s", string(out))
+
+		preset := strings.TrimSpace(string(out))
+		if preset != "idea-forge" {
+			t.Errorf("expected 'idea-forge', got %q", preset)
+		}
+	})
+}
+
+// TestEnsembleSuggestSpawnPipe tests piping suggest output to spawn.
+func TestEnsembleSuggestSpawnPipe(t *testing.T) {
+	testutil.RequireNTMBinary(t)
+
+	logger := testutil.NewTestLoggerStdout(t)
+	logger.LogSection("Testing suggest → spawn piping")
+
+	// Get the suggested preset using --id-only
+	out := testutil.AssertCommandSuccess(t, logger,
+		"ntm", "ensemble", "suggest", "What security issues exist?", "--id-only")
+	preset := strings.TrimSpace(string(out))
+
+	if preset == "" {
+		t.Fatalf("expected non-empty preset from suggest --id-only")
+	}
+
+	if preset != "safety-risk" {
+		t.Errorf("expected 'safety-risk', got %q", preset)
+	}
+
+	logger.Log("Verified --id-only output can be used for piping: %s", preset)
+
+	// Verify the spawn command format from JSON output
+	jsonOut := testutil.AssertCommandSuccess(t, logger,
+		"ntm", "--robot-ensemble-suggest=What security issues exist?")
+
+	var payload struct {
+		TopPick *struct {
+			SpawnCmd string `json:"spawn_cmd"`
+		} `json:"top_pick"`
+	}
+	if err := json.Unmarshal(jsonOut, &payload); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	if payload.TopPick == nil || payload.TopPick.SpawnCmd == "" {
+		t.Fatalf("expected spawn_cmd in top_pick")
+	}
+
+	expectedPrefix := "ntm ensemble safety-risk"
+	if !strings.HasPrefix(payload.TopPick.SpawnCmd, expectedPrefix) {
+		t.Errorf("spawn_cmd = %q, expected prefix %q", payload.TopPick.SpawnCmd, expectedPrefix)
+	}
+
+	logger.Log("Verified spawn_cmd format: %s", payload.TopPick.SpawnCmd)
+	logger.Log("Suggest → Spawn pipe test PASSED")
+}
+
 // TestRobotRestartPane tests the --robot-restart-pane flag.
 func TestRobotRestartPane(t *testing.T) {
 	testutil.RequireE2E(t)
@@ -1854,5 +2125,14 @@ func TestMain(m *testing.M) {
 		// ntm binary not on PATH; skip suite gracefully
 		return
 	}
-	os.Exit(m.Run())
+
+	// Clean up any orphan test sessions from previous runs
+	testutil.KillAllTestSessionsSilent()
+
+	code := m.Run()
+
+	// Clean up after all tests complete
+	testutil.KillAllTestSessionsSilent()
+
+	os.Exit(code)
 }

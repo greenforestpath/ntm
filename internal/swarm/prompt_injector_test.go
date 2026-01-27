@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 )
 
@@ -34,10 +33,6 @@ func TestNewPromptInjector(t *testing.T) {
 
 	if injector.Logger == nil {
 		t.Error("expected non-nil Logger")
-	}
-
-	if injector.PreambleEngine == nil {
-		t.Error("expected non-nil PreambleEngine")
 	}
 
 	if len(injector.Templates) == 0 {
@@ -113,20 +108,6 @@ func TestWithLogger(t *testing.T) {
 
 	if result != injector {
 		t.Error("WithLogger should return the same injector for chaining")
-	}
-}
-
-func TestWithPreambleEngine(t *testing.T) {
-	injector := NewPromptInjector()
-	engine := ensemble.NewPreambleEngine()
-
-	result := injector.WithPreambleEngine(engine)
-
-	if result != injector {
-		t.Error("WithPreambleEngine should return the same injector for chaining")
-	}
-	if injector.PreambleEngine != engine {
-		t.Error("expected PreambleEngine to be set")
 	}
 }
 
@@ -245,84 +226,6 @@ func TestInjectBatchEmpty(t *testing.T) {
 	}
 }
 
-func TestInjectWithMode_NilMode(t *testing.T) {
-	injector := NewPromptInjector()
-	result, err := injector.InjectWithMode("test:1.1", nil, "question", "cc", nil, 2000, "")
-
-	if err == nil {
-		t.Error("expected error for nil mode")
-	}
-	if result == nil {
-		t.Fatal("expected non-nil result for nil mode")
-	}
-	if result.Success {
-		t.Error("expected Success=false for nil mode")
-	}
-}
-
-func TestInjectWithMode_NoPreambleEngine(t *testing.T) {
-	injector := NewPromptInjector()
-	injector.PreambleEngine = nil
-
-	mode := ensemble.EmbeddedModes[0]
-	result, err := injector.InjectWithMode("test:1.1", &mode, "question", "cc", nil, 2000, "")
-
-	if err == nil {
-		t.Error("expected error when preamble engine is nil")
-	}
-	if result == nil {
-		t.Fatal("expected non-nil result when preamble engine is nil")
-	}
-	if result.Success {
-		t.Error("expected Success=false when preamble engine is nil")
-	}
-}
-
-func TestInjectEnsemble_NilCatalog(t *testing.T) {
-	injector := NewPromptInjector()
-	result, err := injector.InjectEnsemble(nil, "question", nil, nil, 2000)
-
-	if err == nil {
-		t.Error("expected error for nil catalog")
-	}
-	if result != nil {
-		t.Error("expected nil result for nil catalog")
-	}
-}
-
-func TestInjectEnsemble_MissingModeContinues(t *testing.T) {
-	injector := NewPromptInjector()
-	injector.PreambleEngine = nil
-	injector.StaggerDelay = 0
-
-	catalog, err := ensemble.NewModeCatalog(ensemble.EmbeddedModes, ensemble.CatalogVersion)
-	if err != nil {
-		t.Fatalf("failed to build mode catalog: %v", err)
-	}
-
-	assignments := []ensemble.ModeAssignment{
-		{ModeID: "missing-mode", PaneName: "test:1.1", AgentType: "cc"},
-		{ModeID: "deductive", PaneName: "test:1.2", AgentType: "cc"},
-	}
-
-	result, err := injector.InjectEnsemble(assignments, "question", catalog, nil, 2000)
-	if err != nil {
-		t.Errorf("unexpected error from InjectEnsemble: %v", err)
-	}
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if result.TotalPanes != len(assignments) {
-		t.Errorf("expected TotalPanes=%d, got %d", len(assignments), result.TotalPanes)
-	}
-	if len(result.Results) != len(assignments) {
-		t.Errorf("expected %d results, got %d", len(assignments), len(result.Results))
-	}
-	if result.Failed != len(assignments) {
-		t.Errorf("expected Failed=%d, got %d", len(assignments), result.Failed)
-	}
-}
-
 func TestPromptInjectorTmuxClient(t *testing.T) {
 	injector := NewPromptInjector()
 	client := injector.tmuxClient()
@@ -398,7 +301,7 @@ func TestWithAdaptiveDelay(t *testing.T) {
 func TestGetDelayForAgentFixed(t *testing.T) {
 	injector := NewPromptInjector().WithStaggerDelay(500 * time.Millisecond)
 
-	delay := injector.getDelayForAgent("cc")
+	delay := injector.GetDelayForAgent("cc")
 
 	if delay != 500*time.Millisecond {
 		t.Errorf("expected delay of 500ms, got %v", delay)
@@ -412,7 +315,7 @@ func TestGetDelayForAgentAdaptive(t *testing.T) {
 		WithAdaptiveDelay(true)
 
 	// Default anthropic delay is 15s
-	delay := injector.getDelayForAgent("cc")
+	delay := injector.GetDelayForAgent("cc")
 
 	// Should use tracker's optimal delay (defaults to 15s for anthropic)
 	if delay != ratelimit.DefaultDelayAnthropic {
@@ -420,7 +323,7 @@ func TestGetDelayForAgentAdaptive(t *testing.T) {
 	}
 
 	// Test with openai alias
-	delay = injector.getDelayForAgent("cod")
+	delay = injector.GetDelayForAgent("cod")
 	if delay != ratelimit.DefaultDelayOpenAI {
 		t.Errorf("expected delay of %v for cod, got %v", ratelimit.DefaultDelayOpenAI, delay)
 	}
@@ -543,7 +446,7 @@ func TestPromptInjector_StaggeredDeliveryTiming(t *testing.T) {
 	// Verify delay is returned correctly for different agent types
 	delays := map[string]time.Duration{}
 	for _, agent := range []string{"cc", "cod", "gmi"} {
-		delay := injector.getDelayForAgent(agent)
+		delay := injector.GetDelayForAgent(agent)
 		delays[agent] = delay
 		t.Logf("[TEST] Delay for %s: %v", agent, delay)
 	}
@@ -745,7 +648,7 @@ func TestPromptInjector_AdaptiveDelayWithDifferentProviders(t *testing.T) {
 		t.Run(tc.agentType, func(t *testing.T) {
 			t.Logf("[TEST] Testing %s (%s)", tc.providerName, tc.agentType)
 
-			delay := injector.getDelayForAgent(tc.agentType)
+			delay := injector.GetDelayForAgent(tc.agentType)
 			expected := tc.expectedFunc()
 
 			t.Logf("[TEST] Delay for %s: %v (expected: %v)", tc.agentType, delay, expected)

@@ -78,8 +78,9 @@ type TokensAgentHints struct {
 	Warnings          []string `json:"warnings,omitempty"`
 }
 
-// PrintTokens outputs token usage statistics as JSON
-func PrintTokens(opts TokensOptions) error {
+// GetTokens returns token usage statistics.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetTokens(opts TokensOptions) (*TokensOutput, error) {
 	// Determine cutoff time
 	var cutoff time.Time
 	if opts.Since != "" {
@@ -88,11 +89,16 @@ func PrintTokens(opts TokensOptions) error {
 			// Try date-only format
 			parsed, err = time.Parse("2006-01-02", opts.Since)
 			if err != nil {
-				return RobotError(
-					fmt.Errorf("invalid --since format: %w", err),
-					ErrCodeInvalidFlag,
-					"Use ISO8601 (2025-12-15T00:00:00Z) or date (2025-12-15)",
-				)
+				return &TokensOutput{
+					RobotResponse: NewErrorResponse(
+						fmt.Errorf("invalid --since format: %w", err),
+						ErrCodeInvalidFlag,
+						"Use ISO8601 (2025-12-15T00:00:00Z) or date (2025-12-15)",
+					),
+					Breakdown:  []TokenBreakdown{},
+					AgentStats: make(map[string]AgentTokenStats),
+					ModelStats: make(map[string]ModelTokenStats),
+				}, nil
 			}
 		}
 		cutoff = parsed
@@ -110,11 +116,16 @@ func PrintTokens(opts TokensOptions) error {
 	}
 	validGroups := map[string]bool{"agent": true, "model": true, "day": true, "week": true, "month": true}
 	if !validGroups[groupBy] {
-		return RobotError(
-			fmt.Errorf("invalid --group-by '%s'", opts.GroupBy),
-			ErrCodeInvalidFlag,
-			"Valid groups: agent, model, day, week, month",
-		)
+		return &TokensOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("invalid --group-by '%s'", opts.GroupBy),
+				ErrCodeInvalidFlag,
+				"Valid groups: agent, model, day, week, month",
+			),
+			Breakdown:  []TokenBreakdown{},
+			AgentStats: make(map[string]AgentTokenStats),
+			ModelStats: make(map[string]ModelTokenStats),
+		}, nil
 	}
 
 	// Read events
@@ -123,7 +134,7 @@ func PrintTokens(opts TokensOptions) error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			// No events - return empty stats
-			output := TokensOutput{
+			return &TokensOutput{
 				RobotResponse: NewRobotResponse(true),
 				Period:        formatPeriod(opts.Days, opts.Since),
 				GeneratedAt:   time.Now().UTC(),
@@ -134,14 +145,18 @@ func PrintTokens(opts TokensOptions) error {
 				AgentHints: &TokensAgentHints{
 					Summary: "No events found for the specified period",
 				},
-			}
-			return encodeJSON(output)
+			}, nil
 		}
-		return RobotError(
-			fmt.Errorf("failed to read events: %w", err),
-			ErrCodeInternalError,
-			"Check events file at ~/.config/ntm/analytics/events.jsonl",
-		)
+		return &TokensOutput{
+			RobotResponse: NewErrorResponse(
+				fmt.Errorf("failed to read events: %w", err),
+				ErrCodeInternalError,
+				"Check events file at ~/.config/ntm/analytics/events.jsonl",
+			),
+			Breakdown:  []TokenBreakdown{},
+			AgentStats: make(map[string]AgentTokenStats),
+			ModelStats: make(map[string]ModelTokenStats),
+		}, nil
 	}
 
 	// Aggregate statistics
@@ -154,6 +169,16 @@ func PrintTokens(opts TokensOptions) error {
 	// Generate hints
 	output.AgentHints = generateTokenHints(output)
 
+	return &output, nil
+}
+
+// PrintTokens outputs token usage statistics as JSON.
+// This is a thin wrapper around GetTokens() for CLI output.
+func PrintTokens(opts TokensOptions) error {
+	output, err := GetTokens(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 

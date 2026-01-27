@@ -56,6 +56,7 @@ func TestIsPromptLine(t *testing.T) {
 
 		// Codex prompts
 		{name: "codex prompt", line: "codex>", agentType: "cod", expected: true},
+		{name: "codex chevron prompt", line: "› Write tests for @filename", agentType: "cod", expected: true},
 		// Shell prompts should NOT match for known agent types - a shell $ in cod/cc/gmi means agent exited
 		{name: "shell prompt for codex means exited", line: "user@host:~$", agentType: "cod", expected: false},
 
@@ -127,6 +128,12 @@ func TestDetectIdleFromOutput(t *testing.T) {
 			output:    "Command completed\ncodex>",
 			agentType: "cod",
 			expected:  true, // actual codex prompt means idle
+		},
+		{
+			name:      "codex at chevron prompt",
+			output:    "Command completed\n› Write tests for @filename",
+			agentType: "cod",
+			expected:  true, // codex chevron prompt means idle
 		},
 		{
 			name:      "gemini idle",

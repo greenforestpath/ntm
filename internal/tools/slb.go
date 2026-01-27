@@ -76,8 +76,8 @@ func parseSLBVersion(output string) (Version, error) {
 
 	versionPart := parts[1]
 
-	// Use the shared version regex from bv.go
-	matches := versionRegex.FindStringSubmatch(versionPart)
+	// Use the shared version regex from adapter.go
+	matches := VersionRegex.FindStringSubmatch(versionPart)
 	if len(matches) < 4 {
 		return Version{Raw: output}, nil
 	}
@@ -205,13 +205,17 @@ func (a *SLBAdapter) runCommand(ctx context.Context, args ...string) (json.RawMe
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := NewLimitedBuffer(10 * 1024 * 1024)
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, ErrTimeout
+		}
+		if strings.Contains(err.Error(), ErrOutputLimitExceeded.Error()) {
+			return nil, fmt.Errorf("slb output exceeded 10MB limit")
 		}
 		return nil, fmt.Errorf("slb %s failed: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}

@@ -75,6 +75,13 @@ func (l *EnsembleLoader) Load() ([]EnsemblePreset, error) {
 		result = append(result, e)
 	}
 
+	if l.ModeCatalog != nil {
+		report := ValidateEnsemblePresets(result, l.ModeCatalog)
+		if err := report.Error(); err != nil {
+			return nil, err
+		}
+	}
+
 	return result, nil
 }
 
@@ -104,18 +111,6 @@ func (l *EnsembleLoader) mergeFromFile(merged map[string]EnsemblePreset, path, s
 		if l.ModeCatalog != nil {
 			if err := e.Validate(l.ModeCatalog); err != nil {
 				return fmt.Errorf("ensembles[%d] (%s): %w", i, e.Name, err)
-			}
-
-			// Check tier constraints
-			if !e.AllowAdvanced {
-				for _, ref := range e.Modes {
-					id, _ := ref.Resolve(l.ModeCatalog)
-					mode := l.ModeCatalog.GetMode(id)
-					if mode != nil && mode.Tier != TierCore {
-						return fmt.Errorf("ensembles[%d] (%s): mode %q is tier %q but allow_advanced is false",
-							i, e.Name, id, mode.Tier)
-					}
-				}
 			}
 		}
 

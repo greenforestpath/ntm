@@ -5,14 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
-	"regexp"
 	"strings"
 	"time"
 )
-
-// versionRegex matches semantic version strings like "0.31.0"
-var versionRegex = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
 
 // BVAdapter provides integration with the beads_viewer (bv) tool
 type BVAdapter struct {
@@ -48,7 +45,7 @@ func (a *BVAdapter) Version(ctx context.Context) (Version, error) {
 		return Version{}, fmt.Errorf("failed to get bv version: %w", err)
 	}
 
-	return parseVersion(stdout.String())
+	return ParseStandardVersion(stdout.String())
 }
 
 // Capabilities returns the list of bv capabilities
@@ -200,11 +197,30 @@ func (a *BVAdapter) runRobotCommand(ctx context.Context, dir string, args ...str
 		cmd.Dir = dir
 	}
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start bv: %w", err)
+	}
+
+	// Limit output to 10MB to prevent OOM
+	const maxOutput = 10 * 1024 * 1024
+	output, err := io.ReadAll(io.LimitReader(stdoutPipe, maxOutput+1))
+	if err != nil {
+		_ = cmd.Process.Kill()
+		return nil, fmt.Errorf("failed to read bv output: %w", err)
+	}
+	if len(output) > maxOutput {
+		_ = cmd.Process.Kill()
+		return nil, fmt.Errorf("bv output exceeded limit of %d bytes", maxOutput)
+	}
+
+	if err := cmd.Wait(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, ErrTimeout
 		}
@@ -212,7 +228,6 @@ func (a *BVAdapter) runRobotCommand(ctx context.Context, dir string, args ...str
 	}
 
 	// Validate JSON
-	output := stdout.Bytes()
 	if !json.Valid(output) {
 		return nil, fmt.Errorf("%w: invalid JSON from bv", ErrSchemaValidation)
 	}
@@ -220,23 +235,4 @@ func (a *BVAdapter) runRobotCommand(ctx context.Context, dir string, args ...str
 	return output, nil
 }
 
-// parseVersion extracts version from --version output
-func parseVersion(output string) (Version, error) {
-	// Match patterns like "bv 0.31.0" or "0.31.0"
-	matches := versionRegex.FindStringSubmatch(output)
-	if len(matches) < 4 {
-		return Version{Raw: strings.TrimSpace(output)}, nil
-	}
 
-	var major, minor, patch int
-	fmt.Sscanf(matches[1], "%d", &major)
-	fmt.Sscanf(matches[2], "%d", &minor)
-	fmt.Sscanf(matches[3], "%d", &patch)
-
-	return Version{
-		Major: major,
-		Minor: minor,
-		Patch: patch,
-		Raw:   strings.TrimSpace(output),
-	}, nil
-}

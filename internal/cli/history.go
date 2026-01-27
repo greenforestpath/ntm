@@ -109,10 +109,10 @@ func (r *HistoryListResult) Text(w io.Writer) error {
 		targetsStr := formatTargets(e.Targets)
 
 		// Truncate prompt
-		prompt := truncate(strings.TrimSpace(e.Prompt), 38)
+		prompt := truncateHistoryStr(strings.TrimSpace(e.Prompt), 38)
 
 		// Session name (truncate if needed)
-		sessionName := truncate(e.Session, 12)
+		sessionName := truncateHistoryStr(e.Session, 12)
 
 		// Duration
 		durStr := "--"
@@ -463,7 +463,7 @@ func runHistoryStats() error {
 	fmt.Printf("Successful:       %s%d%s\n", colorize(t.Success), stats.SuccessCount, colorize(t.Text))
 	fmt.Printf("Failed:           %s%d%s\n", colorize(t.Red), stats.FailureCount, colorize(t.Text))
 	fmt.Printf("Unique sessions:  %d\n", stats.UniqueSessions)
-	fmt.Printf("File size:        %s\n", formatBytes(stats.FileSizeBytes))
+	fmt.Printf("File size:        %s\n", util.FormatBytes(stats.FileSizeBytes))
 	fmt.Printf("File location:    %s\n", history.StoragePath())
 
 	return nil
@@ -540,43 +540,12 @@ func formatTargets(targets []string) string {
 	return fmt.Sprintf("all (%d)", len(targets))
 }
 
-func truncate(s string, maxLen int) string {
+func truncateHistoryStr(s string, maxLen int) string {
 	// Remove newlines for display
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", "")
 
-	if maxLen <= 0 {
-		return ""
-	}
-	if len(s) <= maxLen {
-		return s
-	}
-	// String needs truncation - if maxLen too small for content + "...", just return "..."
-	if maxLen <= 3 {
-		return "..."[:maxLen]
-	}
-	// Find the last rune boundary that allows for "..." suffix within maxLen bytes.
-	targetLen := maxLen - 3
-	prevI := 0
-	for i := range s {
-		if i > targetLen {
-			return s[:prevI] + "..."
-		}
-		prevI = i
-	}
-	// All rune starts are <= targetLen, but string is > maxLen bytes.
-	return s[:prevI] + "..."
+	return util.Truncate(s, maxLen)
 }
 
-func formatBytes(b int64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
-}
+

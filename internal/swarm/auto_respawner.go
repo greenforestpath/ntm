@@ -452,7 +452,7 @@ func (r *AutoRespawner) Respawn(event LimitEvent) *RespawnResult {
 			"source", source,
 			"prompt_len", len(prompt))
 
-		if _, err := r.PromptInjector.InjectPrompt(sessionPane, agentType, prompt); err != nil {
+		if err := r.PromptInjector.InjectPrompt(sessionPane, agentType, prompt); err != nil {
 			r.logger().Warn("[AutoRespawner] marching_orders_failed",
 				"session_pane", sessionPane,
 				"error", err)

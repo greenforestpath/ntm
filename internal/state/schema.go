@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 //go:embed migrations/*.sql
@@ -36,12 +38,12 @@ const (
 )
 
 // AgentType represents the type of AI agent.
-type AgentType string
+type AgentType = agent.AgentType
 
 const (
-	AgentTypeClaude AgentType = "cc"
-	AgentTypeCodex  AgentType = "cod"
-	AgentTypeGemini AgentType = "gmi"
+	AgentTypeClaude = agent.AgentTypeClaudeCode
+	AgentTypeCodex  = agent.AgentTypeCodex
+	AgentTypeGemini = agent.AgentTypeGemini
 )
 
 // TaskStatus represents the state of a task.

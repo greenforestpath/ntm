@@ -30,7 +30,7 @@ func ManifestDir() string {
 	if dataDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "manifests"
+			return filepath.Join(os.TempDir(), "ntm", "manifests")
 		}
 		dataDir = filepath.Join(home, ".local", "share")
 	}
@@ -43,7 +43,7 @@ func LogDir() string {
 	if dataDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "logs"
+			return filepath.Join(os.TempDir(), "ntm", "logs")
 		}
 		dataDir = filepath.Join(home, ".local", "share")
 	}

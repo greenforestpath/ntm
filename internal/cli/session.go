@@ -18,6 +18,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/cli/suggestions"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
+	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -39,6 +40,27 @@ type statusOptions struct {
 	interval        time.Duration
 }
 
+// SessionListInput is the kernel input for sessions.list.
+type SessionListInput struct {
+	Tags []string `json:"tags,omitempty"`
+}
+
+// SessionStatusInput is the kernel input for sessions.status.
+type SessionStatusInput struct {
+	Session         string   `json:"session"`
+	Tags            []string `json:"tags,omitempty"`
+	ShowAssignments bool     `json:"show_assignments,omitempty"`
+	FilterStatus    string   `json:"status,omitempty"`
+	FilterAgent     string   `json:"agent,omitempty"`
+	FilterPane      *int     `json:"pane,omitempty"`
+	ShowSummary     bool     `json:"summary,omitempty"`
+}
+
+// SessionAttachInput is the kernel input for sessions.attach.
+type SessionAttachInput struct {
+	Session string `json:"session"`
+}
+
 type paneContextUsage struct {
 	Tokens  int
 	Limit   int
@@ -52,6 +74,153 @@ type contextRow struct {
 	Tokens  int
 	Limit   int
 	Model   string
+}
+
+func init() {
+	kernel.MustRegister(kernel.Command{
+		Name:        "sessions.list",
+		Description: "List tmux sessions",
+		Category:    "sessions",
+		Input: &kernel.SchemaRef{
+			Name: "SessionListInput",
+			Ref:  "cli.SessionListInput",
+		},
+		Output: &kernel.SchemaRef{
+			Name: "SessionListResponse",
+			Ref:  "output.ListResponse",
+		},
+		REST: &kernel.RESTBinding{
+			Method: "GET",
+			Path:   "/sessions",
+		},
+		Examples: []kernel.Example{
+			{
+				Name:        "list",
+				Description: "List all sessions",
+				Command:     "ntm list",
+			},
+			{
+				Name:        "list-with-tag",
+				Description: "List sessions filtered by tag",
+				Command:     "ntm list --tag=frontend",
+			},
+		},
+		SafetyLevel: kernel.SafetySafe,
+		Idempotent:  true,
+	})
+	kernel.MustRegisterHandler("sessions.list", func(ctx context.Context, input any) (any, error) {
+		opts := SessionListInput{}
+		switch value := input.(type) {
+		case SessionListInput:
+			opts = value
+		case *SessionListInput:
+			if value != nil {
+				opts = *value
+			}
+		}
+		return buildSessionListResponse(opts.Tags)
+	})
+
+	kernel.MustRegister(kernel.Command{
+		Name:        "sessions.status",
+		Description: "Detailed status for a session",
+		Category:    "sessions",
+		Input: &kernel.SchemaRef{
+			Name: "SessionStatusInput",
+			Ref:  "cli.SessionStatusInput",
+		},
+		Output: &kernel.SchemaRef{
+			Name: "StatusResponse",
+			Ref:  "output.StatusResponse",
+		},
+		REST: &kernel.RESTBinding{
+			Method: "GET",
+			Path:   "/sessions/{sessionId}/status",
+		},
+		Examples: []kernel.Example{
+			{
+				Name:        "status",
+				Description: "Show session status",
+				Command:     "ntm status myproject",
+			},
+			{
+				Name:        "status-assignments",
+				Description: "Show session status with assignments",
+				Command:     "ntm status myproject --assignments",
+			},
+		},
+		SafetyLevel: kernel.SafetySafe,
+		Idempotent:  true,
+	})
+	kernel.MustRegisterHandler("sessions.status", func(ctx context.Context, input any) (any, error) {
+		opts := SessionStatusInput{}
+		switch value := input.(type) {
+		case SessionStatusInput:
+			opts = value
+		case *SessionStatusInput:
+			if value != nil {
+				opts = *value
+			}
+		}
+		if strings.TrimSpace(opts.Session) == "" {
+			return nil, fmt.Errorf("session is required")
+		}
+		filterPane := -1
+		if opts.FilterPane != nil {
+			filterPane = *opts.FilterPane
+		}
+		statusOpts := statusOptions{
+			tags:            opts.Tags,
+			showAssignments: opts.ShowAssignments,
+			filterStatus:    opts.FilterStatus,
+			filterAgent:     opts.FilterAgent,
+			filterPane:      filterPane,
+			showSummary:     opts.ShowSummary,
+		}
+		return buildStatusResponse(opts.Session, statusOpts)
+	})
+
+	kernel.MustRegister(kernel.Command{
+		Name:        "sessions.attach",
+		Description: "Attach to a session",
+		Category:    "sessions",
+		Input: &kernel.SchemaRef{
+			Name: "SessionAttachInput",
+			Ref:  "cli.SessionAttachInput",
+		},
+		Output: &kernel.SchemaRef{
+			Name: "SessionResponse",
+			Ref:  "output.SessionResponse",
+		},
+		REST: &kernel.RESTBinding{
+			Method: "POST",
+			Path:   "/sessions/{sessionId}/attach",
+		},
+		Examples: []kernel.Example{
+			{
+				Name:        "attach",
+				Description: "Attach to session",
+				Command:     "ntm attach myproject",
+			},
+		},
+		SafetyLevel: kernel.SafetySafe,
+		Idempotent:  false,
+	})
+	kernel.MustRegisterHandler("sessions.attach", func(ctx context.Context, input any) (any, error) {
+		opts := SessionAttachInput{}
+		switch value := input.(type) {
+		case SessionAttachInput:
+			opts = value
+		case *SessionAttachInput:
+			if value != nil {
+				opts = *value
+			}
+		}
+		if strings.TrimSpace(opts.Session) == "" {
+			return nil, fmt.Errorf("session is required")
+		}
+		return buildAttachResponse(opts.Session)
+	})
 }
 
 // filterAssignments filters assignments by status, agent type, and pane number.
@@ -109,6 +278,18 @@ Examples:
 }
 
 func runAttach(session string) error {
+	if IsJSONOutput() {
+		result, err := kernel.Run(context.Background(), "sessions.attach", SessionAttachInput{Session: session})
+		if err != nil {
+			return output.PrintJSON(output.NewError(err.Error()))
+		}
+		resp, err := coerceSessionResponse(result)
+		if err != nil {
+			return output.PrintJSON(output.NewError(err.Error()))
+		}
+		return output.PrintJSON(resp)
+	}
+
 	if err := tmux.EnsureInstalled(); err != nil {
 		return err
 	}
@@ -152,21 +333,103 @@ func newListCmd() *cobra.Command {
 }
 
 func runList(tags []string) error {
-	if err := tmux.EnsureInstalled(); err != nil {
+	result, err := kernel.Run(context.Background(), "sessions.list", SessionListInput{Tags: tags})
+	if err != nil {
 		if IsJSONOutput() {
 			_ = output.PrintJSON(output.NewError(err.Error()))
-			return err
 		}
 		return err
 	}
 
+	resp, err := coerceSessionListResponse(result)
+	if err != nil {
+		return err
+	}
+
+	if IsJSONOutput() {
+		return output.PrintJSON(resp)
+	}
+
+	// Text output
+	if len(resp.Sessions) == 0 {
+		fmt.Println("No tmux sessions running")
+		return nil
+	}
+
+	// Check terminal width for responsive output
+	width, _, _ := term.GetSize(int(os.Stdout.Fd()))
+	isWide := width >= 100
+
+	if isWide {
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, "SESSION\tWINDOWS\tSTATE\tAGENTS")
+
+		for _, s := range resp.Sessions {
+			attached := "detached"
+			if s.Attached {
+				attached = "attached"
+			}
+
+			// Fetch agents summary
+			agents := "-"
+			if s.AgentCounts != nil {
+				var parts []string
+				if s.AgentCounts.Claude > 0 {
+					parts = append(parts, fmt.Sprintf("%d CC", s.AgentCounts.Claude))
+				}
+				if s.AgentCounts.Codex > 0 {
+					parts = append(parts, fmt.Sprintf("%d COD", s.AgentCounts.Codex))
+				}
+				if s.AgentCounts.Gemini > 0 {
+					parts = append(parts, fmt.Sprintf("%d GMI", s.AgentCounts.Gemini))
+				}
+				if s.AgentCounts.User > 0 {
+					parts = append(parts, fmt.Sprintf("%d Usr", s.AgentCounts.User))
+				}
+				if len(parts) > 0 {
+					agents = strings.Join(parts, ", ")
+				}
+			}
+
+			fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", s.Name, s.Windows, attached, agents)
+		}
+		w.Flush()
+	} else {
+		// Standard output for narrow screens
+		for _, s := range resp.Sessions {
+			attached := ""
+			if s.Attached {
+				attached = " (attached)"
+			}
+			fmt.Printf("  %s: %d windows%s\n", s.Name, s.Windows, attached)
+		}
+	}
+
+	return nil
+}
+
+func coerceSessionListResponse(result any) (output.ListResponse, error) {
+	switch value := result.(type) {
+	case output.ListResponse:
+		return value, nil
+	case *output.ListResponse:
+		if value != nil {
+			return *value, nil
+		}
+		return output.ListResponse{}, fmt.Errorf("sessions.list returned nil response")
+	default:
+		return output.ListResponse{}, fmt.Errorf("sessions.list returned unexpected type %T", result)
+	}
+}
+
+func buildSessionListResponse(tags []string) (output.ListResponse, error) {
+	if err := tmux.EnsureInstalled(); err != nil {
+		return output.ListResponse{}, err
+	}
+
 	sessions, err := tmux.ListSessions()
 	if err != nil {
-		if IsJSONOutput() {
-			_ = output.PrintJSON(output.NewError(err.Error()))
-			return err
-		}
-		return err
+		return output.ListResponse{}, err
 	}
 
 	// Filter sessions by tag
@@ -191,124 +454,328 @@ func runList(tags []string) error {
 		sessions = filtered
 	}
 
-	// Build response for JSON output
-	if IsJSONOutput() {
-		items := make([]output.SessionListItem, len(sessions))
-		for i, s := range sessions {
-			item := output.SessionListItem{
-				Name:             s.Name,
-				Windows:          s.Windows,
-				Attached:         s.Attached,
-				WorkingDirectory: s.Directory,
-			}
-
-			// Get panes to count agents
-			panes, err := tmux.GetPanes(s.Name)
-			if err == nil {
-				item.PaneCount = len(panes)
-
-				// Count agent types
-				var claudeCount, codexCount, geminiCount, userCount int
-				for _, p := range panes {
-					switch p.Type {
-					case tmux.AgentClaude:
-						claudeCount++
-					case tmux.AgentCodex:
-						codexCount++
-					case tmux.AgentGemini:
-						geminiCount++
-					default:
-						userCount++
-					}
-				}
-				item.AgentCounts = &output.AgentCountsResponse{
-					Claude: claudeCount,
-					Codex:  codexCount,
-					Gemini: geminiCount,
-					User:   userCount,
-					Total:  len(panes),
-				}
-			}
-			items[i] = item
+	items := make([]output.SessionListItem, len(sessions))
+	for i, s := range sessions {
+		item := output.SessionListItem{
+			Name:             s.Name,
+			Windows:          s.Windows,
+			Attached:         s.Attached,
+			WorkingDirectory: s.Directory,
 		}
-		resp := output.ListResponse{
+
+		// Get panes to count agents
+		panes, err := tmux.GetPanes(s.Name)
+		if err == nil {
+			item.PaneCount = len(panes)
+
+			// Count agent types
+			var claudeCount, codexCount, geminiCount, userCount int
+			for _, p := range panes {
+				switch p.Type {
+				case tmux.AgentClaude:
+					claudeCount++
+				case tmux.AgentCodex:
+					codexCount++
+				case tmux.AgentGemini:
+					geminiCount++
+				default:
+					userCount++
+				}
+			}
+			item.AgentCounts = &output.AgentCountsResponse{
+				Claude: claudeCount,
+				Codex:  codexCount,
+				Gemini: geminiCount,
+				User:   userCount,
+				Total:  len(panes),
+			}
+		}
+		items[i] = item
+	}
+
+	return output.ListResponse{
+		TimestampedResponse: output.NewTimestamped(),
+		Sessions:            items,
+		Count:               len(sessions),
+	}, nil
+}
+
+func coerceStatusResponse(result any) (output.StatusResponse, error) {
+	switch value := result.(type) {
+	case output.StatusResponse:
+		return value, nil
+	case *output.StatusResponse:
+		if value != nil {
+			return *value, nil
+		}
+		return output.StatusResponse{}, fmt.Errorf("sessions.status returned nil response")
+	default:
+		return output.StatusResponse{}, fmt.Errorf("sessions.status returned unexpected type %T", result)
+	}
+}
+
+func estimatePaneContextUsage(p tmux.Pane) (paneContextUsage, bool) {
+	if p.Type == tmux.AgentUser {
+		return paneContextUsage{}, false
+	}
+	modelName := modelNameForPane(p)
+	if modelName == "" {
+		return paneContextUsage{}, false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	out, err := tmux.CaptureForFullContextContext(ctx, p.ID)
+	if err != nil || out == "" {
+		return paneContextUsage{}, false
+	}
+
+	usage := tokens.GetUsageInfo(out, modelName)
+	if usage == nil {
+		return paneContextUsage{}, false
+	}
+
+	return paneContextUsage{
+		Tokens:  usage.EstimatedTokens,
+		Limit:   usage.ContextLimit,
+		Percent: usage.UsagePercent,
+		Model:   usage.Model,
+	}, true
+}
+
+func buildStatusResponse(session string, opts statusOptions) (output.StatusResponse, error) {
+	if err := tmux.EnsureInstalled(); err != nil {
+		return output.StatusResponse{}, err
+	}
+
+	if !tmux.SessionExists(session) {
+		return output.StatusResponse{
 			TimestampedResponse: output.NewTimestamped(),
-			Sessions:            items,
-			Count:               len(sessions),
-		}
-		return output.PrintJSON(resp)
+			Session:             session,
+			Exists:              false,
+		}, nil
 	}
 
-	// Text output
-	if len(sessions) == 0 {
-		fmt.Println("No tmux sessions running")
-		return nil
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		return output.StatusResponse{}, err
 	}
 
-	// Check terminal width for responsive output
-	width, _, _ := term.GetSize(int(os.Stdout.Fd()))
-	isWide := width >= 100
-
-	if isWide {
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "SESSION\tWINDOWS\tSTATE\tAGENTS")
-
-		for _, s := range sessions {
-			attached := "detached"
-			if s.Attached {
-				attached = "attached"
+	// Filter panes by tag
+	if len(opts.tags) > 0 {
+		var filtered []tmux.Pane
+		for _, p := range panes {
+			if HasAnyTag(p.Tags, opts.tags) {
+				filtered = append(filtered, p)
 			}
-
-			// Fetch agents summary
-			agents := "-"
-			panes, err := tmux.GetPanes(s.Name)
-			if err == nil {
-				var cc, cod, gmi, user int
-				for _, p := range panes {
-					switch p.Type {
-					case tmux.AgentClaude:
-						cc++
-					case tmux.AgentCodex:
-						cod++
-					case tmux.AgentGemini:
-						gmi++
-					default:
-						user++
-					}
-				}
-				var parts []string
-				if cc > 0 {
-					parts = append(parts, fmt.Sprintf("%d CC", cc))
-				}
-				if cod > 0 {
-					parts = append(parts, fmt.Sprintf("%d COD", cod))
-				}
-				if gmi > 0 {
-					parts = append(parts, fmt.Sprintf("%d GMI", gmi))
-				}
-				if user > 0 {
-					parts = append(parts, fmt.Sprintf("%d Usr", user))
-				}
-				if len(parts) > 0 {
-					agents = strings.Join(parts, ", ")
-				}
-			}
-
-			fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", s.Name, s.Windows, attached, agents)
 		}
-		w.Flush()
-	} else {
-		// Standard output for narrow screens
-		for _, s := range sessions {
-			attached := ""
-			if s.Attached {
-				attached = " (attached)"
+		panes = filtered
+	}
+
+	dir := cfg.GetProjectDir(session)
+
+	// Load handoff info (best-effort)
+	var handoffGoal, handoffNow, handoffStatus, handoffPath string
+	var handoffAge time.Duration
+	{
+		reader := handoff.NewReader(dir)
+		if goal, now, err := reader.ExtractGoalNow(session); err == nil {
+			handoffGoal = goal
+			handoffNow = now
+		}
+		if h, path, err := reader.FindLatest(session); err == nil && h != nil {
+			if handoffGoal == "" {
+				handoffGoal = h.Goal
 			}
-			fmt.Printf("  %s: %d windows%s\n", s.Name, s.Windows, attached)
+			if handoffNow == "" {
+				handoffNow = h.Now
+			}
+			handoffStatus = h.Status
+			handoffPath = path
+			handoffAge = time.Since(h.CreatedAt)
 		}
 	}
 
-	return nil
+	// Calculate counts
+	var ccCount, codCount, gmiCount, otherCount int
+	for _, p := range panes {
+		switch p.Type {
+		case tmux.AgentClaude:
+			ccCount++
+		case tmux.AgentCodex:
+			codCount++
+		case tmux.AgentGemini:
+			gmiCount++
+		default:
+			otherCount++
+		}
+	}
+
+	// Estimate context usage per pane (best-effort)
+	contextByIndex := make(map[int]paneContextUsage)
+	for _, p := range panes {
+		usage, ok := estimatePaneContextUsage(p)
+		if !ok {
+			continue
+		}
+		contextByIndex[p.Index] = usage
+	}
+
+	// Load assignments if requested (or if filtering/summary requires them)
+	var assignmentStore *assignment.AssignmentStore
+	needAssignments := opts.showAssignments || opts.filterStatus != "" || opts.filterAgent != "" || opts.filterPane >= 0 || opts.showSummary
+	if needAssignments {
+		assignmentStore, _ = assignment.LoadStore(session)
+	}
+
+	// Check if session is attached
+	attached := false
+	sessions, _ := tmux.ListSessions()
+	for _, s := range sessions {
+		if s.Name == session {
+			attached = s.Attached
+			break
+		}
+	}
+
+	resp := output.StatusResponse{
+		TimestampedResponse: output.NewTimestamped(),
+		Session:             session,
+		Exists:              true,
+		Attached:            attached,
+		WorkingDirectory:    dir,
+		AgentCounts: output.AgentCountsResponse{
+			Claude: ccCount,
+			Codex:  codCount,
+			Gemini: gmiCount,
+			User:   otherCount,
+			Total:  len(panes),
+		},
+	}
+
+	if handoffGoal != "" || handoffNow != "" || handoffStatus != "" {
+		handoffInfo := &output.HandoffStatus{
+			Session: session,
+			Goal:    handoffGoal,
+			Now:     handoffNow,
+			Path:    handoffPath,
+			Status:  handoffStatus,
+		}
+		if handoffAge > 0 {
+			handoffInfo.AgeSeconds = int64(handoffAge.Seconds())
+		}
+		resp.Handoff = handoffInfo
+	}
+
+	// Add panes
+	for _, p := range panes {
+		paneResp := output.PaneResponse{
+			Index:   p.Index,
+			Title:   p.Title,
+			Type:    agentTypeToString(p.Type),
+			Variant: p.Variant,
+			Active:  p.Active,
+			Width:   p.Width,
+			Height:  p.Height,
+			Command: p.Command,
+		}
+		if usage, ok := contextByIndex[p.Index]; ok {
+			paneResp.ContextTokens = usage.Tokens
+			paneResp.ContextLimit = usage.Limit
+			paneResp.ContextPercent = usage.Percent
+			paneResp.ContextModel = usage.Model
+		}
+		resp.Panes = append(resp.Panes, paneResp)
+	}
+
+	// Add assignments if requested (with optional filtering)
+	if needAssignments && assignmentStore != nil {
+		assignments := assignmentStore.List()
+		// Apply filters
+		assignments = filterAssignments(assignments, opts.filterStatus, opts.filterAgent, opts.filterPane)
+		// Include individual assignments unless --summary is used
+		if !opts.showSummary {
+			for _, a := range assignments {
+				assignResp := output.AssignmentResponse{
+					BeadID:     a.BeadID,
+					BeadTitle:  a.BeadTitle,
+					Pane:       a.Pane,
+					AgentType:  a.AgentType,
+					AgentName:  a.AgentName,
+					Status:     string(a.Status),
+					AssignedAt: a.AssignedAt.Format(time.RFC3339),
+					FailReason: a.FailReason,
+				}
+				if a.StartedAt != nil {
+					ts := a.StartedAt.Format(time.RFC3339)
+					assignResp.StartedAt = &ts
+				}
+				if a.CompletedAt != nil {
+					ts := a.CompletedAt.Format(time.RFC3339)
+					assignResp.CompletedAt = &ts
+				}
+				if a.FailedAt != nil {
+					ts := a.FailedAt.Format(time.RFC3339)
+					assignResp.FailedAt = &ts
+				}
+				resp.Assignments = append(resp.Assignments, assignResp)
+			}
+		}
+		stats := assignmentStore.Stats()
+		resp.AssignmentStats = &output.AssignmentStats{
+			Total:      stats.Total,
+			Assigned:   stats.Assigned,
+			Working:    stats.Working,
+			Completed:  stats.Completed,
+			Failed:     stats.Failed,
+			Reassigned: stats.Reassigned,
+		}
+	}
+
+	return resp, nil
+}
+
+func coerceSessionResponse(result any) (output.SessionResponse, error) {
+	switch value := result.(type) {
+	case output.SessionResponse:
+		return value, nil
+	case *output.SessionResponse:
+		if value != nil {
+			return *value, nil
+		}
+		return output.SessionResponse{}, fmt.Errorf("sessions.attach returned nil response")
+	default:
+		return output.SessionResponse{}, fmt.Errorf("sessions.attach returned unexpected type %T", result)
+	}
+}
+
+func buildAttachResponse(session string) (output.SessionResponse, error) {
+	if err := tmux.EnsureInstalled(); err != nil {
+		return output.SessionResponse{}, err
+	}
+
+	if !tmux.SessionExists(session) {
+		return output.SessionResponse{
+			Session: session,
+			Exists:  false,
+		}, nil
+	}
+
+	attached := false
+	sessions, _ := tmux.ListSessions()
+	for _, s := range sessions {
+		if s.Name == session {
+			attached = s.Attached
+			break
+		}
+	}
+
+	return output.SessionResponse{
+		Session:  session,
+		Exists:   true,
+		Attached: attached,
+	}, nil
 }
 func newStatusCmd() *cobra.Command {
 	var tags []string
@@ -387,6 +854,30 @@ func runStatusOnce(w io.Writer, session string, opts statusOptions) error {
 		return err
 	}
 
+	if IsJSONOutput() {
+		var filterPane *int
+		if opts.filterPane >= 0 {
+			filterPane = &opts.filterPane
+		}
+		result, err := kernel.Run(context.Background(), "sessions.status", SessionStatusInput{
+			Session:         session,
+			Tags:            opts.tags,
+			ShowAssignments: opts.showAssignments,
+			FilterStatus:    opts.filterStatus,
+			FilterAgent:     opts.filterAgent,
+			FilterPane:      filterPane,
+			ShowSummary:     opts.showSummary,
+		})
+		if err != nil {
+			return outputError(err)
+		}
+		resp, err := coerceStatusResponse(result)
+		if err != nil {
+			return err
+		}
+		return output.PrintJSON(resp)
+	}
+
 	if err := tmux.EnsureInstalled(); err != nil {
 		return outputError(err)
 	}
@@ -421,7 +912,7 @@ func runStatusOnce(w io.Writer, session string, opts statusOptions) error {
 	dir := cfg.GetProjectDir(session)
 
 	// Load handoff info (best-effort)
-	var handoffGoal, handoffNow, handoffStatus, handoffPath string
+	var handoffGoal, handoffNow, handoffStatus string
 	var handoffAge time.Duration
 	{
 		reader := handoff.NewReader(dir)
@@ -429,7 +920,7 @@ func runStatusOnce(w io.Writer, session string, opts statusOptions) error {
 			handoffGoal = goal
 			handoffNow = now
 		}
-		if h, path, err := reader.FindLatest(session); err == nil && h != nil {
+		if h, _, err := reader.FindLatest(session); err == nil && h != nil {
 			if handoffGoal == "" {
 				handoffGoal = h.Goal
 			}
@@ -437,7 +928,6 @@ func runStatusOnce(w io.Writer, session string, opts statusOptions) error {
 				handoffNow = h.Now
 			}
 			handoffStatus = h.Status
-			handoffPath = path
 			handoffAge = time.Since(h.CreatedAt)
 		}
 	}
@@ -460,31 +950,11 @@ func runStatusOnce(w io.Writer, session string, opts statusOptions) error {
 	// Estimate context usage per pane (best-effort)
 	contextByIndex := make(map[int]paneContextUsage)
 	for _, p := range panes {
-		if p.Type == tmux.AgentUser {
+		usage, ok := estimatePaneContextUsage(p)
+		if !ok {
 			continue
 		}
-		modelName := modelNameForPane(p)
-		if modelName == "" {
-			continue
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		out, err := tmux.CaptureForFullContextContext(ctx, p.ID)
-		cancel()
-		if err != nil || out == "" {
-			continue
-		}
-
-		usage := tokens.GetUsageInfo(out, modelName)
-		if usage == nil {
-			continue
-		}
-		contextByIndex[p.Index] = paneContextUsage{
-			Tokens:  usage.EstimatedTokens,
-			Limit:   usage.ContextLimit,
-			Percent: usage.UsagePercent,
-			Model:   usage.Model,
-		}
+		contextByIndex[p.Index] = usage
 	}
 
 	// Load assignments if requested (or if filtering/summary requires them)
@@ -492,115 +962,6 @@ func runStatusOnce(w io.Writer, session string, opts statusOptions) error {
 	needAssignments := opts.showAssignments || opts.filterStatus != "" || opts.filterAgent != "" || opts.filterPane >= 0 || opts.showSummary
 	if needAssignments {
 		assignmentStore, _ = assignment.LoadStore(session)
-	}
-
-	// JSON output mode - build structured response
-	if IsJSONOutput() {
-		// Check if session is attached
-		attached := false
-		sessions, _ := tmux.ListSessions()
-		for _, s := range sessions {
-			if s.Name == session {
-				attached = s.Attached
-				break
-			}
-		}
-
-		resp := output.StatusResponse{
-			TimestampedResponse: output.NewTimestamped(),
-			Session:             session,
-			Exists:              true,
-			Attached:            attached,
-			WorkingDirectory:    dir,
-			AgentCounts: output.AgentCountsResponse{
-				Claude: ccCount,
-				Codex:  codCount,
-				Gemini: gmiCount,
-				User:   otherCount,
-				Total:  len(panes),
-			},
-		}
-
-		if handoffGoal != "" || handoffNow != "" || handoffStatus != "" {
-			handoffInfo := &output.HandoffStatus{
-				Session: session,
-				Goal:    handoffGoal,
-				Now:     handoffNow,
-				Path:    handoffPath,
-				Status:  handoffStatus,
-			}
-			if handoffAge > 0 {
-				handoffInfo.AgeSeconds = int64(handoffAge.Seconds())
-			}
-			resp.Handoff = handoffInfo
-		}
-
-		// Add panes
-		for _, p := range panes {
-			paneResp := output.PaneResponse{
-				Index:   p.Index,
-				Title:   p.Title,
-				Type:    agentTypeToString(p.Type),
-				Variant: p.Variant,
-				Active:  p.Active,
-				Width:   p.Width,
-				Height:  p.Height,
-				Command: p.Command,
-			}
-			if usage, ok := contextByIndex[p.Index]; ok {
-				paneResp.ContextTokens = usage.Tokens
-				paneResp.ContextLimit = usage.Limit
-				paneResp.ContextPercent = usage.Percent
-				paneResp.ContextModel = usage.Model
-			}
-			resp.Panes = append(resp.Panes, paneResp)
-		}
-
-		// Add assignments if requested (with optional filtering)
-		if (opts.showAssignments || opts.filterStatus != "" || opts.filterAgent != "" || opts.filterPane >= 0 || opts.showSummary) && assignmentStore != nil {
-			assignments := assignmentStore.List()
-			// Apply filters
-			assignments = filterAssignments(assignments, opts.filterStatus, opts.filterAgent, opts.filterPane)
-			// Include individual assignments unless --summary is used
-			if !opts.showSummary {
-				for _, a := range assignments {
-					assignResp := output.AssignmentResponse{
-						BeadID:     a.BeadID,
-						BeadTitle:  a.BeadTitle,
-						Pane:       a.Pane,
-						AgentType:  a.AgentType,
-						AgentName:  a.AgentName,
-						Status:     string(a.Status),
-						AssignedAt: a.AssignedAt.Format(time.RFC3339),
-						FailReason: a.FailReason,
-					}
-					if a.StartedAt != nil {
-						ts := a.StartedAt.Format(time.RFC3339)
-						assignResp.StartedAt = &ts
-					}
-					if a.CompletedAt != nil {
-						ts := a.CompletedAt.Format(time.RFC3339)
-						assignResp.CompletedAt = &ts
-					}
-					if a.FailedAt != nil {
-						ts := a.FailedAt.Format(time.RFC3339)
-						assignResp.FailedAt = &ts
-					}
-					resp.Assignments = append(resp.Assignments, assignResp)
-				}
-			}
-			stats := assignmentStore.Stats()
-			resp.AssignmentStats = &output.AssignmentStats{
-				Total:      stats.Total,
-				Assigned:   stats.Assigned,
-				Working:    stats.Working,
-				Completed:  stats.Completed,
-				Failed:     stats.Failed,
-				Reassigned: stats.Reassigned,
-			}
-		}
-
-		return output.PrintJSON(resp)
 	}
 
 	// Text output
@@ -1072,6 +1433,7 @@ func runStatusWatch(w io.Writer, session string, opts statusOptions) error {
 	fmt.Print("\033[?25l")
 	defer fmt.Print("\033[?25h")
 
+	// ubs:ignore - ticker stopped via defer below
 	ticker := time.NewTicker(opts.interval)
 	defer ticker.Stop()
 

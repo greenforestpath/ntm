@@ -4,9 +4,12 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -17,7 +20,64 @@ var (
 	ErrTimeout           = errors.New("operation timed out")
 	ErrSchemaValidation  = errors.New("schema validation failed")
 	ErrCapabilityMissing = errors.New("capability not available")
+	ErrOutputLimitExceeded = errors.New("output limit exceeded")
 )
+
+// VersionRegex matches semantic version strings like "0.31.0"
+var VersionRegex = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
+
+// ParseStandardVersion extracts version from command output using VersionRegex.
+// It handles standard semantic version formats (X.Y.Z).
+func ParseStandardVersion(output string) (Version, error) {
+	output = strings.TrimSpace(output)
+	matches := VersionRegex.FindStringSubmatch(output)
+	if len(matches) < 4 {
+		return Version{Raw: output}, nil
+	}
+
+	var major, minor, patch int
+	fmt.Sscanf(matches[1], "%d", &major)
+	fmt.Sscanf(matches[2], "%d", &minor)
+	fmt.Sscanf(matches[3], "%d", &patch)
+
+	return Version{
+		Major: major,
+		Minor: minor,
+		Patch: patch,
+		Raw:   output,
+	}, nil
+}
+
+// parseVersion is the generic version parser that extracts X.Y.Z from any string.
+// It is used by tools with simple version output formats (GIIL, RU, XF, DCG, UBS, etc.).
+func parseVersion(output string) (Version, error) {
+	return ParseStandardVersion(output)
+}
+
+// parseACFSVersion extracts version from ACFS output.
+// ACFS uses simple "X.Y.Z" format, so we delegate to the standard parser.
+func parseACFSVersion(output string) (Version, error) {
+	return ParseStandardVersion(output)
+}
+
+// LimitedBuffer is a bytes.Buffer that errors on overflow.
+// It is used to prevent OOM when capturing command output.
+type LimitedBuffer struct {
+	bytes.Buffer
+	Limit int
+}
+
+// NewLimitedBuffer creates a new LimitedBuffer with the specified limit.
+func NewLimitedBuffer(limit int) *LimitedBuffer {
+	return &LimitedBuffer{Limit: limit}
+}
+
+func (b *LimitedBuffer) Write(p []byte) (n int, err error) {
+	if b.Len()+len(p) > b.Limit {
+		return 0, ErrOutputLimitExceeded
+	}
+	return b.Buffer.Write(p)
+}
 
 // ToolName identifies a specific tool in the ecosystem
 type ToolName string

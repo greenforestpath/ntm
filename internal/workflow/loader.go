@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 //go:embed builtins/*.toml
@@ -212,14 +213,20 @@ func ProfileToAgentType(profile string) string {
 	profile = strings.ToLower(profile)
 	switch profile {
 	case "claude", "cc", "claude-code":
-		return "cc"
+		return string(agent.AgentTypeClaudeCode)
 	case "codex", "cod", "codex-cli":
-		return "cod"
+		return string(agent.AgentTypeCodex)
 	case "gemini", "gmi", "gemini-cli":
-		return "gmi"
+		return string(agent.AgentTypeGemini)
+	case "cursor":
+		return string(agent.AgentTypeCursor)
+	case "windsurf":
+		return string(agent.AgentTypeWindsurf)
+	case "aider":
+		return string(agent.AgentTypeAider)
 	default:
 		// Default to Claude for unknown profiles (most capable agent)
-		return "cc"
+		return string(agent.AgentTypeClaudeCode)
 	}
 }
 

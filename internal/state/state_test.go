@@ -20,14 +20,15 @@ func testStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("Open in-memory db error: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
 
 	store := &Store{db: db, path: ":memory:"}
 
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("Migrate() error: %v", err)
 	}
-
-	t.Cleanup(func() { store.Close() })
 
 	return store
 }
@@ -219,7 +220,7 @@ func TestMigrate(t *testing.T) {
 	t.Logf("Existing tables: %v", existingTables)
 
 	// Verify tables exist by trying to query them
-	tables := []string{"sessions", "agents", "tasks", "reservations", "approvals", "context_packs", "tool_health", "event_log", "_migrations"}
+	tables := []string{"sessions", "agents", "tasks", "reservations", "approvals", "context_packs", "tool_health", "event_log", "ensemble_sessions", "mode_assignments", "_migrations"}
 	for _, table := range tables {
 		r, err := store.db.Query("SELECT 1 FROM " + table + " LIMIT 1")
 		if err != nil {

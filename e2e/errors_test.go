@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // ErrorsResponse represents the JSON output from --robot-errors
@@ -166,7 +168,7 @@ func TestE2E_ErrorsPaneFilter(t *testing.T) {
 
 	// Create additional pane
 	suite.Logger().Log("[E2E-ERRORS] Creating second pane...")
-	createCmd := exec.Command("tmux", "split-window", "-t", session, "-v")
+	createCmd := exec.Command(tmux.BinaryPath(), "split-window", "-t", session, "-v")
 	if err := createCmd.Run(); err != nil {
 		t.Fatalf("[E2E-ERRORS] Failed to create second pane: %v", err)
 	}
@@ -175,7 +177,7 @@ func TestE2E_ErrorsPaneFilter(t *testing.T) {
 	// Inject error only in pane 0
 	suite.Logger().Log("[E2E-ERRORS] Injecting error in pane 0 only...")
 	paneTarget := fmt.Sprintf("%s:0.0", session)
-	errorCmd := exec.Command("tmux", "send-keys", "-t", paneTarget,
+	errorCmd := exec.Command(tmux.BinaryPath(), "send-keys", "-t", paneTarget,
 		`echo "ERROR: Test error in pane 0"`, "Enter")
 	if err := errorCmd.Run(); err != nil {
 		suite.Logger().Log("[E2E-ERRORS] Failed to inject error: %v", err)
@@ -241,10 +243,10 @@ func TestE2E_ErrorsPatternDetection(t *testing.T) {
 
 			// Clear and inject
 			paneTarget := fmt.Sprintf("%s:0.0", session)
-			exec.Command("tmux", "send-keys", "-t", paneTarget, "clear", "Enter").Run()
+			exec.Command(tmux.BinaryPath(), "send-keys", "-t", paneTarget, "clear", "Enter").Run()
 			time.Sleep(200 * time.Millisecond)
 
-			injectCmd := exec.Command("tmux", "send-keys", "-t", paneTarget, tc.inject, "Enter")
+			injectCmd := exec.Command(tmux.BinaryPath(), "send-keys", "-t", paneTarget, tc.inject, "Enter")
 			if err := injectCmd.Run(); err != nil {
 				suite.Logger().Log("[E2E-ERRORS] Inject failed: %v", err)
 			}
@@ -422,7 +424,7 @@ func TestE2E_ErrorsCleanSession(t *testing.T) {
 
 	// Send some benign output
 	paneTarget := fmt.Sprintf("%s:0.0", session)
-	exec.Command("tmux", "send-keys", "-t", paneTarget, "echo 'INFO: All systems normal'", "Enter").Run()
+	exec.Command(tmux.BinaryPath(), "send-keys", "-t", paneTarget, "echo 'INFO: All systems normal'", "Enter").Run()
 	time.Sleep(500 * time.Millisecond)
 
 	cmd := exec.Command("ntm", fmt.Sprintf("--robot-errors=%s", session))
@@ -450,7 +452,7 @@ func TestE2E_ErrorsCleanSession(t *testing.T) {
 func injectPythonError(t *testing.T, suite *TestSuite, session string) {
 	t.Helper()
 	paneTarget := fmt.Sprintf("%s:0.0", session)
-	cmd := exec.Command("tmux", "send-keys", "-t", paneTarget,
+	cmd := exec.Command(tmux.BinaryPath(), "send-keys", "-t", paneTarget,
 		`echo "Traceback (most recent call last):" && echo '  File "test.py", line 42, in main' && echo "FileNotFoundError: [Errno 2] No such file or directory"`,
 		"Enter")
 	if err := cmd.Run(); err != nil {
@@ -462,7 +464,7 @@ func injectPythonError(t *testing.T, suite *TestSuite, session string) {
 func injectGoError(t *testing.T, suite *TestSuite, session string) {
 	t.Helper()
 	paneTarget := fmt.Sprintf("%s:0.0", session)
-	cmd := exec.Command("tmux", "send-keys", "-t", paneTarget,
+	cmd := exec.Command(tmux.BinaryPath(), "send-keys", "-t", paneTarget,
 		`echo "panic: runtime error: index out of range [5] with length 3" && echo "goroutine 1 [running]:" && echo "main.main()" && echo "        /app/main.go:25 +0x45"`,
 		"Enter")
 	if err := cmd.Run(); err != nil {

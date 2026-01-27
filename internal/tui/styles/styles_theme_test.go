@@ -10,6 +10,7 @@ import (
 
 func TestDefaultGradientUsesCurrentThemeColors(t *testing.T) {
 	t.Setenv("NTM_THEME", "latte")
+	t.Setenv("NTM_NO_COLOR", "0")
 
 	got := defaultGradient()
 	want := []string{
@@ -25,6 +26,7 @@ func TestDefaultGradientUsesCurrentThemeColors(t *testing.T) {
 
 func TestDefaultSurface1UsesCurrentThemeColor(t *testing.T) {
 	t.Setenv("NTM_THEME", "latte")
+	t.Setenv("NTM_NO_COLOR", "0")
 
 	got := string(defaultSurface1())
 	want := string(theme.CatppuccinLatte.Surface1)
@@ -36,6 +38,7 @@ func TestDefaultSurface1UsesCurrentThemeColor(t *testing.T) {
 
 func TestDefaultGradientFollowsThemeChange(t *testing.T) {
 	t.Setenv("NTM_THEME", "mocha")
+	t.Setenv("NTM_NO_COLOR", "0")
 
 	got := defaultGradient()
 	want := []string{
@@ -53,5 +56,6 @@ func TestDefaultGradientFollowsThemeChange(t *testing.T) {
 func TestMain(m *testing.M) {
 	code := m.Run()
 	_ = os.Unsetenv("NTM_THEME")
+	_ = os.Unsetenv("NTM_NO_COLOR")
 	os.Exit(code)
 }

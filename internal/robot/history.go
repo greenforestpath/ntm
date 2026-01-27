@@ -39,14 +39,23 @@ type HistoryAgentHints struct {
 	Warnings          []string `json:"warnings,omitempty"`
 }
 
-// PrintHistory outputs command history as JSON
-func PrintHistory(opts HistoryOptions) error {
+// GetHistory returns command history as structured output.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetHistory(opts HistoryOptions) (*HistoryOutput, error) {
+	output := &HistoryOutput{
+		RobotResponse: NewRobotResponse(true),
+		Session:       opts.Session,
+		GeneratedAt:   time.Now().UTC(),
+		Entries:       []history.HistoryEntry{},
+	}
+
 	if opts.Session == "" {
-		return RobotError(
+		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("session name is required"),
 			ErrCodeInvalidFlag,
 			"Provide session name: ntm --robot-history=myproject",
 		)
+		return output, nil
 	}
 
 	// Verify session exists
@@ -54,29 +63,25 @@ func PrintHistory(opts HistoryOptions) error {
 		// Session doesn't exist, but we might still have history
 		// history.Exists() checks for global history file
 		if !history.Exists() {
-			return RobotError(
+			output.RobotResponse = NewErrorResponse(
 				fmt.Errorf("session '%s' not found and no history exists", opts.Session),
 				ErrCodeSessionNotFound,
 				"Use 'ntm list' to see available sessions",
 			)
+			return output, nil
 		}
-	}
-
-	output := HistoryOutput{
-		RobotResponse: NewRobotResponse(true),
-		Session:       opts.Session,
-		GeneratedAt:   time.Now().UTC(),
 	}
 
 	// Stats mode
 	if opts.Stats {
 		stats, err := history.GetStats()
 		if err != nil {
-			return RobotError(
+			output.RobotResponse = NewErrorResponse(
 				fmt.Errorf("failed to get stats: %w", err),
 				ErrCodeInternalError,
 				"History file may be corrupted",
 			)
+			return output, nil
 		}
 		// Filter stats for session if needed?
 		// history.GetStats() returns global stats.
@@ -99,20 +104,20 @@ func PrintHistory(opts HistoryOptions) error {
 		} else {
 			output.Stats = stats // Fallback to global
 		}
-		output.AgentHints = generateHistoryHints(output, opts)
-		return encodeJSON(output)
+		output.AgentHints = generateHistoryHints(*output, opts)
+		return output, nil
 	}
 
 	// Get entries for the session
-	// Note: opts.Session is guaranteed non-empty (checked at line 44)
 	entries, err := history.ReadForSession(opts.Session)
 
 	if err != nil {
-		return RobotError(
+		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("failed to read history: %w", err),
 			ErrCodeInternalError,
 			"Check permissions on history file",
 		)
+		return output, nil
 	}
 
 	output.Total = len(entries)
@@ -122,14 +127,15 @@ func PrintHistory(opts HistoryOptions) error {
 	var sinceTime time.Time
 
 	if opts.Since != "" {
-		var err error
-		sinceTime, err = parseSinceTime(opts.Since)
-		if err != nil {
-			return RobotError(
-				fmt.Errorf("invalid --since value: %w", err),
+		var parseErr error
+		sinceTime, parseErr = parseSinceTime(opts.Since)
+		if parseErr != nil {
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("invalid --since value: %w", parseErr),
 				ErrCodeInvalidFlag,
 				"Use duration (1h, 30m, 2d) or ISO8601 date",
 			)
+			return output, nil
 		}
 	}
 
@@ -168,8 +174,18 @@ func PrintHistory(opts HistoryOptions) error {
 
 	output.Entries = filtered
 	output.Filtered = len(filtered)
-	output.AgentHints = generateHistoryHints(output, opts)
+	output.AgentHints = generateHistoryHints(*output, opts)
 
+	return output, nil
+}
+
+// PrintHistory outputs command history as JSON.
+// This is a thin wrapper around GetHistory() for CLI output.
+func PrintHistory(opts HistoryOptions) error {
+	output, err := GetHistory(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 

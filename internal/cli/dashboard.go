@@ -216,8 +216,8 @@ func runDashboardPlain(w io.Writer, errW io.Writer, session string) error {
 	fmt.Fprintf(w, "Session: %s\n", session)
 	fmt.Fprintf(w, "Panes: %d\n", len(panes))
 	fmt.Fprintf(w, "Agents: Claude=%d Codex=%d Gemini=%d Other=%d\n",
-		counts["cc"], counts["cod"], counts["gmi"],
-		counts["user"]+counts["cursor"]+counts["windsurf"]+counts["aider"])
+		counts[string(tmux.AgentClaude)], counts[string(tmux.AgentCodex)], counts[string(tmux.AgentGemini)],
+		counts[string(tmux.AgentUser)]+counts[string(tmux.AgentCursor)]+counts[string(tmux.AgentWindsurf)]+counts[string(tmux.AgentAider)])
 	fmt.Fprintln(w, strings.Repeat("-", 60))
 
 	// Pane details

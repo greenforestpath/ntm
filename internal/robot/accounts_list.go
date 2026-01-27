@@ -30,12 +30,9 @@ type AccountsListOptions struct {
 	Provider string // Optional filter for a specific provider (claude, openai, gemini)
 }
 
-// PrintAccountsList handles the --robot-accounts-list command
-// Usage:
-//
-//	ntm --robot-accounts-list              # List all accounts
-//	ntm --robot-accounts-list --provider claude  # List only Claude accounts
-func PrintAccountsList(opts AccountsListOptions) error {
+// GetAccountsList returns the list of accounts.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetAccountsList(opts AccountsListOptions) (*AccountsListOutput, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -43,26 +40,25 @@ func PrintAccountsList(opts AccountsListOptions) error {
 
 	// Check if CAAM is available
 	if _, installed := adapter.Detect(); !installed {
-		output := AccountsListOutput{
+		output := &AccountsListOutput{
 			RobotResponse: NewErrorResponse(nil, ErrCodeDependencyMissing, "Install caam to manage coding agent accounts"),
 			Accounts:      []AccountInfo{}, // Empty array, not nil
 		}
 		output.Error = "caam not installed"
-		return outputJSON(output)
+		return output, nil
 	}
 
 	// Get all accounts from CAAM
 	accounts, err := adapter.GetAccounts(ctx)
 	if err != nil {
-		output := AccountsListOutput{
+		return &AccountsListOutput{
 			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Check if caam is configured correctly"),
 			Accounts:      []AccountInfo{}, // Empty array, not nil
-		}
-		return outputJSON(output)
+		}, nil
 	}
 
 	// Build output
-	output := AccountsListOutput{
+	output := &AccountsListOutput{
 		RobotResponse: NewRobotResponse(true),
 		Accounts:      []AccountInfo{}, // Initialize to empty array
 	}
@@ -92,5 +88,15 @@ func PrintAccountsList(opts AccountsListOptions) error {
 		output.Accounts = append(output.Accounts, info)
 	}
 
+	return output, nil
+}
+
+// PrintAccountsList handles the --robot-accounts-list command.
+// This is a thin wrapper around GetAccountsList() for CLI output.
+func PrintAccountsList(opts AccountsListOptions) error {
+	output, err := GetAccountsList(opts)
+	if err != nil {
+		return err
+	}
 	return outputJSON(output)
 }
