@@ -505,7 +505,7 @@ allowed:
 blocked:
   - pattern: 'git\s+reset\s+--hard'
     reason: "Hard reset loses uncommitted changes"
-  - pattern: 'git\s+clean\s+-fd'
+  - pattern: 'git\s+clean\s+.*(-fd|-df|-f\s+-d|-d\s+-f)'
     reason: "Removes untracked files permanently"
   - pattern: 'git\s+push\s+.*--force'
     reason: "Force push can overwrite remote history"
@@ -513,7 +513,9 @@ blocked:
     reason: "Force push can overwrite remote history"
   - pattern: 'git\s+push\s+-f(\s|$)'
     reason: "Force push can overwrite remote history"
-  - pattern: 'rm\s+-rf\s+/$'
+  - pattern: 'git\s+push\s+.*(\s\+|:\+)'
+    reason: "Force push via +refspec can overwrite remote history"
+  - pattern: 'rm\s+-rf\s+/+$'
     reason: "Recursive delete of root is catastrophic"
   - pattern: 'rm\s+-rf\s+~'
     reason: "Recursive delete of home directory"

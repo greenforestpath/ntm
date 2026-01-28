@@ -45,7 +45,13 @@ func resolveTmuxBinaryPath() string {
 		"/usr/bin/tmux",
 		"/usr/local/bin/tmux",
 		"/opt/homebrew/bin/tmux",
+		"/bin/tmux",
 	}
+
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, fmt.Sprintf("%s/.local/bin/tmux", home))
+	}
+
 	for _, path := range candidates {
 		if binaryExists(path) {
 			return path

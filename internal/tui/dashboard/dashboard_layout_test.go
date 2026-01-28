@@ -11,6 +11,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
+	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -474,17 +475,7 @@ func TestSidebarRendersMetricsAndHistoryPanelsWhenSpaceAllows(t *testing.T) {
 
 	updated, _ := m.Update(MetricsUpdateMsg{
 		Data: panels.MetricsData{
-			TotalTokens: 1234,
-			TotalCost:   0.42,
-			Agents: []panels.AgentMetric{
-				{
-					Name:       "cc_1",
-					Type:       "cc",
-					Tokens:     1000,
-					Cost:       0.21,
-					ContextPct: 0.42,
-				},
-			},
+			Coverage: &ensemble.CoverageReport{Overall: 0.5},
 		},
 	})
 	m = updated.(Model)
@@ -505,7 +496,7 @@ func TestSidebarRendersMetricsAndHistoryPanelsWhenSpaceAllows(t *testing.T) {
 	m = updated.(Model)
 
 	out := status.StripANSI(m.renderSidebar(60, 30))
-	if !strings.Contains(out, "Metrics & Usage") {
+	if !strings.Contains(out, "Metrics") {
 		t.Fatalf("expected sidebar to include metrics panel title; got:\n%s", out)
 	}
 	if !strings.Contains(out, "Command History") {
@@ -1288,8 +1279,7 @@ func TestRenderMetricsPanel(t *testing.T) {
 
 	m := newTestModel(200)
 	m.metricsPanel.SetData(panels.MetricsData{
-		TotalTokens: 1000,
-		TotalCost:   0.50,
+		Coverage: &ensemble.CoverageReport{Overall: 0.5},
 	}, nil)
 
 	result := m.renderMetricsPanel(50, 10)
@@ -1617,60 +1607,6 @@ func TestRenderTableHeaderHiddenIndicator(t *testing.T) {
 	}
 }
 
-// TestMergeRoutingIntoMetrics verifies that routing data is correctly merged into metrics.
-func TestMergeRoutingIntoMetrics(t *testing.T) {
-	t.Parallel()
-
-	m := newTestModel(120)
-
-	// Set up panes with known IDs
-	m.panes = []tmux.Pane{
-		{ID: "%1", Title: "claude-1", Type: tmux.AgentClaude},
-		{ID: "%2", Title: "codex-1", Type: tmux.AgentCodex},
-	}
-
-	// Create metrics data without routing info
-	metricsData := panels.MetricsData{
-		TotalTokens: 200,
-		TotalCost:   0.02,
-		Agents: []panels.AgentMetric{
-			{Name: "claude-1", Type: "cc", Tokens: 100},
-			{Name: "codex-1", Type: "cod", Tokens: 100},
-		},
-	}
-
-	// Create routing scores
-	routingScores := map[string]RoutingScore{
-		"%1": {Score: 90.0, IsRecommended: true, State: "waiting"},
-		"%2": {Score: 70.0, IsRecommended: false, State: "generating"},
-	}
-
-	// Merge routing into metrics
-	result := m.mergeRoutingIntoMetrics(metricsData, routingScores)
-
-	// Verify first agent got routing info
-	if result.Agents[0].RoutingScore != 90.0 {
-		t.Errorf("expected agent[0].RoutingScore = 90, got %f", result.Agents[0].RoutingScore)
-	}
-	if !result.Agents[0].IsRecommended {
-		t.Error("expected agent[0].IsRecommended = true")
-	}
-	if result.Agents[0].State != "waiting" {
-		t.Errorf("expected agent[0].State = 'waiting', got %q", result.Agents[0].State)
-	}
-
-	// Verify second agent got routing info
-	if result.Agents[1].RoutingScore != 70.0 {
-		t.Errorf("expected agent[1].RoutingScore = 70, got %f", result.Agents[1].RoutingScore)
-	}
-	if result.Agents[1].IsRecommended {
-		t.Error("expected agent[1].IsRecommended = false")
-	}
-	if result.Agents[1].State != "generating" {
-		t.Errorf("expected agent[1].State = 'generating', got %q", result.Agents[1].State)
-	}
-}
-
 // TestRoutingUpdateMsgHandling verifies that RoutingUpdateMsg updates the model correctly.
 func TestRoutingUpdateMsgHandling(t *testing.T) {
 	t.Parallel()
@@ -1679,10 +1615,7 @@ func TestRoutingUpdateMsgHandling(t *testing.T) {
 	m.panes = []tmux.Pane{
 		{ID: "%1", Title: "claude-1", Type: tmux.AgentClaude},
 	}
-	m.metricsData = panels.MetricsData{
-		TotalTokens: 100,
-		Agents:      []panels.AgentMetric{{Name: "claude-1", Type: "cc", Tokens: 100}},
-	}
+	m.metricsData = panels.MetricsData{}
 	m.fetchingRouting = true
 
 	// Send RoutingUpdateMsg

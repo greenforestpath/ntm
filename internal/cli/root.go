@@ -306,6 +306,31 @@ Shell Integration:
 			}
 			return
 		}
+		if robotEnsembleModesList {
+			pagination, err := resolveRobotPagination(cmd)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			opts := robot.EnsembleModesOptions{
+				Category: strings.TrimSpace(jfpCategory),
+				Tier:     strings.TrimSpace(robotEnsembleTier),
+				Limit:    pagination.Limit,
+				Offset:   pagination.Offset,
+			}
+			if err := robot.PrintEnsembleModes(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotEnsemblePresetsList {
+			if err := robot.PrintEnsemblePresets(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if robotEnsembleSpawn != "" {
 			applyRobotEnsembleConfigDefaults(cmd, cfg)
 			opts := robot.EnsembleSpawnOptions{
@@ -929,6 +954,14 @@ Shell Integration:
 			return
 		}
 		if robotAck != "" {
+			// Load message from --msg or --msg-file (reuse logic from robot-send)
+			msg, err := loadRobotSendMessage(robotSendMsg, robotSendMsgFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			robotSendMsg = msg
+
 			// Parse pane filter
 			var paneFilter []string
 			if robotPanes != "" {
@@ -1535,6 +1568,9 @@ var (
 	robotContext               string // session name for context usage
 	robotEnsemble              string // session name for ensemble state
 	robotEnsembleSpawn         string // session name for ensemble spawn
+	robotEnsembleModesList     bool   // list reasoning modes via robot API
+	robotEnsemblePresetsList   bool   // list ensemble presets via robot API
+	robotEnsembleTier          string // tier filter for robot-ensemble-modes
 	robotEnsemblePreset        string // preset name for ensemble spawn
 	robotEnsembleModes         string // mode IDs/codes for ensemble spawn
 	robotEnsembleQuestion      string // question for ensemble spawn
@@ -1926,6 +1962,8 @@ func init() {
 	rootCmd.Flags().IntVar(&robotTriageLimit, "triage-limit", 10, "Max recommendations per category. Optional with --robot-triage. Example: --triage-limit=20")
 	rootCmd.Flags().BoolVar(&robotDashboard, "robot-dashboard", false, "Get dashboard summary as markdown (or JSON with --json). Token-efficient overview")
 	rootCmd.Flags().StringVar(&robotContext, "robot-context", "", "Get context window usage for all agents in a session. Required: SESSION. Example: ntm --robot-context=myproject")
+	rootCmd.Flags().BoolVar(&robotEnsembleModesList, "robot-ensemble-modes", false, "List reasoning modes (JSON). Optional: --tier, --category, --limit, --offset")
+	rootCmd.Flags().BoolVar(&robotEnsemblePresetsList, "robot-ensemble-presets", false, "List ensemble presets (JSON). Example: ntm --robot-ensemble-presets")
 	rootCmd.Flags().StringVar(&robotEnsemble, "robot-ensemble", "", "Get ensemble state for a session. Required: SESSION. Example: ntm --robot-ensemble=myproject")
 	rootCmd.Flags().StringVar(&robotEnsembleSpawn, "robot-ensemble-spawn", "", "Spawn a reasoning ensemble. Required: SESSION. Example: ntm --robot-ensemble-spawn=myproject --preset=project-diagnosis --question='...'")
 	rootCmd.Flags().StringVar(&robotEnsemblePreset, "preset", "", "Ensemble preset name. Required with --robot-ensemble-spawn unless --modes is set")
@@ -2277,6 +2315,7 @@ func init() {
 	// --category and --tag for JFP
 	rootCmd.Flags().StringVar(&jfpCategory, "category", "", "Filter by category")
 	rootCmd.Flags().StringVar(&jfpTag, "tag", "", "Filter by tag")
+	rootCmd.Flags().StringVar(&robotEnsembleTier, "tier", "", "Filter by tier: core, advanced, experimental, all (used with --robot-ensemble-modes)")
 
 	// --days and --group-by for tokens
 	rootCmd.Flags().IntVar(&robotTokensDays, "days", 30, "Number of days to analyze")

@@ -449,8 +449,6 @@ type Model struct {
 	beadsSummary  bv.BeadsSummary
 	beadsReady    []bv.BeadPreview
 	activeAlerts  []alerts.Alert
-	metricsTokens int
-	metricsCost   float64
 	metricsData   panels.MetricsData // Cached full metrics data for panel
 	cmdHistory    []history.HistoryEntry
 	fileChanges   []tracker.RecordedFileChange
@@ -2013,8 +2011,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.metricsError = msg.Err
 		if msg.Err == nil {
-			m.metricsTokens = msg.Data.TotalTokens
-			m.metricsCost = msg.Data.TotalCost
 			m.metricsData = msg.Data
 			m.markUpdated(refreshMetrics, time.Now())
 		}
@@ -2097,9 +2093,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.routingError = msg.Err
 		if msg.Err == nil && msg.Scores != nil {
 			m.routingScores = msg.Scores
-			// Merge routing data into metrics data
-			m.metricsData = m.mergeRoutingIntoMetrics(m.metricsData, msg.Scores)
-			m.metricsPanel.SetData(m.metricsData, m.metricsError)
 			m.markUpdated(refreshRouting, time.Now())
 		}
 		return m, nil
@@ -4883,7 +4876,7 @@ func (m Model) renderSidebar(width, height int) string {
 	}
 
 	// Metrics (best-effort, height-gated)
-	if m.metricsPanel != nil && height > 0 && (m.metricsError != nil || m.metricsData.TotalTokens > 0 || len(m.metricsData.Agents) > 0) {
+	if m.metricsPanel != nil && height > 0 && (m.metricsError != nil || hasMetricsData(m.metricsData)) {
 		used := lipgloss.Height(strings.Join(lines, "\n"))
 		spacer := 1
 		panelHeight := height - used - spacer
@@ -5119,6 +5112,10 @@ func (m Model) renderMetricsPanel(width, height int) string {
 		m.metricsPanel.Blur()
 	}
 	return m.metricsPanel.View()
+}
+
+func hasMetricsData(data panels.MetricsData) bool {
+	return data.Coverage != nil || data.Redundancy != nil || data.Velocity != nil || data.Conflicts != nil
 }
 
 func (m Model) renderHistoryPanel(width, height int) string {
@@ -5474,35 +5471,6 @@ func activitySummaryLine(rows []PaneTableRow, t theme.Theme) string {
 
 	label := lipgloss.NewStyle().Foreground(t.Subtext).Bold(true)
 	return label.Render("Activity:") + " " + strings.Join(compactBadges, " ")
-}
-
-// mergeRoutingIntoMetrics updates metrics data with routing scores.
-// It matches agents by pane ID (mapped from pane title/name).
-func (m Model) mergeRoutingIntoMetrics(data panels.MetricsData, scores map[string]RoutingScore) panels.MetricsData {
-	// Build a lookup from pane name to pane ID
-	paneNameToID := make(map[string]string)
-	for _, p := range m.panes {
-		paneNameToID[p.Title] = p.ID
-	}
-
-	// Update each agent with routing info
-	for i := range data.Agents {
-		agent := &data.Agents[i]
-		// Look up pane ID by agent name
-		paneID, ok := paneNameToID[agent.Name]
-		if !ok {
-			continue
-		}
-
-		// Look up routing score by pane ID
-		if score, found := scores[paneID]; found {
-			agent.RoutingScore = score.Score
-			agent.IsRecommended = score.IsRecommended
-			agent.State = score.State
-		}
-	}
-
-	return data
 }
 
 // handleConflictAction handles user actions on file reservation conflicts.
