@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env -S bash -l
 set -euo pipefail
 
 # NTM TOON E2E Test Script
