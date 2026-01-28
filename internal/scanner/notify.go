@@ -76,8 +76,7 @@ func NotifyScanResults(ctx context.Context, result *ScanResult, projectKey strin
 
 		// Check all files with findings against reservation pattern
 		for file, findings := range findingsByFile {
-			matched, _ := filepath.Match(res.PathPattern, file)
-			if matched {
+			if matchAssignmentPattern(res.PathPattern, file) {
 				for _, f := range findings {
 					if matchedFindings[FindingSignature(f)] {
 						continue
