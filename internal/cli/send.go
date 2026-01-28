@@ -1663,12 +1663,18 @@ func generateKillSummary(session string) (*summary.SessionSummary, error) {
 	}
 
 	wd, _ := os.Getwd()
+	projectDir := cfg.GetProjectDir(session)
+	if projectDir == "" {
+		projectDir = wd
+	}
 
 	opts := summary.Options{
-		Session:    session,
-		Outputs:    outputs,
-		Format:     summary.FormatBrief,
-		ProjectKey: wd,
+		Session:        session,
+		Outputs:        outputs,
+		Format:         summary.FormatBrief,
+		ProjectKey:     wd,
+		ProjectDir:     projectDir,
+		IncludeGitDiff: true, // Include git changes in summary
 	}
 
 	return summary.SummarizeSession(context.Background(), opts)

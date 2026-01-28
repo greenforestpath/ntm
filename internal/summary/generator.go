@@ -1,10 +1,12 @@
 package summary
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -76,6 +78,8 @@ type Options struct {
 	Format          SummaryFormat
 	MaxTokens       int
 	ProjectKey      string
+	ProjectDir      string // Working directory for git operations
+	IncludeGitDiff  bool   // Include git diff in summary
 	ThreadIDs       []string
 	AgentMailClient *agentmail.Client
 	Summarizer      Summarizer
@@ -97,6 +101,12 @@ func SummarizeSession(ctx context.Context, opts Options) (*SessionSummary, error
 	}
 
 	data := aggregateOutputs(opts.Outputs)
+
+	// Enrich with git state if requested
+	if opts.IncludeGitDiff && opts.ProjectDir != "" {
+		gitFiles := getGitFileChanges(opts.ProjectDir)
+		data.files = mergeFileChanges(data.files, gitFiles)
+	}
 
 	// Agent Mail thread summaries
 	var threadSummaries []agentmail.ThreadSummary
@@ -1023,4 +1033,72 @@ func truncateAtRuneBoundary(s string, maxBytes int) string {
 // yamlMarshal is a small wrapper to avoid leaking yaml dependency in callers.
 func yamlMarshal(h *handoff.Handoff) ([]byte, error) {
 	return yaml.Marshal(h)
+}
+
+// getGitFileChanges retrieves file changes from git working directory.
+// Returns modified, untracked, and deleted files.
+func getGitFileChanges(projectDir string) []FileChange {
+	var changes []FileChange
+
+	// Get modified files from git diff
+	cmd := exec.Command("git", "diff", "--name-only", "HEAD")
+	cmd.Dir = projectDir
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err == nil {
+		for _, path := range parseLines(out.String()) {
+			if path != "" {
+				changes = append(changes, FileChange{
+					Path:   path,
+					Action: FileActionModified,
+				})
+			}
+		}
+	}
+
+	// Get untracked files
+	cmd = exec.Command("git", "ls-files", "--others", "--exclude-standard")
+	cmd.Dir = projectDir
+	out.Reset()
+	cmd.Stdout = &out
+	if err := cmd.Run(); err == nil {
+		for _, path := range parseLines(out.String()) {
+			if path != "" {
+				changes = append(changes, FileChange{
+					Path:   path,
+					Action: FileActionCreated,
+				})
+			}
+		}
+	}
+
+	// Get deleted files from git status
+	cmd = exec.Command("git", "diff", "--name-only", "--diff-filter=D", "HEAD")
+	cmd.Dir = projectDir
+	out.Reset()
+	cmd.Stdout = &out
+	if err := cmd.Run(); err == nil {
+		for _, path := range parseLines(out.String()) {
+			if path != "" {
+				changes = append(changes, FileChange{
+					Path:   path,
+					Action: FileActionDeleted,
+				})
+			}
+		}
+	}
+
+	return changes
+}
+
+// parseLines splits output by newlines and filters empty lines.
+func parseLines(s string) []string {
+	var lines []string
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
