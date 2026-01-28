@@ -87,7 +87,16 @@ func ResolveSession(session string, w io.Writer) (SessionResolution, error) {
 
 func ResolveSessionWithOptions(session string, w io.Writer, opts SessionResolveOptions) (SessionResolution, error) {
 	if session != "" {
-		return SessionResolution{Session: session, Reason: "explicit", Inferred: false}, nil
+		sessionList, err := tmux.ListSessions()
+		if err != nil {
+			return SessionResolution{}, err
+		}
+		allowPrefix := !opts.TreatAsJSON && !IsJSONOutput()
+		resolved, reason, err := resolveExplicitSessionName(session, sessionList, allowPrefix)
+		if err != nil {
+			return SessionResolution{}, err
+		}
+		return SessionResolution{Session: resolved, Reason: reason, Inferred: false}, nil
 	}
 
 	// Current tmux session is the most deterministic signal.
@@ -153,6 +162,46 @@ func ResolveSessionWithOptions(session string, w io.Writer, opts SessionResolveO
 		Inferred: true,
 		Prompted: true,
 	}, nil
+}
+
+func resolveExplicitSessionName(input string, sessions []tmux.Session, allowPrefix bool) (string, string, error) {
+	names := sessionNames(sessions)
+	if len(names) == 0 {
+		return "", "", fmt.Errorf("session %q not found (no tmux sessions running)", input)
+	}
+	for _, name := range names {
+		if name == input {
+			return name, "exact match", nil
+		}
+	}
+	if !allowPrefix {
+		return "", "", fmt.Errorf("session %q not found (available: %s)", input, strings.Join(names, ", "))
+	}
+	var matches []string
+	for _, name := range names {
+		if strings.HasPrefix(name, input) {
+			matches = append(matches, name)
+		}
+	}
+	sort.Strings(matches)
+	if len(matches) == 1 {
+		return matches[0], "prefix match", nil
+	}
+	if len(matches) > 1 {
+		return "", "", fmt.Errorf("session %q matches multiple sessions: %s (please be more specific)", input, strings.Join(matches, ", "))
+	}
+	return "", "", fmt.Errorf("session %q not found (available: %s)", input, strings.Join(names, ", "))
+}
+
+func sessionNames(sessions []tmux.Session) []string {
+	names := make([]string, 0, len(sessions))
+	for _, s := range sessions {
+		if s.Name != "" {
+			names = append(names, s.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func inferSessionFromCWD(sessions []tmux.Session) (string, string) {
