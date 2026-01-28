@@ -135,13 +135,16 @@ func (a *RCHAdapter) Info(ctx context.Context) (*ToolInfo, error) {
 
 // RCHWorker represents a remote compilation worker
 type RCHWorker struct {
-	Name      string `json:"name"`
-	Host      string `json:"host,omitempty"`
-	Available bool   `json:"available"`
-	Healthy   bool   `json:"healthy"`
-	Load      int    `json:"load,omitempty"`      // 0-100 load percentage
-	Queue     int    `json:"queue,omitempty"`     // Jobs in queue
-	LastSeen  string `json:"last_seen,omitempty"` // ISO timestamp
+	Name            string `json:"name"`
+	Host            string `json:"host,omitempty"`
+	Available       bool   `json:"available"`
+	Healthy         bool   `json:"healthy"`
+	Load            int    `json:"load,omitempty"`             // 0-100 load percentage
+	Queue           int    `json:"queue,omitempty"`            // Jobs in queue
+	LastSeen        string `json:"last_seen,omitempty"`        // ISO timestamp
+	CurrentBuild    string `json:"current_build,omitempty"`    // Current build command (if provided)
+	BuildsCompleted int    `json:"builds_completed,omitempty"` // Total builds completed (if provided)
+	CPUPercent      int    `json:"cpu_percent,omitempty"`      // Current CPU percent (if provided)
 }
 
 // RCHStatus represents the current RCH status including workers

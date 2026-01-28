@@ -234,11 +234,12 @@ func (p *ComparePanel) View() string {
 
 	// Apply scroll offset to section content
 	sectionLines := strings.Split(sectionContent, "\n")
-	if p.scrollOffset >= len(sectionLines) {
-		p.scrollOffset = max(0, len(sectionLines)-1)
+	scrollOffset := p.scrollOffset
+	if scrollOffset >= len(sectionLines) {
+		scrollOffset = max(0, len(sectionLines)-1)
 	}
-	if p.scrollOffset > 0 && len(sectionLines) > p.scrollOffset {
-		sectionLines = sectionLines[p.scrollOffset:]
+	if scrollOffset > 0 && len(sectionLines) > scrollOffset {
+		sectionLines = sectionLines[scrollOffset:]
 	}
 	content.WriteString(strings.Join(sectionLines, "\n"))
 

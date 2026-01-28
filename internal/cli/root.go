@@ -1494,6 +1494,27 @@ Shell Integration:
 			return
 		}
 
+		// Robot-rch-status handler for RCH status
+		if robotRCHStatus {
+			if err := robot.PrintRCHStatus(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+
+		// Robot-rch-workers handler for RCH workers
+		if robotRCHWorkers {
+			opts := robot.RCHWorkersOptions{
+				Worker: robotRCHWorker,
+			}
+			if err := robot.PrintRCHWorkers(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+
 		// Robot-mail-check handler for Agent Mail inbox (bd-adgv)
 		if robotMailCheck {
 			opts := robot.MailCheckOptions{
@@ -1967,6 +1988,11 @@ var (
 	robotRanoStats  bool   // --robot-rano-stats flag
 	robotRanoWindow string // --rano-window for stats window
 
+	// Robot-rch-status and robot-rch-workers flags for RCH
+	robotRCHStatus  bool   // --robot-rch-status flag
+	robotRCHWorkers bool   // --robot-rch-workers flag
+	robotRCHWorker  string // --worker filter for --robot-rch-workers
+
 	// Robot-mail-check flags for Agent Mail inbox integration (bd-adgv)
 	robotMailCheck    bool   // --robot-mail-check flag
 	mailProject       string // --project for mail check (required)
@@ -2361,6 +2387,11 @@ func init() {
 	// Robot-rano-stats flag for per-agent network stats
 	rootCmd.Flags().BoolVar(&robotRanoStats, "robot-rano-stats", false, "Get per-agent network stats via rano. JSON output. Example: ntm --robot-rano-stats")
 	rootCmd.Flags().StringVar(&robotRanoWindow, "rano-window", "5m", "Time window for --robot-rano-stats (e.g., 5m, 1h)")
+
+	// Robot-rch-status and robot-rch-workers flags for RCH
+	rootCmd.Flags().BoolVar(&robotRCHStatus, "robot-rch-status", false, "Get RCH status summary (JSON). Example: ntm --robot-rch-status")
+	rootCmd.Flags().BoolVar(&robotRCHWorkers, "robot-rch-workers", false, "List RCH workers (JSON). Example: ntm --robot-rch-workers")
+	rootCmd.Flags().StringVar(&robotRCHWorker, "worker", "", "Filter to a specific RCH worker by name. Optional with --robot-rch-workers")
 
 	// Robot-mail-check flags for Agent Mail inbox integration (bd-adgv)
 	rootCmd.Flags().BoolVar(&robotMailCheck, "robot-mail-check", false, "Check agent inboxes via Agent Mail. Requires --mail-project. JSON output. Example: ntm --robot-mail-check --mail-project=myproject")

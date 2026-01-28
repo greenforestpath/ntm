@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -210,8 +211,11 @@ func collectAssignmentMatches(projectKey string, findings []Finding) (map[string
 }
 
 func matchesAnyPattern(patterns []string, file string) bool {
+	if file == "" {
+		return false
+	}
 	for _, pattern := range patterns {
-		if matched, _ := filepath.Match(pattern, file); matched {
+		if matchAssignmentPattern(pattern, file) {
 			return true
 		}
 	}
@@ -227,6 +231,66 @@ func sessionFromProjectKey(projectKey string) string {
 		return ""
 	}
 	return filepath.Base(cleaned)
+}
+
+func matchAssignmentPattern(pattern, file string) bool {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return false
+	}
+	pattern = filepath.ToSlash(strings.TrimPrefix(pattern, "./"))
+	file = filepath.ToSlash(strings.TrimPrefix(file, "./"))
+
+	if !strings.Contains(pattern, "/") {
+		return matchSegment(pattern, path.Base(file))
+	}
+
+	return matchPatternSegments(splitPathSegments(pattern), splitPathSegments(file))
+}
+
+func splitPathSegments(value string) []string {
+	parts := strings.Split(value, "/")
+	segments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		segments = append(segments, part)
+	}
+	return segments
+}
+
+func matchPatternSegments(patternSegs, fileSegs []string) bool {
+	if len(patternSegs) == 0 {
+		return len(fileSegs) == 0
+	}
+
+	if patternSegs[0] == "**" {
+		for i := 0; i <= len(fileSegs); i++ {
+			if matchPatternSegments(patternSegs[1:], fileSegs[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if len(fileSegs) == 0 {
+		return false
+	}
+
+	if !matchSegment(patternSegs[0], fileSegs[0]) {
+		return false
+	}
+
+	return matchPatternSegments(patternSegs[1:], fileSegs[1:])
+}
+
+func matchSegment(pattern, segment string) bool {
+	matched, err := filepath.Match(pattern, segment)
+	if err != nil {
+		return false
+	}
+	return matched
 }
 
 func buildAssignmentMessage(items []assignmentFinding) string {

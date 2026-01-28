@@ -826,6 +826,27 @@ func buildCommandRegistry() []RobotCommandInfo {
 			},
 		},
 		{
+			Name:        "rch-status",
+			Flag:        "--robot-rch-status",
+			Category:    "utility",
+			Description: "Get RCH status summary including worker counts.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-rch-status"},
+		},
+		{
+			Name:        "rch-workers",
+			Flag:        "--robot-rch-workers",
+			Category:    "utility",
+			Description: "List RCH workers with status details.",
+			Parameters: []RobotParameter{
+				{Name: "worker", Flag: "--worker", Type: "string", Required: false, Description: "Filter to a specific worker name"},
+			},
+			Examples: []string{
+				"ntm --robot-rch-workers",
+				"ntm --robot-rch-workers --worker=builder-1",
+			},
+		},
+		{
 			Name:        "alerts",
 			Flag:        "--robot-alerts",
 			Category:    "utility",

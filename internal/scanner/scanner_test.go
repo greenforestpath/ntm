@@ -303,7 +303,7 @@ func TestCollectAssignmentMatches(t *testing.T) {
 
 	session := "testproj"
 	store := assignment.NewStore(session)
-	if _, err := store.Assign("bd-1", "Fix internal/scanner/scanner.go", 1, "claude", "testproj_claude_1", "Work on internal/scanner/scanner.go"); err != nil {
+	if _, err := store.Assign("bd-1", "Fix internal/scanner", 1, "claude", "testproj_claude_1", "Work on internal/scanner"); err != nil {
 		t.Fatalf("assign failed: %v", err)
 	}
 
