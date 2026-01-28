@@ -177,7 +177,7 @@ func TestRunHandoffCreateWithFlags(t *testing.T) {
 	cmd.SetOut(&buf)
 
 	// Run create with flags
-	err = runHandoffCreate(cmd, "testsession", "Test goal", "Next task", "", false, "test-desc", false)
+	err = runHandoffCreate(cmd, "testsession", "Test goal", "Next task", "", false, "test-desc", false, "", "yaml", false)
 	if err != nil {
 		t.Fatalf("runHandoffCreate() error: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestRunHandoffCreateJSONOutput(t *testing.T) {
 	cmd.SetOut(&buf)
 
 	// Run create with JSON output
-	err = runHandoffCreate(cmd, "testsession", "Test goal", "Next task", "", false, "", true)
+	err = runHandoffCreate(cmd, "testsession", "Test goal", "Next task", "", false, "", true, "", "json", false)
 	if err != nil {
 		t.Fatalf("runHandoffCreate() error: %v", err)
 	}
@@ -566,7 +566,7 @@ func TestRunHandoffCreateFromFile(t *testing.T) {
 	cmd.SetOut(&buf)
 
 	// Run create from file, overriding session name
-	err = runHandoffCreate(cmd, "newsession", "", "", sourcePath, false, "from-file", false)
+	err = runHandoffCreate(cmd, "newsession", "", "", sourcePath, false, "from-file", false, "", "yaml", false)
 	if err != nil {
 		t.Fatalf("runHandoffCreate() error: %v", err)
 	}
@@ -747,7 +747,7 @@ func TestRunHandoffCreateValidation(t *testing.T) {
 	cmd.SetOut(&buf)
 
 	// Run create with goal but without now should still work (uses defaults)
-	err = runHandoffCreate(cmd, "testsession", "Test goal", "Task now", "", false, "", false)
+	err = runHandoffCreate(cmd, "testsession", "Test goal", "Task now", "", false, "", false, "", "yaml", false)
 	if err != nil {
 		t.Fatalf("runHandoffCreate() with goal and now should succeed: %v", err)
 	}

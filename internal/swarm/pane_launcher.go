@@ -227,6 +227,16 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 		return result, fmt.Errorf("launch agent: %w", err)
 	}
 
+	if pl.RateLimitTracker != nil && isCodexProvider(paneSpec.AgentType) {
+		pl.RateLimitTracker.RecordSuccess("openai")
+		saveDir := paneSpec.Project
+		if err := pl.RateLimitTracker.SaveToDir(saveDir); err != nil {
+			pl.logger().Warn("[PaneLauncher] tracker_persist_failed",
+				"provider", "openai",
+				"error", err)
+		}
+	}
+
 	result.Success = true
 	result.Duration = time.Since(start)
 
@@ -259,6 +269,7 @@ func (pl *PaneLauncher) LaunchSession(ctx context.Context, sessionSpec SessionSp
 		TotalPanes: len(sessionSpec.Panes),
 		Results:    make([]PaneLaunchResult, 0, len(sessionSpec.Panes)),
 	}
+	openAICooldownWaited := false
 
 	pl.logger().Info("[PaneLauncher] session_launch_start",
 		"session", sessionSpec.Name,
@@ -272,6 +283,22 @@ func (pl *PaneLauncher) LaunchSession(ctx context.Context, sessionSpec SessionSp
 				result.Duration = time.Since(start)
 				return result, ctx.Err()
 			case <-time.After(staggerDelay):
+			}
+		}
+
+		if pl.RateLimitTracker != nil && isCodexProvider(paneSpec.AgentType) && !openAICooldownWaited {
+			cooldown := pl.RateLimitTracker.CooldownRemaining("openai")
+			openAICooldownWaited = true
+			if cooldown > 0 {
+				pl.logger().Info("[PaneLauncher] codex_cooldown_wait",
+					"session", sessionSpec.Name,
+					"cooldown", ratelimit.FormatDelay(cooldown))
+				select {
+				case <-ctx.Done():
+					result.Duration = time.Since(start)
+					return result, ctx.Err()
+				case <-time.After(cooldown):
+				}
 			}
 		}
 
@@ -367,4 +394,13 @@ func ValidateProjectPath(path string) error {
 	}
 
 	return nil
+}
+
+func isCodexProvider(agentType string) bool {
+	switch agentType {
+	case "cod", "codex", "openai", "gpt":
+		return true
+	default:
+		return false
+	}
 }
