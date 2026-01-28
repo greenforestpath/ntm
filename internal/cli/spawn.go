@@ -533,11 +533,6 @@ Examples:
 			sessionName := args[0]
 			dir := cfg.GetProjectDir(sessionName)
 
-			testPacing, err := resolveSpawnTestPacing()
-			if err != nil {
-				return outputError(err)
-			}
-
 			// Update CASS config from flags
 			if contextLimit > 0 {
 				cfg.CASS.Context.MaxSessions = contextLimit
@@ -843,6 +838,11 @@ func spawnSessionLogic(opts SpawnOptions) error {
 	}
 
 	dir := cfg.GetProjectDir(opts.Session)
+
+	testPacing, err := resolveSpawnTestPacing()
+	if err != nil {
+		return outputError(err)
+	}
 
 	// Initialize hook executor
 	var hookExec *hooks.Executor

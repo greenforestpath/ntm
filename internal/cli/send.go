@@ -1074,7 +1074,7 @@ func runSendInternal(opts SendOptions) error {
 	// If specific pane requested
 	if paneIndex >= 0 {
 		p := selectedPanes[0]
-		if err := sendPromptToPane(p, prompt); err != nil {
+		if err := sendPromptToPane(session, p, prompt); err != nil {
 			failed++
 			histErr = err
 			if jsonOutput {
@@ -1118,7 +1118,7 @@ func runSendInternal(opts SendOptions) error {
 	}
 
 	for _, p := range selectedPanes {
-		if err := sendPromptToPane(p, prompt); err != nil {
+		if err := sendPromptToPane(session, p, prompt); err != nil {
 			failed++
 			histErr = err
 			if !jsonOutput {
@@ -1461,6 +1461,7 @@ func runKill(session string, force bool, tags []string, noHooks bool, summarize 
 				return fmt.Errorf("killing pane %s: %w", p.ID, err)
 			}
 		}
+		addTimelineStopMarkers(session, toKill)
 		fmt.Printf("Killed %d pane(s)\n", len(toKill))
 		return nil
 	}
@@ -1475,6 +1476,11 @@ func runKill(session string, force bool, tags []string, noHooks bool, summarize 
 			fmt.Println("Aborted.")
 			return nil
 		}
+	}
+
+	panesForStop, err := tmux.GetPanes(session)
+	if err == nil {
+		addTimelineStopMarkers(session, panesForStop)
 	}
 
 	// Finalize timeline persistence before killing the session
@@ -1603,8 +1609,14 @@ func buildKillResponse(session string, force bool, tags []string, noHooks bool, 
 				return nil, fmt.Errorf("killing pane %s: %w", p.ID, err)
 			}
 		}
+		addTimelineStopMarkers(session, toKill)
 		message = fmt.Sprintf("Killed %d pane(s) matching tags", len(toKill))
 	} else {
+		panesForStop, err := tmux.GetPanes(session)
+		if err == nil {
+			addTimelineStopMarkers(session, panesForStop)
+		}
+
 		// Finalize timeline persistence before killing the session
 		_ = state.EndSessionTimeline(session) // Ignore error - not critical
 
@@ -1878,11 +1890,18 @@ const (
 	agentPromptSecondEnterDelay = 500 * time.Millisecond
 )
 
-func sendPromptToPane(p tmux.Pane, prompt string) error {
+func sendPromptToPane(session string, p tmux.Pane, prompt string) error {
 	if p.Type == tmux.AgentUser {
-		return tmux.PasteKeys(p.ID, prompt, true)
+		if err := tmux.PasteKeys(p.ID, prompt, true); err != nil {
+			return err
+		}
+		return nil
 	}
-	return sendPromptWithDoubleEnter(p.ID, prompt)
+	if err := sendPromptWithDoubleEnter(p.ID, prompt); err != nil {
+		return err
+	}
+	addTimelinePromptMarker(session, p, prompt)
+	return nil
 }
 
 func sendPromptWithDoubleEnter(paneID, prompt string) error {
@@ -1898,6 +1917,88 @@ func sendPromptWithDoubleEnter(paneID, prompt string) error {
 		return err
 	}
 	return nil
+}
+
+func addTimelinePromptMarker(session string, p tmux.Pane, prompt string) {
+	if session == "" {
+		return
+	}
+	if p.Type == tmux.AgentUser || p.Type == tmux.AgentUnknown {
+		return
+	}
+	agentID := timelineAgentIDFromPane(p)
+	if agentID == "" {
+		return
+	}
+	tracker := state.GetGlobalTimelineTracker()
+	tracker.AddMarker(state.TimelineMarker{
+		AgentID:   agentID,
+		SessionID: session,
+		Type:      state.MarkerPrompt,
+		Timestamp: time.Now(),
+		Message:   truncatePrompt(prompt, 80),
+	})
+}
+
+func addTimelineStopMarkers(session string, panes []tmux.Pane) {
+	if session == "" {
+		return
+	}
+	tracker := state.GetGlobalTimelineTracker()
+	now := time.Now()
+
+	if len(panes) == 0 {
+		events := tracker.GetEventsForSession(session, time.Time{})
+		seen := make(map[string]struct{})
+		for _, e := range events {
+			if e.AgentID == "" {
+				continue
+			}
+			if _, ok := seen[e.AgentID]; ok {
+				continue
+			}
+			seen[e.AgentID] = struct{}{}
+			tracker.AddMarker(state.TimelineMarker{
+				AgentID:   e.AgentID,
+				SessionID: session,
+				Type:      state.MarkerStop,
+				Timestamp: now,
+			})
+		}
+		return
+	}
+
+	for _, p := range panes {
+		if p.Type == tmux.AgentUser || p.Type == tmux.AgentUnknown {
+			continue
+		}
+		agentID := timelineAgentIDFromPane(p)
+		if agentID == "" {
+			continue
+		}
+		tracker.AddMarker(state.TimelineMarker{
+			AgentID:   agentID,
+			SessionID: session,
+			Type:      state.MarkerStop,
+			Timestamp: now,
+		})
+	}
+}
+
+func timelineAgentIDFromPane(p tmux.Pane) string {
+	if p.NTMIndex > 0 && p.Type != tmux.AgentUnknown && p.Type != tmux.AgentUser {
+		return fmt.Sprintf("%s_%d", p.Type, p.NTMIndex)
+	}
+	if p.Title != "" {
+		if parts := strings.SplitN(p.Title, "__", 2); len(parts) == 2 && parts[1] != "" {
+			return parts[1]
+		}
+		return p.Title
+	}
+	if p.ID != "" {
+		return p.ID
+	}
+	return ""
 }
 
 func logDCGBlocked(command, session string, panes []tmux.Pane, blocked *tools.BlockedCommand) {
@@ -2450,7 +2551,7 @@ func runSendBatch(opts SendOptions) error {
 				sendErr = fmt.Errorf("pane %d not found", paneIdx)
 				continue
 			}
-			if err := sendPromptToPane(p, promptText); err != nil {
+			if err := sendPromptToPane(session, p, promptText); err != nil {
 				paneFailed++
 				sendErr = err
 			} else {
