@@ -1476,6 +1476,24 @@ Shell Integration:
 			return
 		}
 
+		// Robot-rano-stats handler for per-agent network stats
+		if robotRanoStats {
+			panes, err := robot.ParsePanesArg(robotPanes)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: invalid --panes: %v\n", err)
+				os.Exit(1)
+			}
+			opts := robot.RanoStatsOptions{
+				Panes:  panes,
+				Window: robotRanoWindow,
+			}
+			if err := robot.PrintRanoStats(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+
 		// Robot-mail-check handler for Agent Mail inbox (bd-adgv)
 		if robotMailCheck {
 			opts := robot.MailCheckOptions{
@@ -1945,6 +1963,10 @@ var (
 	robotQuotaCheck         bool   // --robot-quota-check flag
 	robotQuotaCheckProvider string // --provider filter for quota-check
 
+	// Robot-rano-stats flag for rano network stats
+	robotRanoStats  bool   // --robot-rano-stats flag
+	robotRanoWindow string // --rano-window for stats window
+
 	// Robot-mail-check flags for Agent Mail inbox integration (bd-adgv)
 	robotMailCheck    bool   // --robot-mail-check flag
 	mailProject       string // --project for mail check (required)
@@ -2335,6 +2357,10 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotQuotaStatus, "robot-quota-status", false, "Show caut quota status for all providers. JSON output. Example: ntm --robot-quota-status")
 	rootCmd.Flags().BoolVar(&robotQuotaCheck, "robot-quota-check", false, "Check quota for specific provider. JSON output. Example: ntm --robot-quota-check --quota-check-provider=claude")
 	rootCmd.Flags().StringVar(&robotQuotaCheckProvider, "quota-check-provider", "", "Provider for quota check. Required with --robot-quota-check. Example: --quota-check-provider=claude")
+
+	// Robot-rano-stats flag for per-agent network stats
+	rootCmd.Flags().BoolVar(&robotRanoStats, "robot-rano-stats", false, "Get per-agent network stats via rano. JSON output. Example: ntm --robot-rano-stats")
+	rootCmd.Flags().StringVar(&robotRanoWindow, "rano-window", "5m", "Time window for --robot-rano-stats (e.g., 5m, 1h)")
 
 	// Robot-mail-check flags for Agent Mail inbox integration (bd-adgv)
 	rootCmd.Flags().BoolVar(&robotMailCheck, "robot-mail-check", false, "Check agent inboxes via Agent Mail. Requires --mail-project. JSON output. Example: ntm --robot-mail-check --mail-project=myproject")

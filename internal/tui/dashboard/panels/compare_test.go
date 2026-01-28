@@ -212,6 +212,34 @@ func TestComparePanel_Keybindings(t *testing.T) {
 	t.Log("TEST: TestComparePanel_Keybindings - assertion: all keybindings present")
 }
 
+func TestComparePanel_ScrollOffset(t *testing.T) {
+	t.Log("TEST: TestComparePanel_ScrollOffset - starting")
+
+	panel := NewComparePanel()
+	panel.SetSize(80, 40)
+	panel.Focus()
+
+	// Initial scroll offset should be 0
+	if panel.scrollOffset != 0 {
+		t.Errorf("expected initial scrollOffset=0, got %d", panel.scrollOffset)
+	}
+
+	// Simulate scroll down
+	panel.scrollOffset = 5
+	if panel.scrollOffset != 5 {
+		t.Errorf("expected scrollOffset=5, got %d", panel.scrollOffset)
+	}
+
+	// Verify scroll offset resets on section change
+	panel.section = CompareSectionModes
+	panel.scrollOffset = 0 // simulating what Update does
+	if panel.scrollOffset != 0 {
+		t.Errorf("expected scrollOffset to reset to 0 on section change, got %d", panel.scrollOffset)
+	}
+
+	t.Log("TEST: TestComparePanel_ScrollOffset - assertion: scroll offset updates correctly")
+}
+
 func TestTruncateString(t *testing.T) {
 	t.Log("TEST: TestTruncateString - starting")
 

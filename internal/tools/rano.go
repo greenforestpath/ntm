@@ -355,12 +355,24 @@ func (a *RanoAdapter) GetStatus(ctx context.Context) (*RanoStatus, error) {
 	return &status, nil
 }
 
-// GetProcessStats returns network stats for a specific PID
+// GetProcessStats returns network stats for a specific PID.
+// Window is optional; empty means default window.
 func (a *RanoAdapter) GetProcessStats(ctx context.Context, pid int) (*RanoProcessStats, error) {
+	return a.GetProcessStatsWithWindow(ctx, pid, "")
+}
+
+// GetProcessStatsWithWindow returns network stats for a specific PID with a time window override.
+// Window should be a string like "5m", "1h". Empty means default window.
+func (a *RanoAdapter) GetProcessStatsWithWindow(ctx context.Context, pid int, window string) (*RanoProcessStats, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, a.BinaryName(), "stats", "--pid", fmt.Sprintf("%d", pid), "--json")
+	args := []string{"stats", "--pid", fmt.Sprintf("%d", pid), "--json"}
+	if window != "" {
+		args = append(args, "--window", window)
+	}
+
+	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
@@ -386,12 +398,24 @@ func (a *RanoAdapter) GetProcessStats(ctx context.Context, pid int) (*RanoProces
 	return &stats, nil
 }
 
-// GetAllProcessStats returns network stats for all tracked processes
+// GetAllProcessStats returns network stats for all tracked processes.
+// Window is optional; empty means default window.
 func (a *RanoAdapter) GetAllProcessStats(ctx context.Context) ([]RanoProcessStats, error) {
+	return a.GetAllProcessStatsWithWindow(ctx, "")
+}
+
+// GetAllProcessStatsWithWindow returns network stats for all tracked processes with a time window override.
+// Window should be a string like "5m", "1h". Empty means default window.
+func (a *RanoAdapter) GetAllProcessStatsWithWindow(ctx context.Context, window string) ([]RanoProcessStats, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.Timeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, a.BinaryName(), "stats", "--all", "--json")
+	args := []string{"stats", "--all", "--json"}
+	if window != "" {
+		args = append(args, "--window", window)
+	}
+
+	cmd := exec.CommandContext(ctx, a.BinaryName(), args...)
 	stdout := NewLimitedBuffer(10 * 1024 * 1024)
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
