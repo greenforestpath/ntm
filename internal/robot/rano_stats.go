@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/integrations/rano"
-	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
