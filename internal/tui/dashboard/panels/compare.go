@@ -86,14 +86,19 @@ func (p *ComparePanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "1":
 			p.section = CompareSectionSummary
+			p.scrollOffset = 0
 		case "2":
 			p.section = CompareSectionModes
+			p.scrollOffset = 0
 		case "3":
 			p.section = CompareSectionFindings
+			p.scrollOffset = 0
 		case "4":
 			p.section = CompareSectionConclusions
+			p.scrollOffset = 0
 		case "5":
 			p.section = CompareSectionContributions
+			p.scrollOffset = 0
 		case "j", "down":
 			p.scrollOffset++
 		case "k", "up":
@@ -212,19 +217,30 @@ func (p *ComparePanel) View() string {
 	tabs := p.renderTabs()
 	content.WriteString(tabs + "\n\n")
 
-	// Section content
+	// Section content with scrolling
+	var sectionContent string
 	switch p.section {
 	case CompareSectionSummary:
-		content.WriteString(p.renderSummary())
+		sectionContent = p.renderSummary()
 	case CompareSectionModes:
-		content.WriteString(p.renderModes())
+		sectionContent = p.renderModes()
 	case CompareSectionFindings:
-		content.WriteString(p.renderFindings())
+		sectionContent = p.renderFindings()
 	case CompareSectionConclusions:
-		content.WriteString(p.renderConclusions())
+		sectionContent = p.renderConclusions()
 	case CompareSectionContributions:
-		content.WriteString(p.renderContributions())
+		sectionContent = p.renderContributions()
 	}
+
+	// Apply scroll offset to section content
+	sectionLines := strings.Split(sectionContent, "\n")
+	if p.scrollOffset >= len(sectionLines) {
+		p.scrollOffset = max(0, len(sectionLines)-1)
+	}
+	if p.scrollOffset > 0 && len(sectionLines) > p.scrollOffset {
+		sectionLines = sectionLines[p.scrollOffset:]
+	}
+	content.WriteString(strings.Join(sectionLines, "\n"))
 
 	return boxStyle.Render(FitToHeight(content.String(), h-4))
 }

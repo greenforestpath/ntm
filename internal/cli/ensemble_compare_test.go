@@ -155,6 +155,80 @@ func TestWriteCompareResult_Text(t *testing.T) {
 	t.Log("TEST: TestWriteCompareResult_Text - assertion: text output is well-formed")
 }
 
+func TestWriteCompareResult_Text_Verbose(t *testing.T) {
+	t.Log("TEST: TestWriteCompareResult_Text_Verbose - starting")
+
+	result := &ensemble.ComparisonResult{
+		RunA:        "run-alpha",
+		RunB:        "run-beta",
+		GeneratedAt: time.Now(),
+		ModeDiff: ensemble.ModeDiff{
+			Added:          []string{"new-mode"},
+			Removed:        []string{},
+			Unchanged:      []string{"existing-mode", "another-mode"},
+			AddedCount:     1,
+			RemovedCount:   0,
+			UnchangedCount: 2,
+		},
+		FindingsDiff: ensemble.FindingsDiff{
+			NewCount:       1,
+			MissingCount:   0,
+			ChangedCount:   0,
+			UnchangedCount: 2,
+			Unchanged: []ensemble.FindingDiffEntry{
+				{ModeID: "existing-mode", Text: "unchanged finding one"},
+				{ModeID: "another-mode", Text: "unchanged finding two"},
+			},
+		},
+		ContributionDiff: ensemble.ContributionDiff{
+			OverlapRateA:    0.25,
+			OverlapRateB:    0.30,
+			DiversityScoreA: 0.75,
+			DiversityScoreB: 0.80,
+			ScoreDeltas: []ensemble.ScoreDelta{
+				{ModeID: "existing-mode", ScoreA: 0.5, ScoreB: 0.6, Delta: 0.1},
+			},
+		},
+		Summary: "+1 modes, +1 findings",
+	}
+
+	var buf bytes.Buffer
+	opts := compareOptions{Verbose: true}
+	err := writeCompareResult(&buf, result, opts, "text")
+
+	if err != nil {
+		t.Fatalf("writeCompareResult returned error: %v", err)
+	}
+
+	output := buf.String()
+	t.Logf("TEST: TestWriteCompareResult_Text_Verbose - output:\n%s", output)
+
+	// Check verbose details are present
+	if !strings.Contains(output, "Verbose Details") {
+		t.Error("expected output to contain Verbose Details section")
+	}
+	if !strings.Contains(output, "Unchanged Modes") {
+		t.Error("expected output to contain Unchanged Modes")
+	}
+	if !strings.Contains(output, "existing-mode") {
+		t.Error("expected output to contain unchanged mode name")
+	}
+	if !strings.Contains(output, "Unchanged Findings") {
+		t.Error("expected output to contain Unchanged Findings")
+	}
+	if !strings.Contains(output, "Contribution Score Changes") {
+		t.Error("expected output to contain Contribution Score Changes")
+	}
+	if !strings.Contains(output, "Overlap Rate") {
+		t.Error("expected output to contain Overlap Rate")
+	}
+	if !strings.Contains(output, "Diversity Score") {
+		t.Error("expected output to contain Diversity Score")
+	}
+
+	t.Log("TEST: TestWriteCompareResult_Text_Verbose - assertion: verbose output is complete")
+}
+
 func TestWriteCompareError_JSON(t *testing.T) {
 	t.Log("TEST: TestWriteCompareError_JSON - starting")
 
