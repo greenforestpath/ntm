@@ -3,8 +3,11 @@ package scanner
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/assignment"
 )
 
 func TestIsAvailable(t *testing.T) {
@@ -291,5 +294,43 @@ func TestParseOutput_WarningsOnly(t *testing.T) {
 	}
 	if warnings[0] != "✓ No changed files to scan." {
 		t.Fatalf("unexpected warning: %q", warnings[0])
+	}
+}
+
+func TestCollectAssignmentMatches(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	session := "testproj"
+	store := assignment.NewStore(session)
+	if _, err := store.Assign("bd-1", "Fix internal/scanner/scanner.go", 1, "claude", "testproj_claude_1", "Work on internal/scanner/scanner.go"); err != nil {
+		t.Fatalf("assign failed: %v", err)
+	}
+
+	findings := []Finding{
+		{
+			File:     "internal/scanner/scanner.go",
+			Line:     10,
+			Severity: SeverityWarning,
+			Message:  "test warning",
+			RuleID:   "rule-1",
+		},
+	}
+
+	projectKey := filepath.Join(tmpDir, session)
+	matches, err := collectAssignmentMatches(projectKey, findings)
+	if err != nil {
+		t.Fatalf("collectAssignmentMatches error: %v", err)
+	}
+	if len(matches) == 0 {
+		t.Fatalf("expected matches, got none")
+	}
+
+	items := matches["testproj_claude_1"]
+	if len(items) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(items))
+	}
+	if items[0].Finding.File != findings[0].File {
+		t.Fatalf("unexpected matched file: %s", items[0].Finding.File)
 	}
 }

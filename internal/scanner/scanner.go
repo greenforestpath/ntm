@@ -115,7 +115,11 @@ func (s *Scanner) Scan(ctx context.Context, path string, opts ScanOptions) (*Sca
 	}
 
 	// Parse the JSON output (capture warnings even if output is mixed)
+	stderrWarnings := extractWarningLines(stderr.Bytes())
 	result, warnings, parseErr := s.parseOutput(output)
+	if len(stderrWarnings) > 0 {
+		warnings = append(warnings, stderrWarnings...)
+	}
 	if parseErr != nil {
 		// If we can't parse output but command succeeded, return basic result
 		if waitErr == nil {

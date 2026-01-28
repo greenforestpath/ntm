@@ -22,7 +22,6 @@ import (
 // compareOptions holds CLI flags for ensemble compare.
 type compareOptions struct {
 	Format  string
-	Session string
 	Verbose bool
 }
 
@@ -249,9 +248,70 @@ func writeCompareResult(w io.Writer, result *ensemble.ComparisonResult, opts com
 
 	default: // text
 		formatted := ensemble.FormatComparison(result)
+		if opts.Verbose {
+			formatted += formatVerboseDetails(result)
+		}
 		_, err := fmt.Fprintln(w, formatted)
 		return err
 	}
+}
+
+// formatVerboseDetails returns additional details for verbose mode.
+func formatVerboseDetails(result *ensemble.ComparisonResult) string {
+	var b strings.Builder
+
+	b.WriteString("\n--- Verbose Details ---\n\n")
+
+	// Show unchanged modes
+	if result.ModeDiff.UnchangedCount > 0 {
+		b.WriteString("Unchanged Modes:\n")
+		for _, m := range result.ModeDiff.Unchanged {
+			fmt.Fprintf(&b, "  = %s\n", m)
+		}
+		b.WriteString("\n")
+	}
+
+	// Show unchanged findings count and sample
+	if result.FindingsDiff.UnchangedCount > 0 {
+		fmt.Fprintf(&b, "Unchanged Findings: %d total\n", result.FindingsDiff.UnchangedCount)
+		if len(result.FindingsDiff.Unchanged) > 0 {
+			b.WriteString("  Sample unchanged:\n")
+			for i, f := range result.FindingsDiff.Unchanged {
+				if i >= 5 {
+					fmt.Fprintf(&b, "    ... and %d more\n", len(result.FindingsDiff.Unchanged)-5)
+					break
+				}
+				text := f.Text
+				if len(text) > 50 {
+					text = text[:47] + "..."
+				}
+				fmt.Fprintf(&b, "    = [%s] %s\n", f.ModeID, text)
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// Show contribution score deltas
+	if len(result.ContributionDiff.ScoreDeltas) > 0 {
+		b.WriteString("All Contribution Score Changes:\n")
+		for _, sd := range result.ContributionDiff.ScoreDeltas {
+			sign := "+"
+			if sd.Delta < 0 {
+				sign = ""
+			}
+			fmt.Fprintf(&b, "  %s: %.3f → %.3f (%s%.3f)\n",
+				sd.ModeID, sd.ScoreA, sd.ScoreB, sign, sd.Delta)
+		}
+		b.WriteString("\n")
+	}
+
+	// Show diversity metrics
+	fmt.Fprintf(&b, "Overlap Rate: %.3f → %.3f\n",
+		result.ContributionDiff.OverlapRateA, result.ContributionDiff.OverlapRateB)
+	fmt.Fprintf(&b, "Diversity Score: %.3f → %.3f\n",
+		result.ContributionDiff.DiversityScoreA, result.ContributionDiff.DiversityScoreB)
+
+	return b.String()
 }
 
 func writeCompareError(w io.Writer, runAID, runBID string, err error, format string) error {
