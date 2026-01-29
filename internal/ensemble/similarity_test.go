@@ -463,6 +463,166 @@ func TestInterpretScore(t *testing.T) {
 	}
 }
 
+func TestClassifySimilarity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		score float64
+		want  string
+	}{
+		{0.9, "HIGH"},
+		{0.7, "HIGH"},
+		{0.5, "moderate"},
+		{0.4, "moderate"},
+		{0.3, "low"},
+		{0.0, "low"},
+	}
+
+	for _, tc := range tests {
+		got := classifySimilarity(tc.score)
+		if got != tc.want {
+			t.Errorf("classifySimilarity(%.1f) = %q, want %q", tc.score, got, tc.want)
+		}
+	}
+}
+
+func TestDiversityNote(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		score float64
+		want  string
+	}{
+		{0.8, "overlapping insights"},
+		{0.5, "overlapping insights"},
+		{0.49, "good diversity"},
+		{0.0, "good diversity"},
+	}
+
+	for _, tc := range tests {
+		got := diversityNote(tc.score)
+		if got != tc.want {
+			t.Errorf("diversityNote(%.2f) = %q, want %q", tc.score, got, tc.want)
+		}
+	}
+}
+
+func TestJaccardSimilarityForNonEmpty(t *testing.T) {
+	t.Parallel()
+
+	t.Run("both empty", func(t *testing.T) {
+		t.Parallel()
+		got := jaccardSimilarityForNonEmpty(nil, nil)
+		if got != 0.0 {
+			t.Errorf("both empty = %f, want 0", got)
+		}
+	})
+
+	t.Run("one empty", func(t *testing.T) {
+		t.Parallel()
+		a := map[string]struct{}{"x": {}}
+		got := jaccardSimilarityForNonEmpty(a, nil)
+		if got != 0.0 {
+			t.Errorf("one empty = %f, want 0", got)
+		}
+	})
+
+	t.Run("identical sets", func(t *testing.T) {
+		t.Parallel()
+		a := map[string]struct{}{"x": {}, "y": {}}
+		b := map[string]struct{}{"x": {}, "y": {}}
+		got := jaccardSimilarityForNonEmpty(a, b)
+		if got != 1.0 {
+			t.Errorf("identical = %f, want 1.0", got)
+		}
+	})
+
+	t.Run("disjoint sets", func(t *testing.T) {
+		t.Parallel()
+		a := map[string]struct{}{"x": {}}
+		b := map[string]struct{}{"y": {}}
+		got := jaccardSimilarityForNonEmpty(a, b)
+		if got != 0.0 {
+			t.Errorf("disjoint = %f, want 0.0", got)
+		}
+	})
+
+	t.Run("partial overlap", func(t *testing.T) {
+		t.Parallel()
+		a := map[string]struct{}{"x": {}, "y": {}}
+		b := map[string]struct{}{"y": {}, "z": {}}
+		got := jaccardSimilarityForNonEmpty(a, b)
+		// intersection=1, union=3
+		want := 1.0 / 3.0
+		if got < want-0.001 || got > want+0.001 {
+			t.Errorf("partial = %f, want %f", got, want)
+		}
+	})
+}
+
+func TestGenerateRedundancyRecommendations(t *testing.T) {
+	t.Parallel()
+
+	t.Run("high redundancy pairs", func(t *testing.T) {
+		t.Parallel()
+		analysis := &RedundancyAnalysis{
+			OverallScore: 0.6,
+			PairwiseScores: []PairSimilarity{
+				{ModeA: "mode-a", ModeB: "mode-b", Similarity: 0.8, SharedFindings: 5},
+			},
+		}
+		recs := generateRedundancyRecommendations(analysis, 0.5)
+		if len(recs) == 0 {
+			t.Fatal("expected recommendations")
+		}
+		found := false
+		for _, r := range recs {
+			if simContains(r, "mode-b") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected recommendation mentioning mode-b, got %v", recs)
+		}
+	})
+
+	t.Run("low redundancy", func(t *testing.T) {
+		t.Parallel()
+		analysis := &RedundancyAnalysis{
+			OverallScore:   0.1,
+			PairwiseScores: nil,
+		}
+		recs := generateRedundancyRecommendations(analysis, 0.5)
+		found := false
+		for _, r := range recs {
+			if simContains(r, "Good mode diversity") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected good diversity message, got %v", recs)
+		}
+	})
+
+	t.Run("high overall score", func(t *testing.T) {
+		t.Parallel()
+		analysis := &RedundancyAnalysis{
+			OverallScore:   0.6,
+			PairwiseScores: nil,
+		}
+		recs := generateRedundancyRecommendations(analysis, 0.5)
+		found := false
+		for _, r := range recs {
+			if simContains(r, "High overall redundancy") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected high redundancy message, got %v", recs)
+		}
+	})
+}
+
 // Helper function
 func simContains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||

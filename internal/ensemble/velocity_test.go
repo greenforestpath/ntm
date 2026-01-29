@@ -92,6 +92,152 @@ func TestVelocityTracker_OverallAndLabels(t *testing.T) {
 	}
 }
 
+func TestUniqueFindingKeys(t *testing.T) {
+	t.Parallel()
+
+	t.Run("distinct findings", func(t *testing.T) {
+		t.Parallel()
+		findings := []Finding{
+			{Finding: "Issue A", EvidencePointer: "file.go:10"},
+			{Finding: "Issue B", EvidencePointer: "file.go:20"},
+		}
+		keys := uniqueFindingKeys(findings)
+		if len(keys) != 2 {
+			t.Errorf("expected 2 unique keys, got %d", len(keys))
+		}
+	})
+
+	t.Run("duplicate findings", func(t *testing.T) {
+		t.Parallel()
+		findings := []Finding{
+			{Finding: "Issue A", EvidencePointer: "file.go:10"},
+			{Finding: "Issue A", EvidencePointer: "file.go:10"},
+		}
+		keys := uniqueFindingKeys(findings)
+		if len(keys) != 1 {
+			t.Errorf("expected 1 unique key, got %d", len(keys))
+		}
+	})
+
+	t.Run("empty findings", func(t *testing.T) {
+		t.Parallel()
+		keys := uniqueFindingKeys(nil)
+		if len(keys) != 0 {
+			t.Errorf("expected 0 keys, got %d", len(keys))
+		}
+	})
+
+	t.Run("empty finding text skipped", func(t *testing.T) {
+		t.Parallel()
+		findings := []Finding{
+			{Finding: "", EvidencePointer: ""},
+			{Finding: "Real finding"},
+		}
+		keys := uniqueFindingKeys(findings)
+		if len(keys) != 1 {
+			t.Errorf("expected 1 key (empty skipped), got %d", len(keys))
+		}
+	})
+}
+
+func TestAverageVelocity(t *testing.T) {
+	t.Parallel()
+
+	t.Run("normal entries", func(t *testing.T) {
+		t.Parallel()
+		entries := []VelocityEntry{
+			{Velocity: 2.0, TokensSpent: 1000},
+			{Velocity: 4.0, TokensSpent: 2000},
+		}
+		got := averageVelocity(entries)
+		if got != 3.0 {
+			t.Errorf("averageVelocity = %f, want 3.0", got)
+		}
+	})
+
+	t.Run("zero tokens skipped", func(t *testing.T) {
+		t.Parallel()
+		entries := []VelocityEntry{
+			{Velocity: 2.0, TokensSpent: 1000},
+			{Velocity: 99.0, TokensSpent: 0}, // should be skipped
+		}
+		got := averageVelocity(entries)
+		if got != 2.0 {
+			t.Errorf("averageVelocity = %f, want 2.0", got)
+		}
+	})
+
+	t.Run("empty entries", func(t *testing.T) {
+		t.Parallel()
+		got := averageVelocity(nil)
+		if got != 0 {
+			t.Errorf("averageVelocity(nil) = %f, want 0", got)
+		}
+	})
+
+	t.Run("all zero tokens", func(t *testing.T) {
+		t.Parallel()
+		entries := []VelocityEntry{
+			{Velocity: 1.0, TokensSpent: 0},
+		}
+		got := averageVelocity(entries)
+		if got != 0 {
+			t.Errorf("averageVelocity = %f, want 0", got)
+		}
+	})
+}
+
+func TestVelocityLabel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		value   float64
+		average float64
+		want    string
+	}{
+		{"above average", 5.0, 3.0, "HIGH"},
+		{"below threshold", 0.5, 3.0, "LOW"},
+		{"normal", 2.0, 3.0, ""},
+		{"equal to average", 3.0, 3.0, ""},
+		{"at threshold", 1.0, 3.0, ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := velocityLabel(tc.value, tc.average)
+			if got != tc.want {
+				t.Errorf("velocityLabel(%f, %f) = %q, want %q", tc.value, tc.average, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDisplayName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		entry VelocityEntry
+		want  string
+	}{
+		{"has mode name", VelocityEntry{ModeName: "Security Scanner", ModeID: "mode-a"}, "Security Scanner"},
+		{"no mode name", VelocityEntry{ModeID: "mode-b"}, "mode-b"},
+		{"both empty", VelocityEntry{}, ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := displayName(tc.entry)
+			if got != tc.want {
+				t.Errorf("displayName = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func containsStringValue(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {

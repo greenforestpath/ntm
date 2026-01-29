@@ -1045,3 +1045,102 @@ func TestParseEvidencePointer(t *testing.T) {
 		})
 	}
 }
+
+func TestContainsAny(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		text     string
+		patterns []string
+		want     bool
+	}{
+		{"match first", "hello world", []string{"hello", "xyz"}, true},
+		{"match second", "hello world", []string{"xyz", "world"}, true},
+		{"no match", "hello world", []string{"xyz", "abc"}, false},
+		{"empty patterns", "hello world", nil, false},
+		{"empty text", "", []string{"hello"}, false},
+		{"substring match", "authentication", []string{"auth"}, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := containsAny(tc.text, tc.patterns)
+			if got != tc.want {
+				t.Errorf("containsAny(%q, %v) = %v, want %v", tc.text, tc.patterns, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSeverityRank(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		level ImpactLevel
+		want  int
+	}{
+		{ImpactCritical, 4},
+		{ImpactHigh, 3},
+		{ImpactMedium, 2},
+		{ImpactLow, 1},
+		{ImpactLevel("unknown"), 2},
+	}
+
+	for _, tc := range tests {
+		t.Run(string(tc.level), func(t *testing.T) {
+			t.Parallel()
+			got := severityRank(tc.level)
+			if got != tc.want {
+				t.Errorf("severityRank(%q) = %d, want %d", tc.level, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMergeAbs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input int
+		want  int
+	}{
+		{0, 0},
+		{5, 5},
+		{-5, 5},
+		{-1, 1},
+		{1, 1},
+	}
+
+	for _, tc := range tests {
+		got := abs(tc.input)
+		if got != tc.want {
+			t.Errorf("abs(%d) = %d, want %d", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestMergeIsStopWord(t *testing.T) {
+	t.Parallel()
+
+	stopWords := []string{"the", "this", "that", "with", "from", "have", "been", "will", "should", "would", "could", "being", "there", "their", "when", "where"}
+	for _, w := range stopWords {
+		t.Run("stop_"+w, func(t *testing.T) {
+			t.Parallel()
+			if !isStopWord(w) {
+				t.Errorf("isStopWord(%q) = false, want true", w)
+			}
+		})
+	}
+
+	nonStop := []string{"security", "injection", "database", "function", "error"}
+	for _, w := range nonStop {
+		t.Run("nonstop_"+w, func(t *testing.T) {
+			t.Parallel()
+			if isStopWord(w) {
+				t.Errorf("isStopWord(%q) = true, want false", w)
+			}
+		})
+	}
+}
