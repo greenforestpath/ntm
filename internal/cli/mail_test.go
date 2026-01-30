@@ -284,9 +284,9 @@ func TestMailMarkJSONPartialSuccess(t *testing.T) {
 
 func TestMailReadWithFilters(t *testing.T) {
 	inbox := []agentmail.InboxMessage{
-		{ID: 1, From: "BlueBear", Importance: "urgent", CreatedTS: time.Now()},
-		{ID: 2, From: "LilacDog", Importance: "urgent", CreatedTS: time.Now()},
-		{ID: 3, From: "BlueBear", Importance: "normal", CreatedTS: time.Now()},
+		{ID: 1, From: "BlueBear", Importance: "urgent", CreatedTS: agentmail.FlexTime{Time: time.Now()}},
+		{ID: 2, From: "LilacDog", Importance: "urgent", CreatedTS: agentmail.FlexTime{Time: time.Now()}},
+		{ID: 3, From: "BlueBear", Importance: "normal", CreatedTS: agentmail.FlexTime{Time: time.Now()}},
 	}
 	stub := newMailStub(t, inbox)
 	defer stub.Close()
