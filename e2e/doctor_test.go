@@ -217,7 +217,7 @@ func TestDoctorJSONOutput(t *testing.T) {
 		t.Error("[E2E-DOCTOR] Expected non-zero timestamp")
 	}
 
-	suite.logger.Logf("[E2E-DOCTOR] JSON output valid: overall=%s, warnings=%d, errors=%d",
+	suite.logger.Log("[E2E-DOCTOR] JSON output valid: overall=%s, warnings=%d, errors=%d",
 		report.Overall, report.Warnings, report.Errors)
 }
 
@@ -256,7 +256,7 @@ func TestDoctorToolsCheck(t *testing.T) {
 			t.Errorf("[E2E-DOCTOR] Tool %s has invalid status: %s", tool.Name, tool.Status)
 		}
 
-		suite.logger.Logf("[E2E-DOCTOR] Tool: %s installed=%v status=%s", tool.Name, tool.Installed, tool.Status)
+		suite.logger.Log("[E2E-DOCTOR] Tool: %s installed=%v status=%s", tool.Name, tool.Installed, tool.Status)
 	}
 }
 
@@ -281,7 +281,7 @@ func TestDoctorDependenciesCheck(t *testing.T) {
 	for _, dep := range report.Dependencies {
 		if dep.Name == "tmux" {
 			foundTmux = true
-			suite.logger.Logf("[E2E-DOCTOR] tmux: installed=%v version=%s status=%s",
+			suite.logger.Log("[E2E-DOCTOR] tmux: installed=%v version=%s status=%s",
 				dep.Installed, dep.Version, dep.Status)
 		}
 	}
@@ -295,7 +295,7 @@ func TestDoctorDependenciesCheck(t *testing.T) {
 	for _, dep := range report.Dependencies {
 		if dep.Name == "go" {
 			foundGo = true
-			suite.logger.Logf("[E2E-DOCTOR] go: installed=%v version=%s status=%s",
+			suite.logger.Log("[E2E-DOCTOR] go: installed=%v version=%s status=%s",
 				dep.Installed, dep.Version, dep.Status)
 		}
 	}
@@ -337,7 +337,7 @@ func TestDoctorDaemonsCheck(t *testing.T) {
 		if _, expected := expectedDaemons[daemon.Name]; expected {
 			expectedDaemons[daemon.Name] = true
 		}
-		suite.logger.Logf("[E2E-DOCTOR] Daemon: %s port=%d running=%v status=%s",
+		suite.logger.Log("[E2E-DOCTOR] Daemon: %s port=%d running=%v status=%s",
 			daemon.Name, daemon.Port, daemon.Running, daemon.Status)
 	}
 
@@ -376,7 +376,7 @@ func TestDoctorConfigurationCheck(t *testing.T) {
 		if config.Status == "" {
 			t.Errorf("[E2E-DOCTOR] Configuration %s missing status", config.Name)
 		}
-		suite.logger.Logf("[E2E-DOCTOR] Config: %s valid=%v status=%s message=%s",
+		suite.logger.Log("[E2E-DOCTOR] Config: %s valid=%v status=%s message=%s",
 			config.Name, config.Valid, config.Status, config.Message)
 	}
 }
@@ -410,7 +410,7 @@ func TestDoctorWithBeadsDir(t *testing.T) {
 			if config.Status != "ok" {
 				t.Errorf("[E2E-DOCTOR] Expected .beads directory status ok, got: %s", config.Status)
 			}
-			suite.logger.Logf("[E2E-DOCTOR] .beads directory check: status=%s valid=%v",
+			suite.logger.Log("[E2E-DOCTOR] .beads directory check: status=%s valid=%v",
 				config.Status, config.Valid)
 		}
 	}
@@ -451,7 +451,7 @@ func TestDoctorInvariantsCheck(t *testing.T) {
 		if inv.Status == "" {
 			t.Errorf("[E2E-DOCTOR] Invariant %s missing status", inv.ID)
 		}
-		suite.logger.Logf("[E2E-DOCTOR] Invariant: %s (%s) status=%s", inv.Name, inv.ID, inv.Status)
+		suite.logger.Log("[E2E-DOCTOR] Invariant: %s (%s) status=%s", inv.Name, inv.ID, inv.Status)
 	}
 }
 
@@ -515,8 +515,8 @@ func TestDoctorOverallStatusConsistency(t *testing.T) {
 		}
 	}
 
-	suite.logger.Logf("[E2E-DOCTOR] Counted: errors=%d warnings=%d", countedErrors, countedWarnings)
-	suite.logger.Logf("[E2E-DOCTOR] Reported: errors=%d warnings=%d overall=%s",
+	suite.logger.Log("[E2E-DOCTOR] Counted: errors=%d warnings=%d", countedErrors, countedWarnings)
+	suite.logger.Log("[E2E-DOCTOR] Reported: errors=%d warnings=%d overall=%s",
 		report.Errors, report.Warnings, report.Overall)
 
 	// Verify counts match
@@ -565,8 +565,8 @@ func TestDoctorVerboseFlag(t *testing.T) {
 			len(verboseOutput), len(normalOutput))
 	}
 
-	suite.logger.Logf("[E2E-DOCTOR] Normal output: %d bytes", len(normalOutput))
-	suite.logger.Logf("[E2E-DOCTOR] Verbose output: %d bytes", len(verboseOutput))
+	suite.logger.Log("[E2E-DOCTOR] Normal output: %d bytes", len(normalOutput))
+	suite.logger.Log("[E2E-DOCTOR] Verbose output: %d bytes", len(verboseOutput))
 }
 
 // TestDoctorTimestampFormat tests that timestamp is in correct format
@@ -597,7 +597,7 @@ func TestDoctorTimestampFormat(t *testing.T) {
 		t.Errorf("[E2E-DOCTOR] Timestamp too old: %v ago", diff)
 	}
 
-	suite.logger.Logf("[E2E-DOCTOR] Timestamp: %v (%.2f seconds ago)",
+	suite.logger.Log("[E2E-DOCTOR] Timestamp: %v (%.2f seconds ago)",
 		report.Timestamp, diff.Seconds())
 }
 
@@ -626,7 +626,7 @@ func TestDoctorRequiredToolsMarked(t *testing.T) {
 				t.Errorf("[E2E-DOCTOR] Tool %s should be marked as required", tool.Name)
 			}
 			requiredTools[tool.Name] = true
-			suite.logger.Logf("[E2E-DOCTOR] Required tool: %s installed=%v status=%s",
+			suite.logger.Log("[E2E-DOCTOR] Required tool: %s installed=%v status=%s",
 				tool.Name, tool.Installed, tool.Status)
 		}
 	}
@@ -667,7 +667,7 @@ func TestDoctorDaemonPortsPopulated(t *testing.T) {
 				t.Errorf("[E2E-DOCTOR] Daemon %s expected port %d, got %d",
 					daemon.Name, expectedPort, daemon.Port)
 			}
-			suite.logger.Logf("[E2E-DOCTOR] Daemon %s: port=%d (expected %d)",
+			suite.logger.Log("[E2E-DOCTOR] Daemon %s: port=%d (expected %d)",
 				daemon.Name, daemon.Port, expectedPort)
 		}
 	}
