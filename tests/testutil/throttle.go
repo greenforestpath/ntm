@@ -75,6 +75,9 @@ func (th *throttle) AcquireForTest(t *testing.T) {
 func RequireTmuxThrottled(t *testing.T) {
 	t.Helper()
 	RequireTmux(t)
+	// Cross-process lock to prevent tmux overload when `go test ./...` runs
+	// multiple packages in parallel.
+	acquireGlobalTmuxTestLock(t)
 	TmuxTestThrottle.AcquireForTest(t)
 }
 
