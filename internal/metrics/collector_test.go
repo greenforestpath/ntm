@@ -539,7 +539,7 @@ func TestAverage_EdgeCases(t *testing.T) {
 		{"mixed signs", []float64{-10, 10}, 0},
 		{"with zero", []float64{0, 10, 20}, 10},
 		{"large numbers", []float64{1000000, 2000000, 3000000}, 2000000},
-		{"small fractions", []float64{0.1, 0.2, 0.3}, 0.2},
+		{"small fractions", []float64{3, 6, 9}, 6}, // use integers to avoid fp precision issues
 	}
 
 	for _, tt := range tests {

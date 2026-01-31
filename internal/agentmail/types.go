@@ -5,6 +5,7 @@ package agentmail
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -65,50 +66,50 @@ func (ft FlexTime) MarshalJSON() ([]byte, error) {
 
 // Agent represents an AI coding agent registered with Agent Mail.
 type Agent struct {
-	ID              int       `json:"id"`
-	Name            string    `json:"name"`             // e.g., "GreenCastle"
-	Program         string    `json:"program"`          // e.g., "claude-code"
-	Model           string    `json:"model"`            // e.g., "opus-4.5"
-	TaskDescription string    `json:"task_description"` // Current task description
+	ID              int      `json:"id"`
+	Name            string   `json:"name"`             // e.g., "GreenCastle"
+	Program         string   `json:"program"`          // e.g., "claude-code"
+	Model           string   `json:"model"`            // e.g., "opus-4.5"
+	TaskDescription string   `json:"task_description"` // Current task description
 	InceptionTS     FlexTime `json:"inception_ts"`     // When agent was first registered
 	LastActiveTS    FlexTime `json:"last_active_ts"`   // Last activity timestamp
-	ProjectID       int       `json:"project_id"`       // Associated project ID
+	ProjectID       int      `json:"project_id"`       // Associated project ID
 }
 
 // Message represents an Agent Mail message.
 type Message struct {
-	ID          int       `json:"id"`
-	ProjectID   int       `json:"project_id"`
-	SenderID    int       `json:"sender_id"`
-	ThreadID    *string   `json:"thread_id,omitempty"`
-	Subject     string    `json:"subject"`
-	BodyMD      string    `json:"body_md"` // Markdown body
-	From        string    `json:"from"`    // Sender agent name
-	To          []string  `json:"to"`
-	CC          []string  `json:"cc,omitempty"`
-	BCC         []string  `json:"bcc,omitempty"`
-	Importance  string    `json:"importance"`   // normal, high, urgent
-	AckRequired bool      `json:"ack_required"` // Whether recipient must acknowledge
+	ID          int      `json:"id"`
+	ProjectID   int      `json:"project_id"`
+	SenderID    int      `json:"sender_id"`
+	ThreadID    *string  `json:"thread_id,omitempty"`
+	Subject     string   `json:"subject"`
+	BodyMD      string   `json:"body_md"` // Markdown body
+	From        string   `json:"from"`    // Sender agent name
+	To          []string `json:"to"`
+	CC          []string `json:"cc,omitempty"`
+	BCC         []string `json:"bcc,omitempty"`
+	Importance  string   `json:"importance"`   // normal, high, urgent
+	AckRequired bool     `json:"ack_required"` // Whether recipient must acknowledge
 	CreatedTS   FlexTime `json:"created_ts"`
 	Kind        string   `json:"kind,omitempty"` // to, cc, bcc
 }
 
 // Project represents an Agent Mail project.
 type Project struct {
-	ID        int       `json:"id"`
-	Slug      string    `json:"slug"`
-	HumanKey  string    `json:"human_key"` // Absolute path to project
+	ID        int      `json:"id"`
+	Slug      string   `json:"slug"`
+	HumanKey  string   `json:"human_key"` // Absolute path to project
 	CreatedAt FlexTime `json:"created_at"`
 }
 
 // FileReservation represents a file path reservation (advisory lock).
 type FileReservation struct {
-	ID          int        `json:"id"`
-	PathPattern string     `json:"path_pattern"` // Path or glob pattern
-	AgentName   string     `json:"agent_name"`
-	ProjectID   int        `json:"project_id"`
-	Exclusive   bool       `json:"exclusive"` // Exclusive or shared
-	Reason      string     `json:"reason"`
+	ID          int       `json:"id"`
+	PathPattern string    `json:"path_pattern"` // Path or glob pattern
+	AgentName   string    `json:"agent_name"`
+	ProjectID   int       `json:"project_id"`
+	Exclusive   bool      `json:"exclusive"` // Exclusive or shared
+	Reason      string    `json:"reason"`
 	ExpiresTS   FlexTime  `json:"expires_ts"`
 	CreatedTS   FlexTime  `json:"created_ts"`
 	ReleasedTS  *FlexTime `json:"released_ts,omitempty"`
@@ -116,9 +117,9 @@ type FileReservation struct {
 
 // InboxMessage represents a message in an agent's inbox.
 type InboxMessage struct {
-	ID          int        `json:"id"`
-	Subject     string     `json:"subject"`
-	From        string     `json:"from"`
+	ID          int       `json:"id"`
+	Subject     string    `json:"subject"`
+	From        string    `json:"from"`
 	CreatedTS   FlexTime  `json:"created_ts"`
 	ThreadID    *string   `json:"thread_id,omitempty"`
 	Importance  string    `json:"importance"`
@@ -130,12 +131,12 @@ type InboxMessage struct {
 
 // ContactLink represents a contact relationship between agents.
 type ContactLink struct {
-	FromAgent string     `json:"from_agent,omitempty"`
-	ToAgent   string     `json:"to_agent,omitempty"`
-	To        string     `json:"to,omitempty"`
-	Status    string     `json:"status,omitempty"`
-	Reason    string     `json:"reason,omitempty"`
-	Approved  bool       `json:"approved,omitempty"`
+	FromAgent string    `json:"from_agent,omitempty"`
+	ToAgent   string    `json:"to_agent,omitempty"`
+	To        string    `json:"to,omitempty"`
+	Status    string    `json:"status,omitempty"`
+	Reason    string    `json:"reason,omitempty"`
+	Approved  bool      `json:"approved,omitempty"`
 	UpdatedTS *FlexTime `json:"updated_ts,omitempty"`
 	ExpiresTS *FlexTime `json:"expires_ts,omitempty"`
 }
@@ -184,6 +185,47 @@ type ReservationResult struct {
 type ReservationConflict struct {
 	Path    string   `json:"path"`
 	Holders []string `json:"holders"`
+}
+
+func (c *ReservationConflict) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Path    string          `json:"path"`
+		Holders json.RawMessage `json:"holders"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	c.Path = raw.Path
+	c.Holders = nil
+
+	// Legacy format: holders is a list of agent names.
+	var names []string
+	if err := json.Unmarshal(raw.Holders, &names); err == nil {
+		c.Holders = names
+		return nil
+	}
+
+	// Current format: holders is a list of objects with an "agent" field.
+	var objs []struct {
+		Agent     string `json:"agent"`
+		AgentName string `json:"agent_name"`
+	}
+	if err := json.Unmarshal(raw.Holders, &objs); err == nil {
+		c.Holders = make([]string, 0, len(objs))
+		for _, o := range objs {
+			name := o.Agent
+			if name == "" {
+				name = o.AgentName
+			}
+			if name != "" {
+				c.Holders = append(c.Holders, name)
+			}
+		}
+		return nil
+	}
+
+	return fmt.Errorf("unsupported holders format in reservation conflict for path %q", raw.Path)
 }
 
 // RegisterAgentOptions contains options for registering an agent.
@@ -272,9 +314,9 @@ type OverseerMessageOptions struct {
 
 // OverseerSendResult contains the result of sending a Human Overseer message.
 type OverseerSendResult struct {
-	Success    bool      `json:"success"`
-	MessageID  int       `json:"message_id"`
-	Recipients []string  `json:"recipients"`
+	Success    bool     `json:"success"`
+	MessageID  int      `json:"message_id"`
+	Recipients []string `json:"recipients"`
 	SentAt     FlexTime `json:"sent_at"`
 }
 
@@ -358,8 +400,8 @@ type SummarizeThreadOptions struct {
 
 // ThreadSummaryResponse contains the summarize_thread response for a single thread.
 type ThreadSummaryResponse struct {
-	ThreadID string        `json:"thread_id"`
-	Summary  ThreadSummary `json:"summary"`
+	ThreadID string         `json:"thread_id"`
+	Summary  ThreadSummary  `json:"summary"`
 	Examples []InboxMessage `json:"examples,omitempty"`
 }
 
@@ -374,14 +416,14 @@ type RenewReservationsOptions struct {
 
 // RenewReservationsResult contains the result of renewing reservations.
 type RenewReservationsResult struct {
-	Renewed      int                 `json:"renewed"`
+	Renewed      int                  `json:"renewed"`
 	Reservations []RenewedReservation `json:"reservations"`
 }
 
 // RenewedReservation contains info about a renewed reservation.
 type RenewedReservation struct {
-	ID           int       `json:"id"`
-	PathPattern  string    `json:"path_pattern"`
+	ID           int      `json:"id"`
+	PathPattern  string   `json:"path_pattern"`
 	OldExpiresTS FlexTime `json:"old_expires_ts"`
 	NewExpiresTS FlexTime `json:"new_expires_ts"`
 }
@@ -397,9 +439,9 @@ type ForceReleaseOptions struct {
 
 // ForceReleaseResult contains the result of a force-release operation.
 type ForceReleaseResult struct {
-	Success        bool       `json:"success"`
+	Success        bool      `json:"success"`
 	ReleasedAt     *FlexTime `json:"released_at,omitempty"`
-	PreviousHolder string     `json:"previous_holder,omitempty"`
-	PathPattern    string     `json:"path_pattern,omitempty"`
-	Notified       bool       `json:"notified,omitempty"`
+	PreviousHolder string    `json:"previous_holder,omitempty"`
+	PathPattern    string    `json:"path_pattern,omitempty"`
+	Notified       bool      `json:"notified,omitempty"`
 }
