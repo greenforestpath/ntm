@@ -263,3 +263,87 @@ func TestE2ELockRejectsTTLBelowOneMinute(t *testing.T) {
 		t.Fatalf("expected error mentioning min TTL, got:\n%s", string(out))
 	}
 }
+
+func TestE2EUnlockAllReleasesReservations(t *testing.T) {
+	testutil.RequireE2E(t)
+	testutil.RequireNTMBinary(t)
+	client := requireAgentMail(t)
+
+	logger := testutil.NewTestLoggerStdout(t)
+	logger.LogSection("setup")
+
+	// Isolate session agent files from the developer machine.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	projectDir := t.TempDir()
+	pathOne := filepath.Join(projectDir, "file-one.txt")
+	if err := os.WriteFile(pathOne, []byte("one\n"), 0644); err != nil {
+		t.Fatalf("write file one: %v", err)
+	}
+	pathTwo := filepath.Join(projectDir, "file-two.txt")
+	if err := os.WriteFile(pathTwo, []byte("two\n"), 0644); err != nil {
+		t.Fatalf("write file two: %v", err)
+	}
+
+	session := "unlock_all"
+	patternOne := "file-one.txt"
+	patternTwo := "file-two.txt"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	info, err := client.RegisterSessionAgent(ctx, session, projectDir)
+	cancel()
+	if err != nil {
+		t.Fatalf("register session agent: %v", err)
+	}
+	if info == nil || info.AgentName == "" {
+		t.Fatalf("register session agent: missing agent name")
+	}
+
+	t.Cleanup(func() {
+		// Best-effort cleanup so reservations don't leak into later tests/runs.
+		_, _ = runCmdAllowFail(t, projectDir, "ntm", "--json", "unlock", session, "--all")
+	})
+
+	logger.LogSection("lock both patterns")
+	runCmd(t, projectDir, "ntm", "--json", "lock", session, patternOne, "--ttl", "1h", "--reason", "e2e unlock --all")
+	runCmd(t, projectDir, "ntm", "--json", "lock", session, patternTwo, "--ttl", "1h", "--reason", "e2e unlock --all")
+
+	reservations := listReservations(t, client, projectDir)
+	logger.Log("expected: reservations present for %s and %s", patternOne, patternTwo)
+	logger.Log("actual: count=%d", len(reservations))
+	if !hasReservation(reservations, patternOne) || !hasReservation(reservations, patternTwo) {
+		t.Fatalf("expected reservations for %s and %s; got=%+v", patternOne, patternTwo, reservations)
+	}
+
+	logger.LogSection("unlock --all")
+	out := runCmd(t, projectDir, "ntm", "--json", "unlock", session, "--all")
+	logger.Log("expected: unlock --all succeeds for %s", info.AgentName)
+	logger.Log("actual: %s", strings.TrimSpace(string(out)))
+
+	var unlock unlockResult
+	if err := json.Unmarshal(out, &unlock); err != nil {
+		t.Fatalf("unmarshal unlock: %v\nout=%s", err, string(out))
+	}
+	if !unlock.Success {
+		t.Fatalf("expected unlock.success=true, got false (error=%q)", unlock.Error)
+	}
+	if unlock.Agent != info.AgentName {
+		t.Fatalf("expected unlock.agent=%q, got %q", info.AgentName, unlock.Agent)
+	}
+	if unlock.Released != -1 {
+		t.Fatalf("expected unlock.released=-1 for --all, got %d", unlock.Released)
+	}
+
+	logger.LogSection("verify reservations released")
+	reservations = listReservations(t, client, projectDir)
+	logger.Log("expected: reservations absent for %s and %s", patternOne, patternTwo)
+	logger.Log("actual: count=%d", len(reservations))
+	if hasReservation(reservations, patternOne) || hasReservation(reservations, patternTwo) {
+		t.Fatalf("expected reservations to be released; got=%+v", reservations)
+	}
+
+	logger.LogSection("re-lock after unlock")
+	out = runCmd(t, projectDir, "ntm", "--json", "lock", session, patternOne, "--ttl", "1h")
+	logger.Log("expected: lock succeeds after unlock --all")
+	logger.Log("actual: %s", strings.TrimSpace(string(out)))
+}
