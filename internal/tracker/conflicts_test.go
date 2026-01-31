@@ -115,3 +115,139 @@ func TestConflictSeverityAgentCount(t *testing.T) {
 		t.Errorf("expected critical severity with 3 agents, got %s", conflicts[0].Severity)
 	}
 }
+
+// =============================================================================
+// Additional Tests for Coverage Improvement
+// =============================================================================
+
+func TestConflictSeverity_Warning(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	// Two agents, edits spread over more than CriticalConflictWindow (10 min)
+	changes := []RecordedFileChange{
+		{Timestamp: now.Add(-20 * time.Minute), Session: "s1", Agents: []string{"a1"}, Change: FileChange{Path: "/p", Type: FileModified}},
+		{Timestamp: now.Add(-5 * time.Minute), Session: "s1", Agents: []string{"a2"}, Change: FileChange{Path: "/p", Type: FileModified}},
+	}
+	conflicts := DetectConflicts(changes)
+	if len(conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d", len(conflicts))
+	}
+	if conflicts[0].Severity != "warning" {
+		t.Errorf("expected warning severity (2 agents, >10min window), got %s", conflicts[0].Severity)
+	}
+}
+
+func TestConflictSeverity_CriticalTightWindow(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	// Two agents, edits within CriticalConflictWindow (10 min)
+	changes := []RecordedFileChange{
+		{Timestamp: now.Add(-5 * time.Minute), Session: "s1", Agents: []string{"a1"}, Change: FileChange{Path: "/p", Type: FileModified}},
+		{Timestamp: now.Add(-3 * time.Minute), Session: "s1", Agents: []string{"a2"}, Change: FileChange{Path: "/p", Type: FileModified}},
+	}
+	conflicts := DetectConflicts(changes)
+	if len(conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d", len(conflicts))
+	}
+	if conflicts[0].Severity != "critical" {
+		t.Errorf("expected critical severity (tight window), got %s", conflicts[0].Severity)
+	}
+}
+
+func TestDetectConflicts_FileAdded(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	changes := []RecordedFileChange{
+		{Timestamp: now.Add(-5 * time.Minute), Session: "s1", Agents: []string{"a1"}, Change: FileChange{Path: "/new", Type: FileAdded}},
+		{Timestamp: now.Add(-3 * time.Minute), Session: "s1", Agents: []string{"a2"}, Change: FileChange{Path: "/new", Type: FileModified}},
+	}
+	conflicts := DetectConflicts(changes)
+	if len(conflicts) != 1 {
+		t.Fatalf("expected 1 conflict for added+modified, got %d", len(conflicts))
+	}
+}
+
+func TestDetectConflicts_FileDeleted(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	changes := []RecordedFileChange{
+		{Timestamp: now.Add(-5 * time.Minute), Session: "s1", Agents: []string{"a1"}, Change: FileChange{Path: "/del", Type: FileModified}},
+		{Timestamp: now.Add(-3 * time.Minute), Session: "s1", Agents: []string{"a2"}, Change: FileChange{Path: "/del", Type: FileDeleted}},
+	}
+	conflicts := DetectConflicts(changes)
+	if len(conflicts) != 1 {
+		t.Fatalf("expected 1 conflict for modify+delete, got %d", len(conflicts))
+	}
+}
+
+func TestDetectConflicts_NoConflictSingleChange(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+
+	changes := []RecordedFileChange{
+		{Timestamp: now, Session: "s1", Agents: []string{"a1"}, Change: FileChange{Path: "/single", Type: FileModified}},
+	}
+	conflicts := DetectConflicts(changes)
+	if len(conflicts) != 0 {
+		t.Errorf("expected 0 conflicts for single change, got %d", len(conflicts))
+	}
+}
+
+func TestDetectConflicts_Empty(t *testing.T) {
+	t.Parallel()
+	conflicts := DetectConflicts([]RecordedFileChange{})
+	if len(conflicts) != 0 {
+		t.Errorf("expected 0 conflicts for empty input, got %d", len(conflicts))
+	}
+}
+
+func TestConflictSeverityFunction(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	tests := []struct {
+		name       string
+		changes    []RecordedFileChange
+		agentCount int
+		want       string
+	}{
+		{
+			name:       "3+ agents is critical",
+			changes:    []RecordedFileChange{{Timestamp: now}, {Timestamp: now}},
+			agentCount: 3,
+			want:       "critical",
+		},
+		{
+			name: "2 agents tight window is critical",
+			changes: []RecordedFileChange{
+				{Timestamp: now},
+				{Timestamp: now.Add(5 * time.Minute)},
+			},
+			agentCount: 2,
+			want:       "critical",
+		},
+		{
+			name: "2 agents wide window is warning",
+			changes: []RecordedFileChange{
+				{Timestamp: now},
+				{Timestamp: now.Add(15 * time.Minute)},
+			},
+			agentCount: 2,
+			want:       "warning",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := conflictSeverity(tt.changes, tt.agentCount)
+			if got != tt.want {
+				t.Errorf("conflictSeverity() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
