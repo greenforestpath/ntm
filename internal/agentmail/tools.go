@@ -480,8 +480,8 @@ func (c *Client) ListReservations(ctx context.Context, projectKey, agentName str
 		}
 
 		var reservations []FileReservation
-		if err := json.Unmarshal(toolResult, &reservations); err != nil {
-			return nil, NewAPIError("list_file_reservations", 0, err)
+		if unmarshalErr := json.Unmarshal(toolResult, &reservations); unmarshalErr != nil {
+			return nil, NewAPIError("list_file_reservations", 0, unmarshalErr)
 		}
 		return reservations, nil
 	}
@@ -491,8 +491,8 @@ func (c *Client) ListReservations(ctx context.Context, projectKey, agentName str
 			Text string `json:"text"`
 		} `json:"contents"`
 	}
-	if err := json.Unmarshal(result, &resourceResp); err != nil {
-		return nil, NewAPIError("resource://file_reservations", 0, err)
+	if unmarshalErr := json.Unmarshal(result, &resourceResp); unmarshalErr != nil {
+		return nil, NewAPIError("resource://file_reservations", 0, unmarshalErr)
 	}
 	if len(resourceResp.Contents) == 0 || strings.TrimSpace(resourceResp.Contents[0].Text) == "" {
 		return []FileReservation{}, nil
@@ -514,8 +514,8 @@ func (c *Client) ListReservations(ctx context.Context, projectKey, agentName str
 		ReleasedTS  *FlexTime `json:"released_ts,omitempty"`
 	}
 
-	if err := json.Unmarshal([]byte(resourceResp.Contents[0].Text), &raw); err != nil {
-		return nil, NewAPIError("resource://file_reservations", 0, err)
+	if unmarshalErr := json.Unmarshal([]byte(resourceResp.Contents[0].Text), &raw); unmarshalErr != nil {
+		return nil, NewAPIError("resource://file_reservations", 0, unmarshalErr)
 	}
 
 	reservations := make([]FileReservation, 0, len(raw))
