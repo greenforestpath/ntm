@@ -1155,6 +1155,43 @@ func TestDefaultHints(t *testing.T) {
 		if !hasRefresh {
 			t.Error("expected refresh hint")
 		}
+		})
+	}
+
+func TestDashboardHelpVerbosityMapping(t *testing.T) {
+	t.Parallel()
+
+	hasDesc := func(hints []KeyHint, want string) bool {
+		for _, h := range hints {
+			if h.Desc == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("minimal", func(t *testing.T) {
+		hints := DashboardHelpBarHints(DashboardHelpOptions{Verbosity: DashboardHelpVerbosityMinimal})
+		if !hasDesc(hints, "navigate") || !hasDesc(hints, "select") || !hasDesc(hints, "help") || !hasDesc(hints, "quit") {
+			t.Fatalf("expected minimal hints to include navigate/select/help/quit, got %#v", hints)
+		}
+		if hasDesc(hints, "zoom") || hasDesc(hints, "refresh") {
+			t.Fatalf("expected minimal hints to exclude zoom/refresh, got %#v", hints)
+		}
+	})
+
+	t.Run("full", func(t *testing.T) {
+		hints := DashboardHelpBarHints(DashboardHelpOptions{Verbosity: DashboardHelpVerbosityFull})
+		if !hasDesc(hints, "zoom") || !hasDesc(hints, "refresh") {
+			t.Fatalf("expected full hints to include zoom/refresh, got %#v", hints)
+		}
+	})
+
+	t.Run("debug_adds_debug_hints", func(t *testing.T) {
+		hints := DashboardHelpBarHints(DashboardHelpOptions{Verbosity: DashboardHelpVerbosityFull, Debug: true})
+		if !hasDesc(hints, "diag") || !hasDesc(hints, "scan") || !hasDesc(hints, "checkpoint") {
+			t.Fatalf("expected debug hints to include diag/scan/checkpoint, got %#v", hints)
+		}
 	})
 }
 
@@ -1181,7 +1218,7 @@ func TestHelpSections(t *testing.T) {
 	})
 
 	t.Run("dashboard sections", func(t *testing.T) {
-		sections := DashboardHelpSections()
+		sections := DashboardHelpSections(DashboardHelpOptions{Verbosity: DashboardHelpVerbosityFull})
 		if len(sections) == 0 {
 			t.Error("expected non-empty dashboard sections")
 		}
@@ -1403,7 +1440,7 @@ func TestHelpOverlayAcrossTiers(t *testing.T) {
 func TestHelpOverlayStructureStability(t *testing.T) {
 	t.Parallel()
 
-	sections := DashboardHelpSections()
+	sections := DashboardHelpSections(DashboardHelpOptions{Verbosity: DashboardHelpVerbosityFull})
 	opts := HelpOverlayOptions{
 		Title:    "Dashboard Shortcuts",
 		Sections: sections,
