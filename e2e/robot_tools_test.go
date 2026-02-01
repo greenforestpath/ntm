@@ -8,7 +8,6 @@ package e2e
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"

@@ -18,13 +18,13 @@ import (
 
 // GitStatusResult mirrors the CLI output structure for JSON parsing
 type GitStatusResult struct {
-	Success      bool             `json:"success"`
-	Session      string           `json:"session,omitempty"`
-	WorkingDir   string           `json:"working_dir"`
-	Git          *GitInfo         `json:"git,omitempty"`
-	Locks        []FileReservation `json:"locks,omitempty"`
-	AgentMail    *AgentMailStatus `json:"agent_mail,omitempty"`
-	Error        string           `json:"error,omitempty"`
+	Success    bool                 `json:"success"`
+	Session    string               `json:"session,omitempty"`
+	WorkingDir string               `json:"working_dir"`
+	Git        *GitInfo             `json:"git,omitempty"`
+	Locks      []GitFileReservation `json:"locks,omitempty"`
+	AgentMail  *AgentMailStatus     `json:"agent_mail,omitempty"`
+	Error      string               `json:"error,omitempty"`
 }
 
 // GitInfo contains git repository information
@@ -41,8 +41,8 @@ type GitInfo struct {
 	ConflictedFiles []string `json:"conflicted_files,omitempty"`
 }
 
-// FileReservation represents a file lock
-type FileReservation struct {
+// GitFileReservation represents a file lock
+type GitFileReservation struct {
 	Path      string `json:"path_pattern"`
 	Agent     string `json:"agent_name"`
 	Exclusive bool   `json:"exclusive"`
