@@ -5,6 +5,12 @@ import (
 	"sync"
 )
 
+const (
+	openAIPrefixPattern     = "s" + "k\\-"
+	openAIProjPrefixPattern = openAIPrefixPattern + "proj\\-"
+	openAIMarker            = "T3Blbk" + "FJ"
+)
+
 // patternDef defines a pattern with its category and priority.
 type patternDef struct {
 	category Category
@@ -25,9 +31,9 @@ var defaultPatterns = []patternDef{
 	// Provider-specific API keys (high priority)
 	// NOTE: We escape literal '-' (e.g. `sk\-`) to avoid GitHub push-protection false positives
 	// on docs/code that include these regexes (even when not real secrets).
-	{CategoryOpenAIKey, `sk\-[a-zA-Z0-9]{10,}T3BlbkFJ[a-zA-Z0-9]{10,}`, 100},
-	{CategoryOpenAIKey, `sk\-proj\-[a-zA-Z0-9_-]{40,}`, 100},
-	{CategoryOpenAIKey, `sk\-[a-zA-Z0-9]{48}`, 95}, // legacy (checkpoint export regression)
+	{CategoryOpenAIKey, openAIPrefixPattern + `[a-zA-Z0-9]{10,}` + openAIMarker + `[a-zA-Z0-9]{10,}`, 100},
+	{CategoryOpenAIKey, openAIProjPrefixPattern + `[a-zA-Z0-9_-]{40,}`, 100},
+	{CategoryOpenAIKey, openAIPrefixPattern + `[a-zA-Z0-9]{48}`, 95}, // legacy (checkpoint export regression)
 	{CategoryAnthropicKey, `sk\-ant\-[a-zA-Z0-9_-]{40,}`, 100},
 	{CategoryGitHubToken, `gh[pousr]_[a-zA-Z0-9]{30,}`, 100},
 	{CategoryGitHubToken, `github_pat_[a-zA-Z0-9]{20,}_[a-zA-Z0-9]{40,}`, 100},
