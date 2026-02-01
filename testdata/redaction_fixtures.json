@@ -1,0 +1,211 @@
+{
+  "version": "1.0.0",
+  "description": "Test fixtures for redaction pattern validation (bd-5dfye)",
+  "categories": {
+    "OPENAI_KEY": {
+      "description": "OpenAI API keys",
+      "patterns": [
+        "sk-[a-zA-Z0-9]{20,}T3BlbkFJ[a-zA-Z0-9]{20,}",
+        "sk-proj-[a-zA-Z0-9_-]{80,}"
+      ]
+    },
+    "ANTHROPIC_KEY": {
+      "description": "Anthropic API keys",
+      "patterns": ["sk-ant-[a-zA-Z0-9_-]{93,}"]
+    },
+    "GITHUB_TOKEN": {
+      "description": "GitHub personal access tokens",
+      "patterns": [
+        "gh[pousr]_[a-zA-Z0-9]{36,}",
+        "github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}"
+      ]
+    },
+    "AWS_ACCESS_KEY": {
+      "description": "AWS access key IDs",
+      "patterns": ["AKIA[0-9A-Z]{16}"]
+    },
+    "JWT": {
+      "description": "JSON Web Tokens",
+      "patterns": ["eyJ[a-zA-Z0-9_-]*\\.eyJ[a-zA-Z0-9_-]*\\.[a-zA-Z0-9_-]*"]
+    },
+    "GOOGLE_API_KEY": {
+      "description": "Google/GCP API keys",
+      "patterns": ["AIza[a-zA-Z0-9_-]{35}"]
+    },
+    "PRIVATE_KEY": {
+      "description": "Private key blocks",
+      "patterns": ["-----BEGIN\\s+(RSA\\s+|DSA\\s+|EC\\s+|OPENSSH\\s+)?PRIVATE KEY-----"]
+    },
+    "DATABASE_URL": {
+      "description": "Database connection strings with credentials",
+      "patterns": ["(?i)(postgres|mysql|mongodb|redis)://[^:]+:[^@]+@"]
+    }
+  },
+  "true_positives": [
+    {
+      "input": "<<OPENAI_TEST_KEY>>",
+      "expected_category": "OPENAI_KEY",
+      "description": "Standard OpenAI API key"
+    },
+    {
+      "input": "sk-proj-ABC123_def456-ghi789_jkl012_mno345pqr678stu901vwx234yz567abc890def123ghi456jkl789mno012",
+      "expected_category": "OPENAI_KEY",
+      "description": "OpenAI project API key"
+    },
+    {
+      "input": "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+      "expected_category": "ANTHROPIC_KEY",
+      "description": "Anthropic API key"
+    },
+    {
+      "input": "ghp_1234567890abcdefghijklmnopqrstuvwxyz12",
+      "expected_category": "GITHUB_TOKEN",
+      "description": "GitHub personal access token"
+    },
+    {
+      "input": "github_pat_11ABCDEFG0123456789AB_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "expected_category": "GITHUB_TOKEN",
+      "description": "GitHub fine-grained PAT"
+    },
+    {
+      "input": "AKIAIOSFODNN7EXAMPLE",
+      "expected_category": "AWS_ACCESS_KEY",
+      "description": "AWS access key ID"
+    },
+    {
+      "input": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+      "expected_category": "JWT",
+      "description": "Standard JWT token"
+    },
+    {
+      "input": "AIzaSyD-abc123_XYZ456_789-defGHI012jklMNO",
+      "expected_category": "GOOGLE_API_KEY",
+      "description": "Google API key"
+    },
+    {
+      "input": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----",
+      "expected_category": "PRIVATE_KEY",
+      "description": "RSA private key block"
+    },
+    {
+      "input": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC...\n-----END OPENSSH PRIVATE KEY-----",
+      "expected_category": "PRIVATE_KEY",
+      "description": "OpenSSH private key block"
+    },
+    {
+      "input": "postgres://myuser:mypassword@localhost:5432/mydb",
+      "expected_category": "DATABASE_URL",
+      "description": "PostgreSQL connection string"
+    },
+    {
+      "input": "mongodb://admin:secretPassword123@mongo.example.com:27017/production",
+      "expected_category": "DATABASE_URL",
+      "description": "MongoDB connection string"
+    },
+    {
+      "input": "redis://default:myRedisPassword@redis.example.com:6379",
+      "expected_category": "DATABASE_URL",
+      "description": "Redis connection string"
+    }
+  ],
+  "true_negatives": [
+    {
+      "input": "sk-abc",
+      "description": "Too short to be an OpenAI key"
+    },
+    {
+      "input": "sk-test-1234",
+      "description": "Test key pattern (too short)"
+    },
+    {
+      "input": "eyJhbGciOiJIUzI1NiJ9.notvalid",
+      "description": "Malformed JWT - only two parts"
+    },
+    {
+      "input": "The password field is required",
+      "description": "Word 'password' in prose, not assignment"
+    },
+    {
+      "input": "YOUR_API_KEY_HERE",
+      "description": "Placeholder text"
+    },
+    {
+      "input": "<your-openai-key>",
+      "description": "Template placeholder"
+    },
+    {
+      "input": "REPLACE_WITH_YOUR_KEY",
+      "description": "Documentation placeholder"
+    },
+    {
+      "input": "postgres://localhost:5432/mydb",
+      "description": "Database URL without credentials"
+    },
+    {
+      "input": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+      "description": "Base64 data URL (not a secret)"
+    },
+    {
+      "input": "Asking about API_KEY best practices",
+      "description": "Prose mentioning API_KEY"
+    },
+    {
+      "input": "The pattern sk-* is for OpenAI",
+      "description": "Documentation about patterns"
+    },
+    {
+      "input": "ghp_test",
+      "description": "Too short for GitHub token"
+    },
+    {
+      "input": "AKIA1234",
+      "description": "Too short for AWS access key"
+    }
+  ],
+  "edge_cases": [
+    {
+      "input": "{\"api_key\": \"<<OPENAI_TEST_KEY>>\"}",
+      "expected_category": "OPENAI_KEY",
+      "description": "Key embedded in JSON"
+    },
+    {
+      "input": "export OPENAI_API_KEY=<<OPENAI_TEST_KEY>>",
+      "expected_category": "OPENAI_KEY",
+      "description": "Key in shell export"
+    },
+    {
+      "input": "OPENAI_KEY=<<OPENAI_TEST_KEY>> ANTHROPIC_KEY=sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+      "expected_categories": ["OPENAI_KEY", "ANTHROPIC_KEY"],
+      "description": "Multiple keys on one line"
+    },
+    {
+      "input": "   <<OPENAI_TEST_KEY>>   ",
+      "expected_category": "OPENAI_KEY",
+      "description": "Key with surrounding whitespace"
+    },
+    {
+      "input": "```bash\nexport API_KEY=<<OPENAI_TEST_KEY>>\n```",
+      "expected_category": "OPENAI_KEY",
+      "description": "Key in markdown code block"
+    },
+    {
+      "input": "config:\n  openai:\n    key: <<OPENAI_TEST_KEY>>",
+      "expected_category": "OPENAI_KEY",
+      "description": "Key in YAML config"
+    }
+  ],
+  "redaction_examples": [
+    {
+      "input": "<<OPENAI_TEST_KEY>>",
+      "category": "OPENAI_KEY",
+      "redacted_format": "[REDACTED:OPENAI_KEY:????????]",
+      "description": "Hash is 8 hex chars"
+    },
+    {
+      "input": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+      "category": "JWT",
+      "redacted_format": "[REDACTED:JWT:????????]",
+      "description": "JWT redaction"
+    }
+  ]
+}
