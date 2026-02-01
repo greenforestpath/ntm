@@ -307,6 +307,7 @@ NTM_REDACTION_ALLOWLIST="sk-test-.*,EXAMPLE.*" ntm send ...
 Some fixtures use placeholders to avoid committing secret-looking strings
 (provider keys, cloud creds, and private keys). Unit tests expand these placeholders into synthetic values.
 See `internal/safety/redaction/redaction_test.go` for the exact expansion logic.
+
 ### True Positives (should detect)
 
 ```
