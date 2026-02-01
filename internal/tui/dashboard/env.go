@@ -14,7 +14,8 @@ func applyDashboardEnvOverrides(m *Model) {
 	}
 
 	// NTM_REDUCE_MOTION: disable animations for reduced flicker (fixes #32)
-	if v := os.Getenv("NTM_REDUCE_MOTION"); v == "1" || strings.ToLower(v) == "true" {
+	// Aligns with styles.reducedMotionEnabled() - any truthy value enables reduce motion
+	if v := strings.TrimSpace(strings.ToLower(os.Getenv("NTM_REDUCE_MOTION"))); v != "" && v != "0" && v != "false" && v != "no" && v != "off" {
 		m.reduceMotion = true
 	}
 
