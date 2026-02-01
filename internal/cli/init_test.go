@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -125,6 +126,122 @@ func TestInitCmd_Force(t *testing.T) {
 	}
 
 	t.Logf("TEST: InitCmd_Force | Input: Force=%v | Expected: overwrite | Got: success", opts.Force)
+}
+
+func TestInitCmd_ForceRecoversFromCorruptConfig(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	ntmDir := filepath.Join(tmpDir, ".ntm")
+	if err := os.MkdirAll(ntmDir, 0755); err != nil {
+		t.Fatalf("create .ntm: %v", err)
+	}
+
+	// Write a config that TOML parser will reject.
+	configPath := filepath.Join(ntmDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("this is not valid toml = ="), 0644); err != nil {
+		t.Fatalf("write corrupt config.toml: %v", err)
+	}
+
+	opts := initOptions{
+		TargetDir:      tmpDir,
+		NonInteractive: true,
+		NoHooks:        true,
+		Force:          true,
+	}
+	if err := runProjectInit(opts); err != nil {
+		t.Fatalf("runProjectInit failed: %v", err)
+	}
+
+	if _, err := config.LoadProjectConfig(configPath); err != nil {
+		t.Fatalf("expected init to recover by overwriting corrupt config.toml, got load error: %v", err)
+	}
+}
+
+func TestInitCmd_PartialInitCanBeResumed(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	ntmDir := filepath.Join(tmpDir, ".ntm")
+	if err := os.MkdirAll(ntmDir, 0755); err != nil {
+		t.Fatalf("create .ntm: %v", err)
+	}
+
+	// Simulate a partial/failed init: .ntm exists, but config.toml is missing.
+	customPalette := "# My Custom Palette\n## Custom Section\n"
+	palettePath := filepath.Join(ntmDir, "palette.md")
+	if err := os.WriteFile(palettePath, []byte(customPalette), 0644); err != nil {
+		t.Fatalf("write custom palette: %v", err)
+	}
+
+	opts := initOptions{
+		TargetDir:      tmpDir,
+		NonInteractive: true,
+		NoHooks:        true,
+	}
+	if err := runProjectInit(opts); err != nil {
+		t.Fatalf("runProjectInit failed: %v", err)
+	}
+
+	// Verify init completed by creating config.toml.
+	configPath := filepath.Join(ntmDir, "config.toml")
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		t.Fatalf("config.toml not created during resumed init")
+	}
+
+	// Verify it did not clobber existing palette.md when resuming.
+	gotPalette, err := os.ReadFile(palettePath)
+	if err != nil {
+		t.Fatalf("read palette.md: %v", err)
+	}
+	if string(gotPalette) != customPalette {
+		t.Fatalf("palette.md was overwritten on resume; got %q", string(gotPalette))
+	}
+}
+
+func TestInitCmd_ReadOnlyTargetDirDoesNotCreateNtmDir(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based permission tests are not portable on Windows")
+	}
+
+	tmpDir := t.TempDir()
+	if err := os.Chmod(tmpDir, 0555); err != nil {
+		t.Skipf("chmod not supported: %v", err)
+	}
+	defer os.Chmod(tmpDir, 0755)
+
+	opts := initOptions{
+		TargetDir:      tmpDir,
+		NonInteractive: true,
+		NoHooks:        true,
+	}
+	err := runProjectInit(opts)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "creating .ntm directory") {
+		t.Fatalf("expected .ntm creation error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(tmpDir, ".ntm")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected .ntm not to be created, stat err=%v", statErr)
+	}
+}
+
+func TestInitCmd_NotGitRepoStillSucceedsWithHooksEnabled(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	opts := initOptions{
+		TargetDir:      tmpDir,
+		NonInteractive: true,
+		NoHooks:        false, // exercise the graceful "not a git repo" path
+	}
+	if err := runProjectInit(opts); err != nil {
+		t.Fatalf("runProjectInit failed: %v", err)
+	}
 }
 
 // TestInitCmd_NonExistentDir verifies error for non-existent target directory
