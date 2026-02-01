@@ -48,6 +48,16 @@ import (
 // DashboardTickMsg is sent for animation updates
 type DashboardTickMsg time.Time
 
+// ActivityState tracks dashboard activity for adaptive tick rate
+type ActivityState int
+
+const (
+	// StateActive means user is actively interacting or output is flowing
+	StateActive ActivityState = iota
+	// StateIdle means no activity for a period (reduced tick rate)
+	StateIdle
+)
+
 // RefreshMsg triggers a refresh of session data
 type RefreshMsg struct{}
 
@@ -509,6 +519,14 @@ type Model struct {
 	fileChangesError error
 	cassError        error
 	routingError     error
+
+	// Activity state tracking for adaptive tick rate (fixes #32 - dashboard flicker)
+	lastActivity time.Time     // When user last interacted (key/mouse/pane output)
+	activityState ActivityState // current activity state
+	reduceMotion  bool          // NTM_REDUCE_MOTION=1 disables animations
+	baseTick      time.Duration // Base tick interval when active (default 100ms)
+	idleTick      time.Duration // Tick interval when idle (default 500ms)
+	idleTimeout   time.Duration // Time before entering idle state (default 5s)
 }
 
 // PaneStatus tracks the status of a pane including compaction state
@@ -731,6 +749,13 @@ func New(session, projectDir string) Model {
 	m.lastSpawnFetch = now
 	m.lastMailInboxFetch = now
 
+	// Initialize activity tracking for adaptive tick rate (fixes #32)
+	m.lastActivity = now
+	m.activityState = StateActive
+	m.baseTick = 100 * time.Millisecond
+	m.idleTick = 500 * time.Millisecond
+	m.idleTimeout = 5 * time.Second
+
 	applyDashboardEnvOverrides(&m)
 
 	// Set up conflict action handler for the conflicts panel
@@ -902,9 +927,29 @@ func (m Model) subscribeToConfig() tea.Cmd {
 }
 
 func (m Model) tick() tea.Cmd {
-	return tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg {
+	interval := m.getTickInterval()
+	return tea.Tick(interval, func(t time.Time) tea.Msg {
 		return DashboardTickMsg(t)
 	})
+}
+
+// getTickInterval returns the appropriate tick interval based on activity state
+func (m Model) getTickInterval() time.Duration {
+	baseTick := m.baseTick
+	if baseTick == 0 {
+		baseTick = 100 * time.Millisecond
+	}
+	idleTick := m.idleTick
+	if idleTick == 0 {
+		idleTick = 500 * time.Millisecond
+	}
+
+	switch m.activityState {
+	case StateIdle:
+		return idleTick
+	default:
+		return baseTick
+	}
 }
 
 // fetchHealthStatus performs the health check via bv
@@ -2152,13 +2197,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case DashboardTickMsg:
-		m.animTick++
+		// Only increment animation tick when not in reduce motion mode
+		if !m.reduceMotion {
+			m.animTick++
+		}
+
+		// Check for idle state transition (fixes #32 - reduce tick rate when idle)
+		now := time.Now()
+		idleTimeout := m.idleTimeout
+		if idleTimeout == 0 {
+			idleTimeout = 5 * time.Second
+		}
+		if !m.lastActivity.IsZero() && time.Since(m.lastActivity) > idleTimeout {
+			m.activityState = StateIdle
+		}
 
 		// Update ticker panel with current data and animation tick
 		m.updateTickerData()
 
 		// Drive staggered refreshes on the animation ticker to avoid a single heavy burst.
-		now := time.Now()
 		if !m.refreshPaused {
 			cmds = append(cmds, m.scheduleRefreshes(now)...)
 		}
@@ -2178,12 +2235,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionFetchLatency = msg.Duration
 
 		if msg.Err != nil {
-			// Ignore coalescing cancellations; we’ll immediately re-fetch if pending.
+			// Ignore coalescing cancellations; we'll immediately re-fetch if pending.
 			if !errors.Is(msg.Err, context.Canceled) {
 				m.err = msg.Err
 			}
 			return m, followUp
 		}
+
+		// Track activity when new pane output arrives (fixes #32)
+		if len(msg.Outputs) > 0 {
+			m.lastActivity = time.Now()
+			m.activityState = StateActive
+		}
+
 		m.err = nil
 		m.lastRefresh = time.Now()
 		m.markUpdated(refreshSession, time.Now())
@@ -2675,6 +2739,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Track activity for adaptive tick rate (fixes #32)
+		m.lastActivity = time.Now()
+		m.activityState = StateActive
+
 		// Handle help overlay: Esc or ? closes it
 		if m.showHelp {
 			if msg.String() == "esc" || msg.String() == "?" {

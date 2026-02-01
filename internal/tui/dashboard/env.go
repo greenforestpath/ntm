@@ -13,6 +13,26 @@ func applyDashboardEnvOverrides(m *Model) {
 		return
 	}
 
+	// NTM_REDUCE_MOTION: disable animations for reduced flicker (fixes #32)
+	if v := os.Getenv("NTM_REDUCE_MOTION"); v == "1" || strings.ToLower(v) == "true" {
+		m.reduceMotion = true
+	}
+
+	// NTM_DASHBOARD_TICK_MS: base tick interval in milliseconds (default 100ms)
+	if ms, ok := envPositiveInt("NTM_DASHBOARD_TICK_MS"); ok {
+		m.baseTick = time.Duration(ms) * time.Millisecond
+	}
+
+	// NTM_IDLE_TICK_MS: tick interval when idle (default 500ms)
+	if ms, ok := envPositiveInt("NTM_IDLE_TICK_MS"); ok {
+		m.idleTick = time.Duration(ms) * time.Millisecond
+	}
+
+	// NTM_IDLE_TIMEOUT_SECS: seconds of inactivity before entering idle (default 5)
+	if secs, ok := envPositiveInt("NTM_IDLE_TIMEOUT_SECS"); ok {
+		m.idleTimeout = time.Duration(secs) * time.Second
+	}
+
 	if v := os.Getenv("NTM_DASHBOARD_REFRESH"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			m.refreshInterval = d
