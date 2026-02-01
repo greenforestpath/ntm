@@ -509,6 +509,22 @@ func (s *Supervisor) handleDaemonFailure(d *ManagedDaemon) {
 	}
 }
 
+// healthCheckClient is a shared HTTP client for health checks with appropriate timeouts.
+// Using a dedicated client (vs http.DefaultClient) ensures connection timeouts are respected.
+var healthCheckClient = &http.Client{
+	Timeout: 5 * time.Second,
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout: 2 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   2 * time.Second,
+		ResponseHeaderTimeout: 3 * time.Second,
+		IdleConnTimeout:       30 * time.Second,
+		MaxIdleConns:          10,
+		MaxIdleConnsPerHost:   2,
+	},
+}
+
 // checkHealthHTTP performs an HTTP health check.
 func (s *Supervisor) checkHealthHTTP(url string) bool {
 	ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
@@ -519,7 +535,7 @@ func (s *Supervisor) checkHealthHTTP(url string) bool {
 		return false
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := healthCheckClient.Do(req)
 	if err != nil {
 		return false
 	}
