@@ -21,8 +21,10 @@ import (
 	ntmctx "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/git"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
+	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/recipe"
 	"github.com/Dicklesworthstone/ntm/internal/status"
+	swarmlib "github.com/Dicklesworthstone/ntm/internal/swarm"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
@@ -3038,6 +3040,7 @@ type SnapshotOutput struct {
 	AgentMail      *SnapshotAgentMail `json:"agent_mail,omitempty"`
 	MailUnread     int                `json:"mail_unread,omitempty"`
 	Tools          []ToolInfoOutput   `json:"tools,omitempty"`           // Flywheel tool inventory and health
+	Swarm          *SwarmSnapshot     `json:"swarm,omitempty"`           // Active swarm orchestration state (optional)
 	Alerts         []string           `json:"alerts"`                    // Legacy: simple string alerts
 	AlertsDetailed []AlertInfo        `json:"alerts_detailed,omitempty"` // Rich alert objects
 	AlertSummary   *AlertSummaryInfo  `json:"alert_summary,omitempty"`
@@ -3101,6 +3104,51 @@ type SnapshotAgentMailStats struct {
 	Pane       string `json:"pane,omitempty"`
 	Unread     int    `json:"unread"`
 	PendingAck int    `json:"pending_ack"`
+}
+
+type SwarmSnapshot struct {
+	Active       bool               `json:"active"`
+	Plan         SwarmSnapshotPlan  `json:"plan"`
+	Sessions     []SwarmSessionInfo `json:"sessions"`
+	Health       SwarmHealthSummary `json:"health"`
+	RecentEvents []SwarmRecentEvent `json:"recent_events"`
+}
+
+type SwarmSnapshotPlan struct {
+	CreatedAt   string                `json:"created_at"`
+	ScanDir     string                `json:"scan_dir"`
+	TotalAgents int                   `json:"total_agents"`
+	Allocations []SwarmPlanAllocation `json:"allocations"`
+}
+
+type SwarmPlanAllocation struct {
+	Project   string `json:"project"`
+	Tier      int    `json:"tier"`
+	OpenBeads int    `json:"open_beads"`
+	CCAgents  int    `json:"cc_agents"`
+	CodAgents int    `json:"cod_agents"`
+	GmiAgents int    `json:"gmi_agents"`
+}
+
+type SwarmSessionInfo struct {
+	Name      string `json:"name"`
+	AgentType string `json:"agent_type"`
+	PaneCount int    `json:"pane_count"`
+	Healthy   int    `json:"healthy"`
+	LimitHit  int    `json:"limit_hit"`
+}
+
+type SwarmHealthSummary struct {
+	TotalAgents int `json:"total_agents"`
+	Healthy     int `json:"healthy"`
+	LimitHit    int `json:"limit_hit"`
+	Respawning  int `json:"respawning"`
+}
+
+type SwarmRecentEvent struct {
+	Type      string `json:"type"`
+	Pane      string `json:"pane"`
+	Timestamp string `json:"timestamp"`
 }
 
 // BeadLimit controls how many ready/in-progress beads to include in snapshot
@@ -3230,6 +3278,8 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 		output.Sessions = append(output.Sessions, snapSession)
 	}
 
+	output.Swarm = buildSwarmSnapshot(cfg, sessions)
+
 	// Try to get beads summary
 	beads := bv.GetBeadsSummary("", BeadLimit)
 	if beads != nil {
@@ -3316,6 +3366,146 @@ func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*Snapsh
 	}
 
 	return output, nil
+}
+
+func buildSwarmSnapshot(cfg *config.Config, sessions []tmux.Session) *SwarmSnapshot {
+	if cfg == nil || !cfg.Swarm.Enabled {
+		return nil
+	}
+
+	type sessSpec struct {
+		name      string
+		agentType string
+	}
+
+	swarmSessions := make([]sessSpec, 0, len(sessions))
+	for _, sess := range sessions {
+		agentType, ok := parseSwarmSessionName(sess.Name)
+		if !ok {
+			continue
+		}
+		swarmSessions = append(swarmSessions, sessSpec{name: sess.Name, agentType: agentType})
+	}
+	if len(swarmSessions) == 0 {
+		return nil
+	}
+
+	out := &SwarmSnapshot{
+		Active:       true,
+		Sessions:     make([]SwarmSessionInfo, 0, len(swarmSessions)),
+		RecentEvents: []SwarmRecentEvent{},
+	}
+
+	totalAgents := 0
+	totalHealthy := 0
+	totalLimitHit := 0
+
+	for _, sess := range swarmSessions {
+		h, err := health.CheckSession(sess.name)
+		if err != nil {
+			continue
+		}
+
+		paneCount := 0
+		healthy := 0
+		limitHit := 0
+
+		for _, agent := range h.Agents {
+			// Swarm sessions are agent-only; ignore any user panes if present.
+			if agent.AgentType == "user" {
+				continue
+			}
+			paneCount++
+			if agent.Status == health.StatusOK {
+				healthy++
+			}
+			if agent.RateLimited {
+				limitHit++
+			}
+		}
+
+		totalAgents += paneCount
+		totalHealthy += healthy
+		totalLimitHit += limitHit
+
+		out.Sessions = append(out.Sessions, SwarmSessionInfo{
+			Name:      sess.name,
+			AgentType: sess.agentType,
+			PaneCount: paneCount,
+			Healthy:   healthy,
+			LimitHit:  limitHit,
+		})
+	}
+
+	out.Health = SwarmHealthSummary{
+		TotalAgents: totalAgents,
+		Healthy:     totalHealthy,
+		LimitHit:    totalLimitHit,
+		Respawning:  0,
+	}
+
+	out.Plan = buildSwarmSnapshotPlan(cfg, totalAgents)
+
+	return out
+}
+
+func buildSwarmSnapshotPlan(cfg *config.Config, fallbackTotalAgents int) SwarmSnapshotPlan {
+	planOut := SwarmSnapshotPlan{
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
+		ScanDir:     cfg.Swarm.DefaultScanDir,
+		TotalAgents: fallbackTotalAgents,
+		Allocations: []SwarmPlanAllocation{},
+	}
+
+	if cfg.Swarm.DefaultScanDir == "" {
+		return planOut
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	scanner := swarmlib.NewBeadScanner(cfg.Swarm.DefaultScanDir)
+	scan, err := scanner.Scan(ctx)
+	if err != nil || scan == nil {
+		return planOut
+	}
+
+	calc := swarmlib.NewAllocationCalculator(&cfg.Swarm)
+	plan := calc.GenerateSwarmPlan(cfg.Swarm.DefaultScanDir, scan.Projects)
+	if plan == nil {
+		return planOut
+	}
+
+	planOut.CreatedAt = plan.CreatedAt.UTC().Format(time.RFC3339)
+	planOut.ScanDir = plan.ScanDir
+	planOut.TotalAgents = plan.TotalAgents
+	planOut.Allocations = make([]SwarmPlanAllocation, 0, len(plan.Allocations))
+
+	for _, alloc := range plan.Allocations {
+		planOut.Allocations = append(planOut.Allocations, SwarmPlanAllocation{
+			Project:   alloc.Project.Name,
+			Tier:      alloc.Project.Tier,
+			OpenBeads: alloc.Project.OpenBeads,
+			CCAgents:  alloc.CCAgents,
+			CodAgents: alloc.CodAgents,
+			GmiAgents: alloc.GmiAgents,
+		})
+	}
+
+	return planOut
+}
+
+func parseSwarmSessionName(name string) (string, bool) {
+	switch {
+	case strings.HasPrefix(name, "cc_agents_"):
+		return "cc", true
+	case strings.HasPrefix(name, "cod_agents_"):
+		return "cod", true
+	case strings.HasPrefix(name, "gmi_agents_"):
+		return "gmi", true
+	default:
+		return "", false
+	}
 }
 
 // PrintSnapshot outputs complete system state for AI orchestration

@@ -991,6 +991,76 @@ func TestPrintSnapshot(t *testing.T) {
 	if result.Alerts == nil {
 		t.Error("Alerts is nil (should be empty array)")
 	}
+
+	// Swarm should be omitted when swarm is disabled
+	if result.Swarm != nil {
+		t.Errorf("expected Swarm to be nil when swarm is disabled, got %+v", result.Swarm)
+	}
+}
+
+func TestPrintSnapshotIncludesSwarmWhenActive(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	sessionName := "cc_agents_" + time.Now().Format("150405")
+	if err := tmux.CreateSession(sessionName, ""); err != nil {
+		t.Fatalf("Failed to create test session: %v", err)
+	}
+	defer tmux.KillSession(sessionName)
+
+	panes, err := tmux.GetPanes(sessionName)
+	if err != nil || len(panes) == 0 {
+		t.Fatalf("Failed to get panes: %v", err)
+	}
+
+	// Ensure the pane title matches NTM convention so type detection sees it as an agent.
+	_ = tmux.SetPaneTitle(panes[0].ID, tmux.FormatPaneName(sessionName, "cc", 1, ""))
+
+	cfg := config.Default()
+	cfg.Swarm.Enabled = true
+	// Use a non-existent scan dir so the snapshot plan is still populated but fast.
+	cfg.Swarm.DefaultScanDir = "/does/not/exist"
+
+	output, err := captureStdout(t, func() error { return PrintSnapshot(cfg) })
+	if err != nil {
+		t.Fatalf("PrintSnapshot failed: %v", err)
+	}
+
+	var result SnapshotOutput
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("Failed to parse JSON: %v", err)
+	}
+
+	if result.Swarm == nil {
+		t.Fatal("expected Swarm to be present when swarm is enabled and swarm sessions exist")
+	}
+	if !result.Swarm.Active {
+		t.Error("expected Swarm.Active to be true")
+	}
+	if result.Swarm.Plan.ScanDir != cfg.Swarm.DefaultScanDir {
+		t.Errorf("expected Swarm.Plan.ScanDir = %q, got %q", cfg.Swarm.DefaultScanDir, result.Swarm.Plan.ScanDir)
+	}
+	if result.Swarm.Sessions == nil {
+		t.Error("expected Swarm.Sessions to be a JSON array")
+	}
+	if result.Swarm.RecentEvents == nil {
+		t.Error("expected Swarm.RecentEvents to be a JSON array")
+	}
+
+	found := false
+	for _, sess := range result.Swarm.Sessions {
+		if sess.Name == sessionName {
+			found = true
+			if sess.AgentType != "cc" {
+				t.Errorf("expected swarm session agent_type cc, got %q", sess.AgentType)
+			}
+			if sess.PaneCount < 1 {
+				t.Errorf("expected swarm session pane_count >= 1, got %d", sess.PaneCount)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected swarm session %q to appear in snapshot", sessionName)
+	}
 }
 
 func TestPrintSnapshotWithSession(t *testing.T) {
