@@ -200,7 +200,7 @@ func (m *Monitor) checkPane(ctx context.Context, pane tmux.Pane) error {
 	}
 
 	// Parse state
-	state, err := m.parser.Parse(output)
+	state, err := m.parser.ParseWithHint(output, pane.Type)
 	if err != nil {
 		return err
 	}

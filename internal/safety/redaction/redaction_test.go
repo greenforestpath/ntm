@@ -2,14 +2,15 @@ package redaction
 
 import (
 	"bytes"
-	"crypto/sha256"
+	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -19,106 +20,173 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func hexN(seed string, n int) string {
-	sum := sha256.Sum256([]byte(seed))
-	hexStr := hex.EncodeToString(sum[:])
-	if n > len(hexStr) {
-		n = len(hexStr)
+const (
+	alphaNum               = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	alphaNumDashUnderscore = alphaNum + "-_"
+	upperAlphaNum          = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	awsSecretChars         = alphaNum + "/+="
+)
+
+type cachedString struct {
+	once  sync.Once
+	value string
+}
+
+func (c *cachedString) get(gen func() string) string {
+	c.once.Do(func() {
+		c.value = gen()
+	})
+	return c.value
+}
+
+func randChars(allowed string, n int) string {
+	if n <= 0 {
+		return ""
 	}
-	return hexStr[:n]
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		panic(err)
+	}
+	out := make([]byte, n)
+	for i, b := range buf {
+		out[i] = allowed[int(b)%len(allowed)]
+	}
+	return string(out)
 }
 
 func openAIMarker() string {
 	return base64.StdEncoding.EncodeToString([]byte("OpenAI"))
 }
 
+var (
+	openAIKey        cachedString
+	openAILegacyKey  cachedString
+	openAIProjKey    cachedString
+	anthropicKey     cachedString
+	githubToken      cachedString
+	githubFinePAT    cachedString
+	githubOAuthToken cachedString
+	githubAppToken   cachedString
+	awsAccessKey     cachedString
+	awsSTSAccessKey  cachedString
+	awsSecretKey     cachedString
+	googleAPIKey     cachedString
+	jwtToken         cachedString
+)
+
 // testOpenAIKey constructs a fake OpenAI API key for testing.
 // Generated at runtime to avoid triggering secret scanners.
 func testOpenAIKey() string {
-	// Format: sk-{20 chars}T3BlbkFJ{24 chars}
-	return "sk-" + hexN("openai-test-key-a", 20) + openAIMarker() + hexN("openai-test-key-b", 24)
+	// Format: OpenAI API key (prefix + base64 marker + random)
+	return openAIKey.get(func() string {
+		return "s" + "k-" + randChars(alphaNum, 20) + openAIMarker() + randChars(alphaNum, 24)
+	})
 }
 
 // testOpenAILegacyKey constructs a fake legacy OpenAI API key for testing.
 // Generated at runtime to avoid triggering secret scanners.
 func testOpenAILegacyKey() string {
-	// Format: sk-{48 chars}
-	return "sk-" + hexN("openai-legacy-key", 48)
+	// Format: legacy OpenAI key (prefix + 48 chars)
+	return openAILegacyKey.get(func() string {
+		return "s" + "k-" + randChars(alphaNum, 48)
+	})
 }
 
 // testOpenAIProjKey constructs a fake OpenAI project key for testing.
 // Generated at runtime to avoid triggering secret scanners.
 func testOpenAIProjKey() string {
-	// Format: sk-proj-{40+ chars}
-	return "sk-proj-" + hexN("openai-proj-key", 40)
+	// Format: OpenAI project key (prefix + 40+ chars)
+	return openAIProjKey.get(func() string {
+		return "s" + "k-" + "proj-" + randChars(alphaNumDashUnderscore, 40)
+	})
 }
 
 // testAnthropicKey constructs a fake Anthropic API key for testing.
 // Generated at runtime to avoid triggering secret scanners.
 func testAnthropicKey() string {
-	// Format: sk-ant-{40+ chars}
-	return "sk-ant-" + hexN("anthropic-key", 40)
+	// Format: Anthropic key (prefix + 40+ chars)
+	return anthropicKey.get(func() string {
+		return "s" + "k-" + "ant-" + randChars(alphaNumDashUnderscore, 40)
+	})
 }
 
 // testGitHubToken constructs a fake GitHub classic token for testing.
 // Generated at runtime to avoid triggering secret scanners.
 func testGitHubToken() string {
-	// Format: ghp_{30+ chars}
-	return "ghp_" + hexN("github-token", 36)
+	// Format: GitHub classic token (prefix + 30+ chars)
+	return githubToken.get(func() string {
+		return "g" + "hp_" + randChars(alphaNum, 36)
+	})
 }
 
 // testGitHubFinePAT constructs a fake GitHub fine-grained PAT for testing.
 // Generated at runtime to avoid triggering secret scanners.
 func testGitHubFinePAT() string {
-	// Format: github_pat_{20+}_{40+}
-	return "github_pat_" + hexN("github-fine-pat-left", 20) + "_" + hexN("github-fine-pat-right", 40)
+	// Format: GitHub fine-grained PAT (prefix + 20+ + '_' + 40+)
+	return githubFinePAT.get(func() string {
+		return "github_" + "pat_" + randChars(alphaNum, 20) + "_" + randChars(alphaNum, 40)
+	})
 }
 
 // testGitHubOAuthToken constructs a fake GitHub OAuth token for testing.
 // Generated at runtime to avoid triggering secret scanners.
 func testGitHubOAuthToken() string {
-	// Format: gho_{30+ chars}
-	return "gho_" + hexN("github-oauth-token", 36)
+	// Format: GitHub OAuth token (prefix + 30+ chars)
+	return githubOAuthToken.get(func() string {
+		return "g" + "ho_" + randChars(alphaNum, 36)
+	})
 }
 
 // testGitHubAppToken constructs a fake GitHub App installation token for testing.
 // Generated at runtime to avoid triggering secret scanners.
 func testGitHubAppToken() string {
-	// Format: ghs_{30+ chars}
-	return "ghs_" + hexN("github-app-token", 36)
+	// Format: GitHub App installation token (prefix + 30+ chars)
+	return githubAppToken.get(func() string {
+		return "g" + "hs_" + randChars(alphaNum, 36)
+	})
 }
 
 // testAWSAccessKey constructs a fake AWS access key ID for testing.
 // Generated at runtime to avoid triggering secret scanners.
 func testAWSAccessKey() string {
-	// Format: AKIA{16}
-	return "AKIA" + strings.ToUpper(hexN("aws-access-key", 16))
+	// Format: AWS access key id (prefix + 16)
+	return awsAccessKey.get(func() string {
+		return "AK" + "IA" + randChars(upperAlphaNum, 16)
+	})
 }
 
 // testAWSSTSAccessKey constructs a fake AWS STS access key ID for testing.
 // Generated at runtime to avoid triggering secret scanners.
 func testAWSSTSAccessKey() string {
-	// Format: ASIA{16}
-	return "ASIA" + strings.ToUpper(hexN("aws-sts-access-key", 16))
+	// Format: AWS STS access key id (prefix + 16)
+	return awsSTSAccessKey.get(func() string {
+		return "AS" + "IA" + randChars(upperAlphaNum, 16)
+	})
 }
 
 // testAWSSecretKey constructs a fake AWS secret access key for testing.
 // Generated at runtime to avoid triggering secret scanners.
 func testAWSSecretKey() string {
 	// 40 chars (matches [a-zA-Z0-9/+=]{40}).
-	return hexN("aws-secret-key", 40)
+	return awsSecretKey.get(func() string {
+		return randChars(awsSecretChars, 40)
+	})
 }
 
 // testGoogleAPIKey constructs a fake Google API key for testing.
 // Generated at runtime to avoid triggering secret scanners.
 func testGoogleAPIKey() string {
-	// Format: AIza{35 chars}
-	return "AIza" + hexN("google-api-key", 35)
+	// Format: Google API key (prefix + 35)
+	return googleAPIKey.get(func() string {
+		return "AI" + "za" + randChars(alphaNumDashUnderscore, 35)
+	})
 }
 
 // testJWT constructs a fake JWT for testing (3 base64url-ish parts).
 func testJWT() string {
-	return "eyJ" + hexN("jwt-part-1", 16) + "." + "eyJ" + hexN("jwt-part-2", 16) + "." + hexN("jwt-part-3", 32)
+	return jwtToken.get(func() string {
+		return "eyJ" + randChars(alphaNumDashUnderscore, 16) + "." + "eyJ" + randChars(alphaNumDashUnderscore, 16) + "." + randChars(alphaNumDashUnderscore, 32)
+	})
 }
 
 // testRSAPrivateKeyBlock constructs a fake RSA private key PEM block.
@@ -360,10 +428,11 @@ func TestScanAndRedact_ModeBlock(t *testing.T) {
 
 func TestScanAndRedact_Allowlist(t *testing.T) {
 	// Test that allowlisted patterns are not flagged
-	input := testOpenAIKey()
+	key := testOpenAIKey()
+	input := key
 	cfg := Config{
 		Mode:      ModeWarn,
-		Allowlist: []string{`sk-[0-9a-f]{20}.*`}, // Pattern that matches our test key
+		Allowlist: []string{"^" + regexp.QuoteMeta(key) + "$"},
 	}
 
 	result := ScanAndRedact(input, cfg)
@@ -379,7 +448,7 @@ func TestScanAndRedact_Allowlist_NoMatch(t *testing.T) {
 	input := testOpenAIKey()
 	cfg := Config{
 		Mode:      ModeWarn,
-		Allowlist: []string{`sk-DIFFERENT.*`}, // Pattern that doesn't match
+		Allowlist: []string{`^nope$`},
 	}
 
 	result := ScanAndRedact(input, cfg)
@@ -519,12 +588,13 @@ func TestScan(t *testing.T) {
 }
 
 func TestRedact(t *testing.T) {
-	input := "key: " + testOpenAIKey()
+	key := testOpenAIKey()
+	input := "key: " + key
 	cfg := DefaultConfig()
 
 	output, findings := Redact(input, cfg)
 
-	if strings.Contains(output, "sk-abc") {
+	if strings.Contains(output, key) {
 		t.Error("key should be redacted")
 	}
 	if len(findings) == 0 {
@@ -582,7 +652,8 @@ func TestOverlappingMatches(t *testing.T) {
 
 	// This string could match both GENERIC_SECRET and OPENAI_KEY
 	// OPENAI_KEY has higher priority and should win
-	input := "token=" + testOpenAIKey()
+	key := testOpenAIKey()
+	input := "token=" + key
 	cfg := Config{Mode: ModeRedact}
 
 	result := ScanAndRedact(input, cfg)
@@ -601,7 +672,7 @@ func TestOverlappingMatches(t *testing.T) {
 	}
 
 	// Verify redaction was applied
-	if strings.Contains(result.Output, "sk-abc") {
+	if strings.Contains(result.Output, key) {
 		t.Error("expected key to be redacted in output")
 	}
 }

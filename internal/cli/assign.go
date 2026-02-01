@@ -789,13 +789,24 @@ func detectModelFromTitle(agentType, title string) string {
 }
 
 // determineAgentState checks if agent is idle or working
-func determineAgentState(scrollback, agentType string) string {
+func determineAgentState(scrollback, agentTypeStr string) string {
 	// Use the robust agent parser
 	parser := agent.NewParser()
 	
-	// If agentType is known, we can hint it or verify it, but Parse detects it too.
-	// For now, let Parse do its work.
-	state, err := parser.Parse(scrollback)
+	// Map string type to AgentType hint
+	var hint agent.AgentType
+	switch strings.ToLower(agentTypeStr) {
+	case "claude", "cc", "cc_added":
+		hint = agent.AgentTypeClaudeCode
+	case "codex", "cod", "codex_added":
+		hint = agent.AgentTypeCodex
+	case "gemini", "gmi", "gemini_added":
+		hint = agent.AgentTypeGemini
+	default:
+		hint = agent.AgentTypeUnknown
+	}
+	
+	state, err := parser.ParseWithHint(scrollback, hint)
 	if err != nil {
 		return "unknown"
 	}

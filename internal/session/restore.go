@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -52,17 +53,43 @@ func Restore(state *SessionState, opts RestoreOptions) error {
 		}
 	}
 
-	// Create the session
-	if err := tmux.CreateSession(name, workDir); err != nil {
-		return fmt.Errorf("creating session: %w", err)
-	}
+	// Sort panes by WindowIndex, then Index to ensure creation order matches structure
+	sort.Slice(state.Panes, func(i, j int) bool {
+		if state.Panes[i].WindowIndex != state.Panes[j].WindowIndex {
+			return state.Panes[i].WindowIndex < state.Panes[j].WindowIndex
+		}
+		return state.Panes[i].Index < state.Panes[j].Index
+	})
 
-	// Create additional panes
-	totalPanes := len(state.Panes)
-	if totalPanes > 1 {
-		for i := 1; i < totalPanes; i++ {
-			if _, err := tmux.SplitWindow(name, workDir); err != nil {
-				return fmt.Errorf("creating pane %d: %w", i+1, err)
+	if len(state.Panes) == 0 {
+		// Create empty session if no panes
+		if err := tmux.CreateSession(name, workDir); err != nil {
+			return fmt.Errorf("creating session: %w", err)
+		}
+	} else {
+		lastWindowIndex := -1
+		for i, p := range state.Panes {
+			if i == 0 {
+				// First pane of first window -> Create Session
+				if err := tmux.CreateSession(name, workDir); err != nil {
+					return fmt.Errorf("creating session: %w", err)
+				}
+				lastWindowIndex = p.WindowIndex
+				continue
+			}
+
+			if p.WindowIndex != lastWindowIndex {
+				// New window
+				if err := tmux.DefaultClient.RunSilent("new-window", "-t", name, "-c", workDir); err != nil {
+					return fmt.Errorf("creating window for pane %d: %w", i+1, err)
+				}
+				lastWindowIndex = p.WindowIndex
+			} else {
+				// Split window
+				// We target the session, which defaults to the active window (the one we just created or split)
+				if _, err := tmux.DefaultClient.Run("split-window", "-t", name, "-c", workDir); err != nil {
+					return fmt.Errorf("creating pane %d: %w", i+1, err)
+				}
 			}
 		}
 	}

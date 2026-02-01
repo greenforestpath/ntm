@@ -214,6 +214,10 @@ type Parser interface {
 	// The output parameter is raw text captured from a tmux pane.
 	Parse(output string) (*AgentState, error)
 
+	// ParseWithHint analyzes terminal output with a known agent type hint.
+	// This skips type detection if the hint is valid, improving performance and accuracy.
+	ParseWithHint(output string, hint AgentType) (*AgentState, error)
+
 	// DetectAgentType identifies which agent type produced the output.
 	// This is useful when the agent type is not known in advance.
 	DetectAgentType(output string) AgentType

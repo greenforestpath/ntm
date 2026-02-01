@@ -49,9 +49,6 @@ var (
 		"running ",    // Command execution
 		"executing ",  // Command execution
 		"installing ", // Package installation
-		"thinking",    // Processing indicator
-		"processing",  // Processing indicator
-		"analyzing",   // Analysis in progress
 		"compiling",   // Compilation
 		"building",    // Build process
 		"testing",     // Test execution
@@ -64,6 +61,7 @@ var (
 	// When these match at the end of output, it's safe to restart or send new work.
 	ccIdlePatterns = []*regexp.Regexp{
 		regexp.MustCompile(`>\s*$`),      // Prompt waiting for input
+		regexp.MustCompile(`(?m)^>\s*`),  // Prompt start (handles user typing)
 		regexp.MustCompile(`Human:\s*$`), // Conversation mode prompt
 		regexp.MustCompile(`waiting for input`),
 		regexp.MustCompile(`\?\s*$`), // Question prompt
@@ -84,7 +82,7 @@ var (
 	}
 
 	// ccHeaderPattern confirms output is from Claude Code.
-	ccHeaderPattern = regexp.MustCompile(`(?i)(opus|claude|sonnet|haiku)\s*\d*\.?\d*`)
+	ccHeaderPattern = regexp.MustCompile(`(?i)\b(opus|claude|sonnet|haiku)\b\s*\d*\.?\d*`)
 )
 
 // Codex CLI (cod) patterns for state detection.
@@ -142,7 +140,7 @@ var (
 	}
 
 	// codHeaderPattern confirms output is from Codex CLI.
-	codHeaderPattern = regexp.MustCompile(`(?i)(codex|openai|gpt-\d)`)
+	codHeaderPattern = regexp.MustCompile(`(?i)\b(codex|openai|gpt-\d)\b`)
 )
 
 // Gemini CLI (gmi) patterns for state detection.

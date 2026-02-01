@@ -47,18 +47,19 @@ const FieldSeparator = "_NTM_SEP_"
 
 // Pane represents a tmux pane
 type Pane struct {
-	ID       string
-	Index    int
-	NTMIndex int // The NTM-specific index parsed from the title (e.g., 1 for cc_1)
-	Title    string
-	Type     AgentType
-	Variant  string   // Model alias or persona name (from pane title)
-	Tags     []string // User-defined tags (from pane title, e.g., [frontend,api])
-	Command  string
-	Width    int
-	Height   int
-	Active   bool
-	PID      int // Shell PID
+	ID          string
+	Index       int
+	WindowIndex int // The window index (0-based)
+	NTMIndex    int // The NTM-specific index parsed from the title (e.g., 1 for cc_1)
+	Title       string
+	Type        AgentType
+	Variant     string   // Model alias or persona name (from pane title)
+	Tags        []string // User-defined tags (from pane title, e.g., [frontend,api])
+	Command     string
+	Width       int
+	Height      int
+	Active      bool
+	PID         int // Shell PID
 }
 
 // Session represents a tmux session
@@ -312,7 +313,7 @@ func (c *Client) GetPanes(session string) ([]Pane, error) {
 // GetPanesContext returns all panes in a session with cancellation support.
 func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
 	sep := FieldSeparator
-	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}", sep)
+	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", session, "-F", format)
 	if err != nil {
 		return nil, err
@@ -325,7 +326,7 @@ func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, e
 		}
 
 		parts := strings.Split(line, sep)
-		if len(parts) < 8 {
+		if len(parts) < 9 {
 			continue
 		}
 
@@ -346,16 +347,21 @@ func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, e
 		if err != nil {
 			continue
 		}
+		windowIndex, err := strconv.Atoi(parts[8])
+		if err != nil {
+			continue
+		}
 
 		pane := Pane{
-			ID:      parts[0],
-			Index:   index,
-			Title:   parts[2],
-			Command: parts[3],
-			Width:   width,
-			Height:  height,
-			Active:  active,
-			PID:     pid,
+			ID:          parts[0],
+			Index:       index,
+			WindowIndex: windowIndex,
+			Title:       parts[2],
+			Command:     parts[3],
+			Width:       width,
+			Height:      height,
+			Active:      active,
+			PID:         pid,
 		}
 
 		// Parse pane title using regex to extract type, index, variant, and tags
@@ -390,7 +396,7 @@ func GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
 func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, error) {
 	sep := FieldSeparator
 	// Add session_name at the beginning
-	format := fmt.Sprintf("#{session_name}%[1]s#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}", sep)
+	format := fmt.Sprintf("#{session_name}%[1]s#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}%[1]s#{window_index}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
 		// No server/no sessions is not an error; treat as empty result.
@@ -412,7 +418,7 @@ func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, err
 		}
 
 		parts := strings.Split(line, sep)
-		if len(parts) < 9 {
+		if len(parts) < 10 {
 			continue
 		}
 
@@ -434,16 +440,21 @@ func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, err
 		if err != nil {
 			continue
 		}
+		windowIndex, err := strconv.Atoi(parts[9])
+		if err != nil {
+			continue
+		}
 
 		pane := Pane{
-			ID:      parts[1],
-			Index:   index,
-			Title:   parts[3],
-			Command: parts[4],
-			Width:   width,
-			Height:  height,
-			Active:  active,
-			PID:     pid,
+			ID:          parts[1],
+			Index:       index,
+			WindowIndex: windowIndex,
+			Title:       parts[3],
+			Command:     parts[4],
+			Width:       width,
+			Height:      height,
+			Active:      active,
+			PID:         pid,
 		}
 
 		// Parse pane title using regex to extract type, index, variant, and tags
@@ -1237,7 +1248,7 @@ type PaneActivity struct {
 // GetPanesWithActivityContext returns all panes in a session with their activity times with cancellation support.
 func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string) ([]PaneActivity, error) {
 	sep := FieldSeparator
-	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_last_activity}%[1]s#{pane_pid}", sep)
+	format := fmt.Sprintf("#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_last_activity}%[1]s#{pane_pid}%[1]s#{window_index}", sep)
 	output, err := c.RunContext(ctx, "list-panes", "-s", "-t", session, "-F", format)
 	if err != nil {
 		return nil, err
@@ -1250,7 +1261,7 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 		}
 
 		parts := strings.Split(line, sep)
-		if len(parts) < 9 {
+		if len(parts) < 10 {
 			continue
 		}
 
@@ -1272,6 +1283,10 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 		if err != nil {
 			continue
 		}
+		windowIndex, err := strconv.Atoi(parts[9])
+		if err != nil {
+			continue
+		}
 		now := time.Now()
 		lastActivity, err := parsePaneActivityTimestamp(rawTimestamp, now)
 		if err != nil {
@@ -1280,14 +1295,15 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 		}
 
 		pane := Pane{
-			ID:      parts[0],
-			Index:   index,
-			Title:   parts[2],
-			Command: parts[3],
-			Width:   width,
-			Height:  height,
-			Active:  active,
-			PID:     pid,
+			ID:          parts[0],
+			Index:       index,
+			WindowIndex: windowIndex,
+			Title:       parts[2],
+			Command:     parts[3],
+			Width:       width,
+			Height:      height,
+			Active:      active,
+			PID:         pid,
 		}
 
 		// Parse pane title using regex to extract type, index, variant, and tags

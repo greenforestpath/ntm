@@ -100,14 +100,15 @@ func mapPaneStates(panes []tmux.Pane) []PaneState {
 	states := make([]PaneState, len(panes))
 	for i, p := range panes {
 		states[i] = PaneState{
-			Title:     p.Title,
-			Index:     p.Index,
-			AgentType: string(p.Type),
-			Model:     p.Variant,
-			Active:    p.Active,
-			Width:     p.Width,
-			Height:    p.Height,
-			PaneID:    p.ID,
+			Title:       p.Title,
+			Index:       p.Index,
+			WindowIndex: p.WindowIndex,
+			AgentType:   string(p.Type),
+			Model:       p.Variant,
+			Active:      p.Active,
+			Width:       p.Width,
+			Height:      p.Height,
+			PaneID:      p.ID,
 		}
 	}
 	return states

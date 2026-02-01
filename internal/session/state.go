@@ -55,15 +55,16 @@ func (a AgentConfig) Total() int {
 
 // PaneState represents the state of a single pane.
 type PaneState struct {
-	Title     string `json:"title"`             // e.g., "myproject__cc_1"
-	Index     int    `json:"index"`             // Pane index
-	AgentType string `json:"agent_type"`        // "cc", "cod", "gmi", "user"
-	Model     string `json:"model,omitempty"`   // Model variant if any
-	Command   string `json:"command,omitempty"` // The agent launch command
-	Active    bool   `json:"active"`            // Was this the active pane?
-	Width     int    `json:"width,omitempty"`   // Pane width
-	Height    int    `json:"height,omitempty"`  // Pane height
-	PaneID    string `json:"pane_id,omitempty"` // Original pane ID
+	Title       string `json:"title"`             // e.g., "myproject__cc_1"
+	Index       int    `json:"index"`             // Pane index
+	WindowIndex int    `json:"window_index"`      // Window index
+	AgentType   string `json:"agent_type"`        // "cc", "cod", "gmi", "user"
+	Model       string `json:"model,omitempty"`   // Model variant if any
+	Command     string `json:"command,omitempty"` // The agent launch command
+	Active      bool   `json:"active"`            // Was this the active pane?
+	Width       int    `json:"width,omitempty"`   // Pane width
+	Height      int    `json:"height,omitempty"`  // Pane height
+	PaneID      string `json:"pane_id,omitempty"` // Original pane ID
 }
 
 // ConfigSnapshot captures relevant config at save time.

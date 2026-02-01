@@ -27,6 +27,11 @@ func NewParserWithConfig(cfg ParserConfig) Parser {
 // 4. Calculate confidence score
 // 5. Keep raw sample for debugging
 func (p *parserImpl) Parse(output string) (*AgentState, error) {
+	return p.ParseWithHint(output, AgentTypeUnknown)
+}
+
+// ParseWithHint analyzes terminal output with a known agent type hint.
+func (p *parserImpl) ParseWithHint(output string, hint AgentType) (*AgentState, error) {
 	// Strip ANSI codes for cleaner pattern matching
 	cleanOutput := stripANSICodes(output)
 
@@ -35,7 +40,11 @@ func (p *parserImpl) Parse(output string) (*AgentState, error) {
 	}
 
 	// Step 1: Detect agent type
-	state.Type = p.DetectAgentType(cleanOutput)
+	if hint != AgentTypeUnknown {
+		state.Type = hint
+	} else {
+		state.Type = p.DetectAgentType(cleanOutput)
+	}
 
 	// Step 2: Extract metrics based on agent type
 	p.extractMetrics(cleanOutput, state)

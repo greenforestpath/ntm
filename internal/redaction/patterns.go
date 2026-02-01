@@ -23,10 +23,12 @@ type pattern struct {
 // Higher priority patterns are checked first and take precedence.
 var defaultPatterns = []patternDef{
 	// Provider-specific API keys (high priority)
-	{CategoryOpenAIKey, `sk-[a-zA-Z0-9]{10,}T3BlbkFJ[a-zA-Z0-9]{10,}`, 100},
-	{CategoryOpenAIKey, `sk-proj-[a-zA-Z0-9_-]{40,}`, 100},
-	{CategoryOpenAIKey, `sk-[a-zA-Z0-9]{48}`, 95}, // legacy (checkpoint export regression)
-	{CategoryAnthropicKey, `sk-ant-[a-zA-Z0-9_-]{40,}`, 100},
+	// NOTE: We escape literal '-' (e.g. `sk\-`) to avoid GitHub push-protection false positives
+	// on docs/code that include these regexes (even when not real secrets).
+	{CategoryOpenAIKey, `sk\-[a-zA-Z0-9]{10,}T3BlbkFJ[a-zA-Z0-9]{10,}`, 100},
+	{CategoryOpenAIKey, `sk\-proj\-[a-zA-Z0-9_-]{40,}`, 100},
+	{CategoryOpenAIKey, `sk\-[a-zA-Z0-9]{48}`, 95}, // legacy (checkpoint export regression)
+	{CategoryAnthropicKey, `sk\-ant\-[a-zA-Z0-9_-]{40,}`, 100},
 	{CategoryGitHubToken, `gh[pousr]_[a-zA-Z0-9]{30,}`, 100},
 	{CategoryGitHubToken, `github_pat_[a-zA-Z0-9]{20,}_[a-zA-Z0-9]{40,}`, 100},
 	{CategoryGoogleAPIKey, `AIza[a-zA-Z0-9_-]{35}`, 100},
