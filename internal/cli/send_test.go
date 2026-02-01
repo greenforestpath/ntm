@@ -55,7 +55,8 @@ func TestSendRealSession(t *testing.T) {
 
 	// Create project dir
 	projectDir := filepath.Join(tmpDir, sessionName)
-	if err := os.MkdirAll(projectDir, 0755); err != nil {
+	err = os.MkdirAll(projectDir, 0755)
+	if err != nil {
 		t.Fatalf("failed to create project dir: %v", err)
 	}
 
@@ -190,14 +191,16 @@ func TestGetPromptContentFromFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "prompt.txt")
 	content := "This is the prompt content"
-	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
-		t.Fatalf("Failed to write test file: %v", err)
+	writeErr := os.WriteFile(testFile, []byte(content), 0644)
+	if writeErr != nil {
+		t.Fatalf("Failed to write test file: %v", writeErr)
 	}
 
 	// Create empty file for error test
 	emptyFile := filepath.Join(tmpDir, "empty.txt")
-	if err := os.WriteFile(emptyFile, []byte(""), 0644); err != nil {
-		t.Fatalf("Failed to write empty file: %v", err)
+	writeErr = os.WriteFile(emptyFile, []byte(""), 0644)
+	if writeErr != nil {
+		t.Fatalf("Failed to write empty file: %v", writeErr)
 	}
 
 	tests := []struct {
@@ -564,8 +567,9 @@ func TestParseBatchFile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create temp file with content
 			testFile := filepath.Join(tmpDir, fmt.Sprintf("batch_%s.txt", tt.name))
-			if err := os.WriteFile(testFile, []byte(tt.content), 0644); err != nil {
-				t.Fatalf("Failed to write test file: %v", err)
+			writeErr := os.WriteFile(testFile, []byte(tt.content), 0644)
+			if writeErr != nil {
+				t.Fatalf("Failed to write test file: %v", writeErr)
 			}
 
 			got, err := parseBatchFile(testFile)
@@ -632,7 +636,8 @@ func TestSendDryRunDoesNotSendToPane(t *testing.T) {
 	}()
 
 	projectDir := filepath.Join(tmpDir, sessionName)
-	if err := os.MkdirAll(projectDir, 0755); err != nil {
+	err = os.MkdirAll(projectDir, 0755)
+	if err != nil {
 		t.Fatalf("failed to create project dir: %v", err)
 	}
 
@@ -645,21 +650,23 @@ func TestSendDryRunDoesNotSendToPane(t *testing.T) {
 		CCCount:  1,
 		UserPane: true,
 	}
-	if err := spawnSessionLogic(opts); err != nil {
+	err = spawnSessionLogic(opts)
+	if err != nil {
 		t.Fatalf("spawnSessionLogic failed: %v", err)
 	}
 
 	time.Sleep(500 * time.Millisecond)
 
 	prompt := "NTM_TEST_DRY_RUN_SHOULD_NOT_SEND"
-	if err := runSendWithTargets(SendOptions{
+	err = runSendWithTargets(SendOptions{
 		Session:      sessionName,
 		Prompt:       prompt,
 		PromptSource: "args",
 		Targets:      SendTargets{}, // default targeting = agent panes
 		PaneIndex:    -1,
 		DryRun:       true,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("runSendWithTargets failed: %v", err)
 	}
 
@@ -719,7 +726,8 @@ func TestSendSmartRouteIsDisabledWhenPanesSpecified(t *testing.T) {
 	}()
 
 	projectDir := filepath.Join(tmpDir, sessionName)
-	if err := os.MkdirAll(projectDir, 0755); err != nil {
+	err = os.MkdirAll(projectDir, 0755)
+	if err != nil {
 		t.Fatalf("failed to create project dir: %v", err)
 	}
 
@@ -732,7 +740,8 @@ func TestSendSmartRouteIsDisabledWhenPanesSpecified(t *testing.T) {
 		CCCount:  1,
 		UserPane: true,
 	}
-	if err := spawnSessionLogic(opts); err != nil {
+	err = spawnSessionLogic(opts)
+	if err != nil {
 		t.Fatalf("spawnSessionLogic failed: %v", err)
 	}
 
@@ -795,7 +804,8 @@ func TestSendSmartRouteIsDisabledWhenPanesSpecified(t *testing.T) {
 	}
 
 	var res SendResult
-	if err := json.Unmarshal(stdoutBytes, &res); err != nil {
+	err = json.Unmarshal(stdoutBytes, &res)
+	if err != nil {
 		t.Fatalf("failed to parse send JSON: %v (stdout=%q)", err, strings.TrimSpace(string(stdoutBytes)))
 	}
 	if len(res.Targets) != 1 || res.Targets[0] != userPaneIndex {
