@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -284,6 +285,33 @@ func TestPipePaneCatCommand_QuotesPath(t *testing.T) {
 
 	if got != want {
 		t.Fatalf("pipePaneCatCommand(%q) = %q, want %q", fifoPath, got, want)
+	}
+}
+
+func TestPaneStreamer_Start_RollsBackStateOnFIFODirError(t *testing.T) {
+	tmp := t.TempDir()
+	fifoDirAsFile := filepath.Join(tmp, "not-a-dir")
+	if err := os.WriteFile(fifoDirAsFile, []byte("x"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	ps := NewPaneStreamer(nil, "mysession:0", func(StreamEvent) {}, PaneStreamerConfig{FIFODir: fifoDirAsFile})
+	if err := ps.Start(nil); err == nil {
+		t.Fatalf("Start() expected error for FIFODir=%q, got nil", fifoDirAsFile)
+	}
+
+	ps.mu.Lock()
+	running := ps.running
+	ps.mu.Unlock()
+
+	if running {
+		t.Fatalf("Start() error left ps.running=true")
+	}
+	if ps.ctx != nil {
+		t.Fatalf("Start() error left ps.ctx non-nil")
+	}
+	if ps.cancel != nil {
+		t.Fatalf("Start() error left ps.cancel non-nil")
 	}
 }
 

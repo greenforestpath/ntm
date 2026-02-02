@@ -103,7 +103,11 @@ func NewPaneStreamer(client *Client, target string, callback StreamCallback, cfg
 }
 
 // Start begins streaming pane output.
-func (ps *PaneStreamer) Start(ctx context.Context) error {
+func (ps *PaneStreamer) Start(ctx context.Context) (err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	ps.mu.Lock()
 	if ps.running {
 		ps.mu.Unlock()
@@ -114,8 +118,24 @@ func (ps *PaneStreamer) Start(ctx context.Context) error {
 
 	ps.ctx, ps.cancel = context.WithCancel(ctx)
 
+	defer func() {
+		if err == nil {
+			return
+		}
+
+		ps.mu.Lock()
+		ps.running = false
+		ps.mu.Unlock()
+
+		if ps.cancel != nil {
+			ps.cancel()
+		}
+		ps.ctx = nil
+		ps.cancel = nil
+	}()
+
 	// Ensure FIFO directory exists
-	if err := os.MkdirAll(ps.config.FIFODir, 0755); err != nil {
+	if err = os.MkdirAll(ps.config.FIFODir, 0755); err != nil {
 		return fmt.Errorf("create fifo dir: %w", err)
 	}
 
