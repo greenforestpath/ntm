@@ -270,46 +270,64 @@ func (c *SessionCoordinator) updateAgentStates() {
 		return
 	}
 
+	// Pre-calculate status updates outside the lock to avoid blocking readers during IO.
+	type agentUpdate struct {
+		paneID    string
+		paneIndex int
+		agentType string
+		status    AgentStatusResult
+	}
+
+	var updates []agentUpdate
+	if c.monitor != nil {
+		updates = make([]agentUpdate, 0, len(panes))
+		for _, pane := range panes {
+			if pane.Type == tmux.AgentUser {
+				continue // Not an agent pane
+			}
+			agentType := string(pane.Type)
+			state := c.monitor.GetAgentStatus(pane.ID, agentType)
+			updates = append(updates, agentUpdate{
+				paneID:    pane.ID,
+				paneIndex: pane.Index,
+				agentType: agentType,
+				status:    state,
+			})
+		}
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// Track which panes we've seen
 	seenPanes := make(map[string]bool)
 
-	for _, pane := range panes {
-		seenPanes[pane.ID] = true
-
-		// Use pre-parsed agent type from tmux
-		if pane.Type == tmux.AgentUser {
-			continue // Not an agent pane
-		}
-		agentType := string(pane.Type)
+	for _, update := range updates {
+		seenPanes[update.paneID] = true
 
 		// Get or create agent state
-		agent, exists := c.agents[pane.ID]
+		agent, exists := c.agents[update.paneID]
 		if !exists {
 			agent = &AgentState{
-				PaneID:    pane.ID,
-				PaneIndex: pane.Index,
-				AgentType: agentType,
+				PaneID:    update.paneID,
+				PaneIndex: update.paneIndex,
+				AgentType: update.agentType,
 				Healthy:   true,
 			}
-			c.agents[pane.ID] = agent
+			c.agents[update.paneID] = agent
 		}
 
-		// Update state using the monitor
-		if c.monitor != nil {
-			state := c.monitor.GetAgentStatus(pane.ID, agentType)
-			prevStatus := agent.Status
-			agent.Status = state.Status
-			agent.ContextUsage = state.ContextUsage
-			agent.LastActivity = state.LastActivity
-			agent.Healthy = state.Healthy
+		// Update state using pre-calculated status
+		state := update.status
+		prevStatus := agent.Status
+		agent.Status = state.Status
+		agent.ContextUsage = state.ContextUsage
+		agent.LastActivity = state.LastActivity
+		agent.Healthy = state.Healthy
 
-			// Emit events for state transitions
-			if exists && prevStatus != agent.Status {
-				c.emitEvent(agent, prevStatus)
-			}
+		// Emit events for state transitions
+		if exists && prevStatus != agent.Status {
+			c.emitEvent(agent, prevStatus)
 		}
 	}
 
