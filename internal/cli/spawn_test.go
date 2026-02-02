@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,6 +118,121 @@ func TestSpawnSessionLogic(t *testing.T) {
 	// Verify project directory creation
 	if _, err := os.Stat(projectDir); os.IsNotExist(err) {
 		t.Errorf("project directory %s was not created", projectDir)
+	}
+}
+
+func TestSpawnSessionLogic_Ollama(t *testing.T) {
+	testutil.RequireTmuxThrottled(t)
+
+	// Setup temp dir for projects
+	tmpDir, err := os.MkdirTemp("", "ntm-test-projects")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Mock Ollama server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"models": []map[string]any{
+					{
+						"name":        "codellama:latest",
+						"size":        0,
+						"digest":      "sha256:deadbeef",
+						"modified_at": time.Now().UTC().Format(time.RFC3339),
+						"details": map[string]any{
+							"format": "gguf",
+							"family": "llama",
+						},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	// Initialize global cfg (unexported in cli package, but accessible here)
+	// Save/Restore to prevent side effects
+	oldCfg := cfg
+	oldJsonOutput := jsonOutput
+	defer func() {
+		cfg = oldCfg
+		jsonOutput = oldJsonOutput
+	}()
+
+	cfg = config.Default()
+	cfg.ProjectsBase = tmpDir
+	jsonOutput = true
+
+	// Override templates to avoid dependency on actual agent binaries
+	cfg.Agents.Ollama = "echo 'Ollama started'; sleep 10"
+
+	// Unique session name
+	sessionName := fmt.Sprintf("ntm-test-spawn-ollama-%d", time.Now().UnixNano())
+
+	// Clean up session after test
+	defer func() {
+		_ = tmux.KillSession(sessionName)
+	}()
+
+	// Pre-create project directory to avoid interactive prompt
+	projectDir := filepath.Join(tmpDir, sessionName)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("failed to create project dir: %v", err)
+	}
+
+	opts := SpawnOptions{
+		Session:       sessionName,
+		Agents:        []FlatAgent{{Type: AgentTypeOllama, Index: 1, Model: "codellama:latest"}},
+		UserPane:      true,
+		LocalHost:     server.URL,
+		LocalModel:    "codellama:latest",
+		CCCount:       0,
+		CodCount:      0,
+		GmiCount:      0,
+		CursorCount:   0,
+		WindsurfCount: 0,
+		AiderCount:    0,
+	}
+
+	if err := spawnSessionLogic(opts); err != nil {
+		t.Fatalf("spawnSessionLogic failed: %v", err)
+	}
+
+	if !tmux.SessionExists(sessionName) {
+		t.Fatalf("session %s was not created", sessionName)
+	}
+
+	panes, err := tmux.GetPanes(sessionName)
+	if err != nil {
+		t.Fatalf("failed to get panes: %v", err)
+	}
+	if len(panes) != 2 {
+		t.Fatalf("expected 2 panes, got %d", len(panes))
+	}
+
+	foundOllama := false
+	for _, p := range panes {
+		if p.Type.String() != "ollama" {
+			continue
+		}
+		foundOllama = true
+		expectedTitle := fmt.Sprintf("%s__ollama_1_codellama:latest", sessionName)
+		if p.Title != expectedTitle {
+			t.Errorf("expected pane title %q, got %q", expectedTitle, p.Title)
+		}
+	}
+	if !foundOllama {
+		t.Fatal("did not find Ollama agent pane")
+	}
+
+	if _, err := os.Stat(projectDir); os.IsNotExist(err) {
+		t.Fatalf("project directory %s was not created", projectDir)
 	}
 }
 
