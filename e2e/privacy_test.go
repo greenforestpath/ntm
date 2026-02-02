@@ -113,7 +113,7 @@ func TestPrivacyModeBlocksCheckpoint(t *testing.T) {
 			t.Errorf("Session name mismatch: got %v, want %v", result["session"], suite.sessionName)
 		}
 
-		suite.logger.Log("session_spawned", suite.sessionName)
+		suite.logger.Log("[E2E-PRIVACY] session_spawned: %s", suite.sessionName)
 		time.Sleep(500 * time.Millisecond) // Wait for session to stabilize
 	})
 
@@ -121,7 +121,7 @@ func TestPrivacyModeBlocksCheckpoint(t *testing.T) {
 	t.Run("checkpoint_blocked", func(t *testing.T) {
 		stdout, stderr, err := suite.runNTM("checkpoint", "save", suite.sessionName, "--robot-checkpoint")
 
-		suite.logger.Log("checkpoint_attempt", map[string]interface{}{
+		suite.logger.LogJSON("[E2E-PRIVACY] checkpoint_attempt", map[string]interface{}{
 			"stdout": stdout,
 			"stderr": stderr,
 			"err":    err != nil,
@@ -134,7 +134,7 @@ func TestPrivacyModeBlocksCheckpoint(t *testing.T) {
 				if success, ok := result["success"].(bool); ok && success {
 					// Check if privacy mode actually blocked it
 					// The checkpoint might succeed if session wasn't registered with privacy manager
-					suite.logger.Log("warning", "checkpoint succeeded - privacy mode may not be registered for session")
+					suite.logger.Log("[E2E-PRIVACY] warning: checkpoint succeeded - privacy mode may not be registered for session")
 				}
 			}
 		}
@@ -142,11 +142,11 @@ func TestPrivacyModeBlocksCheckpoint(t *testing.T) {
 		// Check for privacy-related error message
 		if strings.Contains(stderr, "privacy") || strings.Contains(stdout, "privacy") ||
 			strings.Contains(stderr, "blocked") || strings.Contains(stdout, "blocked") {
-			suite.logger.Log("privacy_block_confirmed", true)
+			suite.logger.Log("[E2E-PRIVACY] privacy_block_confirmed: %v", true)
 		}
 	})
 
-	suite.logger.Log("test_completed", "privacy_mode_blocks_checkpoint")
+	suite.logger.Log("[E2E-PRIVACY] test_completed: privacy_mode_blocks_checkpoint")
 }
 
 // TestPrivacyModeSupportBundleSuppression verifies support-bundle respects privacy mode.
@@ -154,18 +154,18 @@ func TestPrivacyModeSupportBundleSuppression(t *testing.T) {
 	suite := NewPrivacyTestSuite(t)
 
 	// Create a session with privacy mode
-	stdout, _, err := suite.runNTM("spawn", suite.sessionName, "--privacy", "--no-user", "--robot-spawn")
+	_, _, err := suite.runNTM("spawn", suite.sessionName, "--privacy", "--no-user", "--robot-spawn")
 	if err != nil {
 		t.Fatalf("Failed to spawn session: %v", err)
 	}
-	suite.logger.Log("session_spawned", suite.sessionName)
+	suite.logger.Log("[E2E-PRIVACY] session_spawned: %s", suite.sessionName)
 	time.Sleep(500 * time.Millisecond)
 
 	// Generate support bundle for the privacy-enabled session
 	bundlePath := filepath.Join(suite.tempDir, "test-bundle.zip")
-	stdout, stderr, err := suite.runNTM("support-bundle", suite.sessionName, "-o", bundlePath, "--robot-bundle")
+	stdout, stderr, _ := suite.runNTM("support-bundle", suite.sessionName, "-o", bundlePath, "--robot-bundle")
 
-	suite.logger.Log("support_bundle_output", map[string]interface{}{
+	suite.logger.LogJSON("[E2E-PRIVACY] support_bundle_output", map[string]interface{}{
 		"stdout": stdout,
 		"stderr": stderr,
 		"path":   bundlePath,
@@ -174,7 +174,7 @@ func TestPrivacyModeSupportBundleSuppression(t *testing.T) {
 	// The bundle should still be created, but content should be suppressed
 	if _, statErr := os.Stat(bundlePath); statErr != nil {
 		// Bundle might not be created if session doesn't exist or other issues
-		suite.logger.Log("bundle_not_created", statErr.Error())
+		suite.logger.Log("[E2E-PRIVACY] bundle_not_created: %v", statErr)
 		return
 	}
 
@@ -183,10 +183,10 @@ func TestPrivacyModeSupportBundleSuppression(t *testing.T) {
 		var result map[string]interface{}
 		if jsonErr := json.Unmarshal([]byte(stdout), &result); jsonErr == nil {
 			if privacyMode, ok := result["privacy_mode"].(bool); ok && privacyMode {
-				suite.logger.Log("privacy_mode_detected", true)
+				suite.logger.Log("[E2E-PRIVACY] privacy_mode_detected: %v", true)
 			}
 			if contentSuppressed, ok := result["content_suppressed"].(bool); ok && contentSuppressed {
-				suite.logger.Log("content_suppressed", true)
+				suite.logger.Log("[E2E-PRIVACY] content_suppressed: %v", true)
 				t.Log("Privacy mode correctly suppressed content in support bundle")
 			}
 		}
@@ -198,18 +198,18 @@ func TestAllowPersistOverride(t *testing.T) {
 	suite := NewPrivacyTestSuite(t)
 
 	// Create a session with privacy mode
-	stdout, _, err := suite.runNTM("spawn", suite.sessionName, "--privacy", "--no-user", "--robot-spawn")
+	_, _, err := suite.runNTM("spawn", suite.sessionName, "--privacy", "--no-user", "--robot-spawn")
 	if err != nil {
 		t.Fatalf("Failed to spawn session: %v", err)
 	}
-	suite.logger.Log("session_spawned", suite.sessionName)
+	suite.logger.Log("[E2E-PRIVACY] session_spawned: %s", suite.sessionName)
 	time.Sleep(500 * time.Millisecond)
 
 	// Generate support bundle with --allow-persist override
 	bundlePath := filepath.Join(suite.tempDir, "test-bundle-override.zip")
-	stdout, stderr, err := suite.runNTM("support-bundle", suite.sessionName, "-o", bundlePath, "--allow-persist", "--robot-bundle")
+	stdout, stderr, _ := suite.runNTM("support-bundle", suite.sessionName, "-o", bundlePath, "--allow-persist", "--robot-bundle")
 
-	suite.logger.Log("support_bundle_with_override", map[string]interface{}{
+	suite.logger.LogJSON("[E2E-PRIVACY] support_bundle_with_override", map[string]interface{}{
 		"stdout": stdout,
 		"stderr": stderr,
 		"path":   bundlePath,
@@ -222,7 +222,7 @@ func TestAllowPersistOverride(t *testing.T) {
 			if contentSuppressed, ok := result["content_suppressed"].(bool); ok && contentSuppressed {
 				t.Error("Content should not be suppressed with --allow-persist")
 			} else {
-				suite.logger.Log("content_included_with_override", true)
+				suite.logger.Log("[E2E-PRIVACY] content_included_with_override: %v", true)
 				t.Log("Content correctly included with --allow-persist override")
 			}
 		}
@@ -244,11 +244,11 @@ func TestPrivacyModeMetadataStillIncluded(t *testing.T) {
 	stdout, _, err := suite.runNTM("--robot-status")
 	if err != nil {
 		// Robot status might fail if session isn't fully ready
-		suite.logger.Log("robot_status_error", err.Error())
+		suite.logger.Log("[E2E-PRIVACY] robot_status_error: %v", err)
 		return
 	}
 
-	suite.logger.Log("robot_status_output", stdout)
+	suite.logger.Log("[E2E-PRIVACY] robot_status_output: %s", stdout)
 
 	// Parse and check for sessions with privacy_mode field
 	if stdout != "" {
@@ -259,7 +259,7 @@ func TestPrivacyModeMetadataStillIncluded(t *testing.T) {
 					if session, ok := s.(map[string]interface{}); ok {
 						if name, ok := session["name"].(string); ok && name == suite.sessionName {
 							if privacyMode, ok := session["privacy_mode"].(bool); ok && privacyMode {
-								suite.logger.Log("privacy_mode_in_status", true)
+								suite.logger.Log("[E2E-PRIVACY] privacy_mode_in_status: %v", true)
 								t.Log("Privacy mode correctly reported in robot-status")
 							}
 						}
@@ -281,11 +281,11 @@ func TestNoFilesWrittenInPrivacyMode(t *testing.T) {
 	initialAnalyticsFiles := countFiles(analyticsDir)
 	initialCheckpointFiles := countFiles(checkpointsDir)
 
-	suite.logger.Log("initial_state", map[string]interface{}{
-		"analytics_files":   initialAnalyticsFiles,
-		"checkpoint_files":  initialCheckpointFiles,
-		"analytics_dir":     analyticsDir,
-		"checkpoints_dir":   checkpointsDir,
+	suite.logger.LogJSON("[E2E-PRIVACY] initial_state", map[string]interface{}{
+		"analytics_files":  initialAnalyticsFiles,
+		"checkpoint_files": initialCheckpointFiles,
+		"analytics_dir":    analyticsDir,
+		"checkpoints_dir":  checkpointsDir,
 	})
 
 	// Create session with privacy mode
@@ -299,7 +299,7 @@ func TestNoFilesWrittenInPrivacyMode(t *testing.T) {
 	finalAnalyticsFiles := countFiles(analyticsDir)
 	finalCheckpointFiles := countFiles(checkpointsDir)
 
-	suite.logger.Log("final_state", map[string]interface{}{
+	suite.logger.LogJSON("[E2E-PRIVACY] final_state", map[string]interface{}{
 		"analytics_files":  finalAnalyticsFiles,
 		"checkpoint_files": finalCheckpointFiles,
 	})
@@ -313,7 +313,7 @@ func TestNoFilesWrittenInPrivacyMode(t *testing.T) {
 		t.Logf("Warning: Checkpoint files increased from %d to %d", initialCheckpointFiles, finalCheckpointFiles)
 	}
 
-	suite.logger.Log("test_completed", "no_files_written")
+	suite.logger.Log("[E2E-PRIVACY] test_completed: no_files_written")
 }
 
 // countFiles counts files in a directory (returns 0 if dir doesn't exist).
