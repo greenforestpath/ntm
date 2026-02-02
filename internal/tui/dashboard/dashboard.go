@@ -28,6 +28,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
 	"github.com/Dicklesworthstone/ntm/internal/cost"
+	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/pt"
@@ -45,6 +46,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
+	synthtui "github.com/Dicklesworthstone/ntm/internal/tui/synthesizer"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
@@ -123,6 +125,15 @@ type AgentMailInboxDetailMsg struct {
 // CassSelectMsg is sent when a CASS search result is selected
 type CassSelectMsg struct {
 	Hit cass.SearchHit
+}
+
+// EnsembleModesDataMsg provides ensemble session + mode catalog data for the SynthesizerTUI modes view.
+type EnsembleModesDataMsg struct {
+	SessionName string
+	Session     *ensemble.EnsembleSession
+	Catalog     *ensemble.ModeCatalog
+	Panes       []tmux.Pane
+	Err         error
 }
 
 // BeadsUpdateMsg is sent when beads data is fetched
@@ -443,6 +454,10 @@ type Model struct {
 	showCassSearch bool
 	cassSearch     components.CassSearchModel
 
+	// Ensemble modes full-screen view (SynthesizerTUI)
+	showEnsembleModes bool
+	ensembleModes     synthtui.ModeVisualization
+
 	// Help overlay
 	showHelp bool
 
@@ -605,6 +620,7 @@ type KeyMap struct {
 	MailRefresh    key.Binding // 'm' to refresh Agent Mail data
 	InboxToggle    key.Binding // 'i' to toggle inbox details
 	CassSearch     key.Binding // 'ctrl+s' to open CASS search
+	EnsembleModes  key.Binding // 'e' to open ensemble modes view
 	Help           key.Binding // '?' to toggle help overlay
 	Diagnostics    key.Binding // 'd' to toggle diagnostics
 	ScanToggle     key.Binding // 'u' to toggle UBS scanning
@@ -666,6 +682,7 @@ var dashKeys = KeyMap{
 	MailRefresh:    key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "refresh mail")),
 	InboxToggle:    key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "inbox details")),
 	CassSearch:     key.NewBinding(key.WithKeys("ctrl+s"), key.WithHelp("ctrl+s", "cass search")),
+	EnsembleModes:  key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "ensemble modes")),
 	Help:           key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "toggle help")),
 	Diagnostics:    key.NewBinding(key.WithKeys("d", "ctrl+d"), key.WithHelp("d/ctrl+d", "toggle diagnostics")),
 	ScanToggle:     key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "toggle UBS scan")),
@@ -733,6 +750,7 @@ func New(session, projectDir string) Model {
 				return CassSelectMsg{Hit: hit}
 			}
 		}),
+		ensembleModes:        synthtui.NewModeVisualization(),
 		beadsPanel:           panels.NewBeadsPanel(),
 		alertsPanel:          panels.NewAlertsPanel(),
 		costPanel:            panels.NewCostPanel(),
@@ -1971,9 +1989,48 @@ func (m Model) fetchHealthCmd() tea.Cmd {
 	}
 }
 
+func (m Model) fetchEnsembleModesData() tea.Cmd {
+	sessionName := m.session
+	panes := make([]tmux.Pane, len(m.panes))
+	copy(panes, m.panes)
+
+	return func() tea.Msg {
+		sess, err := ensemble.LoadSession(sessionName)
+		if errors.Is(err, os.ErrNotExist) {
+			sess = nil
+			err = nil
+		}
+
+		catalog, catErr := ensemble.GlobalCatalog()
+		if catErr != nil {
+			catalog = nil
+		}
+
+		return EnsembleModesDataMsg{
+			SessionName: sessionName,
+			Session:     sess,
+			Catalog:     catalog,
+			Panes:       panes,
+			Err:         err,
+		}
+	}
+}
+
 // Update implements tea.Model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+
+	// If the ensemble modes overlay is active, consume keyboard input there and skip global shortcuts.
+	if m.showEnsembleModes {
+		if _, ok := msg.(tea.KeyMsg); ok {
+			var cmd tea.Cmd
+			m.ensembleModes, cmd = m.ensembleModes.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return m, tea.Batch(cmds...)
+		}
+	}
 
 	// Handle CASS search updates
 	passToSearch := true
@@ -1994,6 +2051,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showCassSearch = false
 		m.healthMessage = fmt.Sprintf("Selected: %s", msg.Hit.Title)
 		return m, tea.Batch(cmds...)
+
+	case synthtui.CloseMsg:
+		m.showEnsembleModes = false
+		return m, nil
+
+	case synthtui.RefreshMsg:
+		cmds = append(cmds, m.fetchEnsembleModesData())
+		return m, tea.Batch(cmds...)
+
+	case synthtui.ZoomMsg:
+		_ = tmux.ZoomPane(m.session, msg.PaneIndex)
+		return m, tea.Quit
+
+	case EnsembleModesDataMsg:
+		m.ensembleModes.SetData(msg.SessionName, msg.Session, msg.Catalog, msg.Panes, msg.Err)
+		return m, nil
 
 	case panels.ReplayMsg:
 		// Handle replay request from history panel
@@ -2212,6 +2285,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		searchW := int(float64(msg.Width) * 0.6)
 		searchH := int(float64(msg.Height) * 0.6)
 		m.cassSearch.SetSize(searchW, searchH)
+
+		modesW := msg.Width - 10
+		modesH := msg.Height - 6
+		if modesW < 30 {
+			modesW = 30
+		}
+		if modesH < 10 {
+			modesH = 10
+		}
+		m.ensembleModes.SetSize(modesW, modesH)
 
 		m.resizePanelsForLayout()
 
@@ -2834,6 +2917,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.cassSearch.Init())
 			return m, tea.Batch(cmds...)
 
+		case key.Matches(msg, dashKeys.EnsembleModes):
+			m.showEnsembleModes = true
+			m.showCassSearch = false
+			m.showHelp = false
+
+			modesW := m.width - 10
+			modesH := m.height - 6
+			if modesW < 30 {
+				modesW = 30
+			}
+			if modesH < 10 {
+				modesH = 10
+			}
+			m.ensembleModes.SetSize(modesW, modesH)
+
+			cmds = append(cmds, m.fetchEnsembleModesData())
+			return m, tea.Batch(cmds...)
+
 		case key.Matches(msg, dashKeys.Help):
 			m.showHelp = !m.showHelp
 			return m, nil
@@ -3143,6 +3244,17 @@ func (m Model) View() string {
 			Background(m.theme.Base).
 			Padding(1, 2)
 		modal := modalStyle.Render(searchView)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+	}
+
+	if m.showEnsembleModes {
+		modesView := m.ensembleModes.View()
+		modalStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(m.theme.Primary).
+			Background(m.theme.Base).
+			Padding(1, 2)
+		modal := modalStyle.Render(modesView)
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	}
 
