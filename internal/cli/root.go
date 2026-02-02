@@ -2762,6 +2762,7 @@ func init() {
 		// Agent management
 		newAddCmd(),
 		newSendCmd(),
+		newPreflightCmd(),
 		newReplayCmd(),
 		newInterruptCmd(),
 		newRotateCmd(),
