@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -86,6 +87,62 @@ func (v *optionalDurationValue) Set(s string) error {
 	return nil
 }
 
+type spawnTestPacing struct {
+	paneDelay  time.Duration
+	agentDelay time.Duration
+}
+
+func resolveSpawnTestPacing() (spawnTestPacing, error) {
+	if os.Getenv("NTM_TEST_MODE") == "" && os.Getenv("NTM_E2E") == "" {
+		return spawnTestPacing{}, nil
+	}
+
+	defaultDelay, err := parseEnvDurationMs("NTM_TEST_SPAWN_DELAY_MS")
+	if err != nil {
+		return spawnTestPacing{}, err
+	}
+
+	paneDelay, err := parseEnvDurationMs("NTM_TEST_SPAWN_PANE_DELAY_MS")
+	if err != nil {
+		return spawnTestPacing{}, err
+	}
+	if paneDelay == 0 {
+		paneDelay = defaultDelay
+	}
+
+	agentDelay, err := parseEnvDurationMs("NTM_TEST_SPAWN_AGENT_DELAY_MS")
+	if err != nil {
+		return spawnTestPacing{}, err
+	}
+	if agentDelay == 0 {
+		agentDelay = defaultDelay
+	}
+
+	if paneDelay == 0 && agentDelay == 0 {
+		return spawnTestPacing{}, nil
+	}
+
+	return spawnTestPacing{
+		paneDelay:  paneDelay,
+		agentDelay: agentDelay,
+	}, nil
+}
+
+func parseEnvDurationMs(key string) (time.Duration, error) {
+	val := strings.TrimSpace(os.Getenv(key))
+	if val == "" {
+		return 0, nil
+	}
+	ms, err := strconv.Atoi(val)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer millisecond value, got %q", key, val)
+	}
+	if ms < 0 {
+		return 0, fmt.Errorf("%s must be non-negative, got %d", key, ms)
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
 func (v *optionalDurationValue) Type() string {
 	return "duration"
 }
@@ -155,6 +212,13 @@ func resolveStaggerInterval(mode string, opts SpawnOptions, tracker *ratelimit.R
 	return interval
 }
 
+func codexCooldownRemaining(tracker *ratelimit.RateLimitTracker, alreadyWaited bool) (time.Duration, bool) {
+	if tracker == nil || alreadyWaited {
+		return 0, alreadyWaited
+	}
+	return tracker.CooldownRemaining("openai"), true
+}
+
 func shouldStartInternalMonitor() bool {
 	// When spawnSessionLogic is invoked from package tests, os.Executable() points at a
 	// `*.test` binary. Spawning "internal-monitor" via that binary re-runs the entire
@@ -170,16 +234,19 @@ func shouldStartInternalMonitor() bool {
 
 // SpawnOptions configures session creation and agent spawning
 type SpawnOptions struct {
-	Session     string
-	Agents      []FlatAgent
-	CCCount     int
-	CodCount    int
-	GmiCount    int
-	UserPane    bool
-	AutoRestart bool
-	RecipeName  string
-	PersonaMap  map[string]*persona.Persona
-	PluginMap   map[string]plugins.AgentPlugin
+	Session       string
+	Agents        []FlatAgent
+	CCCount       int
+	CodCount      int
+	GmiCount      int
+	CursorCount   int
+	WindsurfCount int
+	AiderCount    int
+	UserPane      bool
+	AutoRestart   bool
+	RecipeName    string
+	PersonaMap    map[string]*persona.Persona
+	PluginMap     map[string]plugins.AgentPlugin
 
 	// Profile mapping: list of persona names to map to agents in order
 	ProfileList []*persona.Persona
@@ -676,6 +743,9 @@ Examples:
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeClaude, &agentSpecs), "cc", "Claude agents (N or N:model, model charset: a-zA-Z0-9._/@:+-)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeCodex, &agentSpecs), "cod", "Codex agents (N or N:model, model charset: a-zA-Z0-9._/@:+-)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeGemini, &agentSpecs), "gmi", "Gemini agents (N or N:model, model charset: a-zA-Z0-9._/@:+-)")
+	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeCursor, &agentSpecs), "cursor", "Cursor agents (N or N:model)")
+	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeWindsurf, &agentSpecs), "windsurf", "Windsurf agents (N or N:model)")
+	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeAider, &agentSpecs), "aider", "Aider agents (N or N:model)")
 	cmd.Flags().Var(&personaSpecs, "persona", "Persona-defined agents (name or name:count)")
 	cmd.Flags().BoolVar(&noUserPane, "no-user", false, "don't reserve a pane for the user")
 	cmd.Flags().StringVarP(&recipeName, "recipe", "r", "", "use a recipe for agent configuration")
@@ -759,15 +829,20 @@ func spawnSessionLogic(opts SpawnOptions) error {
 	// Calculate total agents - either from Agents slice or explicit counts (legacy path)
 	var totalAgents int
 	if len(opts.Agents) == 0 {
-		totalAgents = opts.CCCount + opts.CodCount + opts.GmiCount
+		totalAgents = opts.CCCount + opts.CodCount + opts.GmiCount + opts.CursorCount + opts.WindsurfCount + opts.AiderCount
 		if totalAgents == 0 {
-			return outputError(fmt.Errorf("no agents specified (use --cc, --cod, --gmi, or plugin flags)"))
+			return outputError(fmt.Errorf("no agents specified (use --cc, --cod, --gmi, --cursor, --windsurf, --aider or plugin flags)"))
 		}
 	} else {
 		totalAgents = len(opts.Agents)
 	}
 
 	dir := cfg.GetProjectDir(opts.Session)
+
+	testPacing, err := resolveSpawnTestPacing()
+	if err != nil {
+		return outputError(err)
+	}
 
 	// Initialize hook executor
 	var hookExec *hooks.Executor
@@ -788,10 +863,13 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		SessionName: opts.Session,
 		ProjectDir:  dir,
 		AdditionalEnv: map[string]string{
-			"NTM_AGENT_COUNT_CC":    fmt.Sprintf("%d", opts.CCCount),
-			"NTM_AGENT_COUNT_COD":   fmt.Sprintf("%d", opts.CodCount),
-			"NTM_AGENT_COUNT_GMI":   fmt.Sprintf("%d", opts.GmiCount),
-			"NTM_AGENT_COUNT_TOTAL": fmt.Sprintf("%d", totalAgents),
+			"NTM_AGENT_COUNT_CC":       fmt.Sprintf("%d", opts.CCCount),
+			"NTM_AGENT_COUNT_COD":      fmt.Sprintf("%d", opts.CodCount),
+			"NTM_AGENT_COUNT_GMI":      fmt.Sprintf("%d", opts.GmiCount),
+			"NTM_AGENT_COUNT_CURSOR":   fmt.Sprintf("%d", opts.CursorCount),
+			"NTM_AGENT_COUNT_WINDSURF": fmt.Sprintf("%d", opts.WindsurfCount),
+			"NTM_AGENT_COUNT_AIDER":    fmt.Sprintf("%d", opts.AiderCount),
+			"NTM_AGENT_COUNT_TOTAL":    fmt.Sprintf("%d", totalAgents),
 		},
 	}
 
@@ -914,21 +992,43 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		return outputError(err)
 	}
 	existingPanes := len(panes)
+	paneInitDelay := time.Duration(cfg.Tmux.PaneInitDelayMs) * time.Millisecond
+	if flag.Lookup("test.v") != nil {
+		paneInitDelay = 0
+	}
+	panesAdded := 0
 
 	// Add more panes if needed
 	if existingPanes < totalPanes {
 		toAdd := totalPanes - existingPanes
+		panesAdded = toAdd
 		if !IsJSONOutput() {
 			steps.Start(fmt.Sprintf("Creating %d pane(s)", toAdd))
 		}
 		for i := 0; i < toAdd; i++ {
+			if testPacing.paneDelay > 0 && i > 0 {
+				time.Sleep(testPacing.paneDelay)
+			}
 			if _, err := tmux.SplitWindow(opts.Session, dir); err != nil {
 				if !IsJSONOutput() {
 					steps.Fail()
 				}
 				return outputError(fmt.Errorf("creating pane: %w", err))
 			}
+			if (testPacing.paneDelay > 0 || testPacing.agentDelay > 0) && !IsJSONOutput() {
+				fmt.Printf("[E2E-SPAWN] event=pane_split session=%s seq=%d ts_ms=%d\n",
+					opts.Session, i+1, time.Now().UnixMilli())
+			}
 		}
+		if !IsJSONOutput() {
+			steps.Done()
+		}
+	}
+	if panesAdded > 0 && paneInitDelay > 0 {
+		if !IsJSONOutput() {
+			steps.Start("Waiting for panes to initialize")
+		}
+		time.Sleep(paneInitDelay)
 		if !IsJSONOutput() {
 			steps.Done()
 		}
@@ -975,9 +1075,19 @@ func spawnSessionLogic(opts SpawnOptions) error {
 	var setupWg sync.WaitGroup
 	var maxStaggerDelay time.Duration
 
-	// Initialize rate limit tracker for smart stagger mode (bd-2wih)
+	// Initialize rate limit tracker for smart stagger mode or Codex cooldown gating (bd-3qoly)
 	var rateLimitTracker *ratelimit.RateLimitTracker
-	if opts.StaggerMode == "smart" {
+	hasCodex := opts.CodCount > 0
+	if len(opts.Agents) > 0 {
+		hasCodex = false
+		for _, a := range opts.Agents {
+			if a.Type == AgentTypeCodex {
+				hasCodex = true
+				break
+			}
+		}
+	}
+	if opts.StaggerMode == "smart" || hasCodex {
 		rateLimitTracker = ratelimit.NewRateLimitTracker(dir)
 		if err := rateLimitTracker.LoadFromDir(dir); err != nil {
 			if !IsJSONOutput() {
@@ -996,6 +1106,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		spawnState = NewSpawnState(spawnCtx.BatchID, int(staggerInterval.Seconds()), len(opts.Agents))
 	}
 	isStaggered := effectiveStaggerMode != "none" && effectiveStaggerMode != "" && staggerInterval > 0
+	openAICooldownWaited := false
 
 	// Resolve CASS context if enabled
 	var cassContext string
@@ -1042,6 +1153,10 @@ func spawnSessionLogic(opts SpawnOptions) error {
 		}
 		pane := panes[agentNum]
 
+		if testPacing.agentDelay > 0 && staggerAgentIdx > 0 {
+			time.Sleep(testPacing.agentDelay)
+		}
+
 		// Format pane title with optional model variant
 		// Format: {session}__{type}_{index} or {session}__{type}_{index}_{variant}
 		title := tmux.FormatPaneName(opts.Session, string(agent.Type), agent.Index, agent.Model)
@@ -1060,6 +1175,12 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			agentCmdTemplate = cfg.Agents.Codex
 		case AgentTypeGemini:
 			agentCmdTemplate = cfg.Agents.Gemini
+		case AgentTypeCursor:
+			agentCmdTemplate = cfg.Agents.Cursor
+		case AgentTypeWindsurf:
+			agentCmdTemplate = cfg.Agents.Windsurf
+		case AgentTypeAider:
+			agentCmdTemplate = cfg.Agents.Aider
 		default:
 			// Check plugins
 			if p, ok := opts.PluginMap[string(agent.Type)]; ok {
@@ -1202,6 +1323,17 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			}
 		}
 
+		if agent.Type == AgentTypeCodex {
+			var cooldown time.Duration
+			cooldown, openAICooldownWaited = codexCooldownRemaining(rateLimitTracker, openAICooldownWaited)
+			if cooldown > 0 {
+				if !IsJSONOutput() {
+					output.PrintWarningf("Codex cooldown active; waiting %s before launching", ratelimit.FormatDelay(cooldown))
+				}
+				time.Sleep(cooldown)
+			}
+		}
+
 		cmd, err := tmux.BuildPaneCommand(workingDir, safeAgentCmd)
 		if err != nil {
 			return outputError(fmt.Errorf("building %s agent command: %w", agent.Type, err))
@@ -1209,6 +1341,12 @@ func spawnSessionLogic(opts SpawnOptions) error {
 
 		if err := tmux.SendKeys(pane.ID, cmd, true); err != nil {
 			return outputError(fmt.Errorf("launching %s agent: %w", agent.Type, err))
+		}
+		if rateLimitTracker != nil && agent.Type == AgentTypeCodex {
+			rateLimitTracker.RecordSuccess("openai")
+			if err := rateLimitTracker.SaveToDir(dir); err != nil && !IsJSONOutput() {
+				output.PrintWarningf("Failed to persist rate limit history: %v", err)
+			}
 		}
 
 		// Parallelize post-launch setup and prompt delivery
@@ -1873,6 +2011,12 @@ func agentTypeToProgram(agentType string) string {
 		return "codex-cli"
 	case "gmi":
 		return "gemini-cli"
+	case "cursor":
+		return "cursor"
+	case "windsurf":
+		return "windsurf"
+	case "aider":
+		return "aider"
 	default:
 		return agentType
 	}
@@ -2670,7 +2814,7 @@ func waitForAgentsReady(session string, timeout time.Duration) (int, error) {
 			}
 			agentCount++
 
-			scrollback, _ := tmux.CapturePaneOutput(pane.ID, 10)
+			scrollback, _ := tmux.CaptureForStatusDetection(pane.ID)
 			state := determineAgentState(scrollback, at)
 			if state == "idle" {
 				readyCount++
@@ -2713,7 +2857,7 @@ func sendInitPromptToReadyAgents(session, prompt string) (int, error) {
 			continue
 		}
 
-		scrollback, _ := tmux.CapturePaneOutput(pane.ID, 10)
+		scrollback, _ := tmux.CaptureForStatusDetection(pane.ID)
 		state := determineAgentState(scrollback, at)
 		if state != "idle" {
 			continue

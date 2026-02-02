@@ -1,7 +1,11 @@
 package robot
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -10,12 +14,15 @@ import (
 // RestartPaneOutput is the structured output for --robot-restart-pane
 type RestartPaneOutput struct {
 	RobotResponse
-	Session     string         `json:"session"`
-	RestartedAt time.Time      `json:"restarted_at"`
-	Restarted   []string       `json:"restarted"`
-	Failed      []RestartError `json:"failed"`
-	DryRun      bool           `json:"dry_run,omitempty"`
-	WouldAffect []string       `json:"would_affect,omitempty"`
+	Session      string         `json:"session"`
+	RestartedAt  time.Time      `json:"restarted_at"`
+	Restarted    []string       `json:"restarted"`
+	Failed       []RestartError `json:"failed"`
+	DryRun       bool           `json:"dry_run,omitempty"`
+	WouldAffect  []string       `json:"would_affect,omitempty"`
+	BeadAssigned string         `json:"bead_assigned,omitempty"` // Bead ID if --bead was used
+	PromptSent   bool           `json:"prompt_sent,omitempty"`   // True if prompt was sent to pane(s)
+	PromptError  string         `json:"prompt_error,omitempty"`  // Non-fatal prompt send error
 }
 
 // RestartError represents a failed restart attempt
@@ -31,6 +38,8 @@ type RestartPaneOptions struct {
 	Type    string   // Filter by agent type (e.g., "claude", "cc")
 	All     bool     // Include all panes (including user)
 	DryRun  bool     // Preview mode
+	Bead    string   // Bead ID to assign after restart (fetches info via br show --json)
+	Prompt  string   // Custom prompt to send after restart (overrides --bead template)
 }
 
 // GetRestartPane restarts panes (respawn-pane -k) and returns the result.
@@ -42,6 +51,27 @@ func GetRestartPane(opts RestartPaneOptions) (*RestartPaneOutput, error) {
 		RestartedAt:   time.Now().UTC(),
 		Restarted:     []string{},
 		Failed:        []RestartError{},
+	}
+
+	// If --bead is provided, validate it before restarting anything
+	var beadPrompt string
+	if opts.Bead != "" {
+		prompt, err := buildBeadPrompt(opts.Bead)
+		if err != nil {
+			output.RobotResponse = NewErrorResponse(
+				err,
+				ErrCodeInvalidFlag,
+				fmt.Sprintf("Bead %s not found or not readable. Use: br show %s", opts.Bead, opts.Bead),
+			)
+			return output, nil
+		}
+		beadPrompt = prompt
+	}
+
+	// Determine which prompt to send (explicit --prompt overrides --bead template)
+	promptToSend := opts.Prompt
+	if promptToSend == "" && beadPrompt != "" {
+		promptToSend = beadPrompt
 	}
 
 	if !tmux.SessionExists(opts.Session) {
@@ -124,6 +154,9 @@ func GetRestartPane(opts RestartPaneOptions) (*RestartPaneOutput, error) {
 			paneKey := fmt.Sprintf("%d", pane.Index)
 			output.WouldAffect = append(output.WouldAffect, paneKey)
 		}
+		if opts.Bead != "" {
+			output.BeadAssigned = opts.Bead
+		}
 		return output, nil
 	}
 
@@ -143,7 +176,62 @@ func GetRestartPane(opts RestartPaneOptions) (*RestartPaneOutput, error) {
 		}
 	}
 
+	// Send prompt to successfully restarted panes
+	if promptToSend != "" && len(output.Restarted) > 0 {
+		if opts.Bead != "" {
+			output.BeadAssigned = opts.Bead
+		}
+
+		// Wait for panes to initialize after respawn
+		time.Sleep(500 * time.Millisecond)
+
+		var promptErrors []string
+		for _, paneKey := range output.Restarted {
+			target := fmt.Sprintf("%s:%s", opts.Session, paneKey)
+			if err := tmux.SendKeys(target, promptToSend+"\n", false); err != nil {
+				promptErrors = append(promptErrors, fmt.Sprintf("pane %s: %v", paneKey, err))
+			}
+		}
+
+		if len(promptErrors) > 0 {
+			output.PromptSent = false
+			output.PromptError = strings.Join(promptErrors, "; ")
+		} else {
+			output.PromptSent = true
+		}
+	}
+
 	return output, nil
+}
+
+// restartPaneBeadPromptTemplate is the default prompt template for --bead assignment.
+const restartPaneBeadPromptTemplate = "Read AGENTS.md, register with Agent Mail. Work on: {bead_id} - {bead_title}.\nUse br show {bead_id} for details. Mark in_progress when starting. Use ultrathink."
+
+// buildBeadPrompt fetches bead info via br show --json and builds the assignment prompt.
+func buildBeadPrompt(beadID string) (string, error) {
+	cmd := exec.Command("br", "show", beadID, "--json")
+	cmd.Dir, _ = os.Getwd()
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("br show %s failed: %w", beadID, err)
+	}
+
+	var issues []struct {
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(out, &issues); err != nil {
+		return "", fmt.Errorf("parse br show output: %w", err)
+	}
+	if len(issues) == 0 || issues[0].Title == "" {
+		return "", fmt.Errorf("bead %s not found", beadID)
+	}
+
+	prompt := strings.NewReplacer(
+		"{bead_id}", beadID,
+		"{bead_title}", issues[0].Title,
+	).Replace(restartPaneBeadPromptTemplate)
+
+	return prompt, nil
 }
 
 // PrintRestartPane handles the --robot-restart-pane command.

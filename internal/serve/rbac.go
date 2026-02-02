@@ -50,15 +50,25 @@ const (
 	PermReadApprovals   Permission = "approvals:read"
 	PermReadJobs        Permission = "jobs:read"
 	PermReadHealth      Permission = "health:read"
-	PermReadEvents      Permission = "events:read"
-	PermReadWebSocket   Permission = "ws:read"
+	PermReadEvents       Permission = "events:read"
+	PermReadWebSocket    Permission = "ws:read"
+	PermReadMail         Permission = "mail:read"
+	PermReadReservations Permission = "reservations:read"
+	PermReadBeads        Permission = "beads:read"
+	PermReadAccounts     Permission = "accounts:read"
+	PermReadMemory       Permission = "memory:read"
 
 	// Write/operation permissions
-	PermWriteSessions   Permission = "sessions:write"
-	PermWriteAgents     Permission = "agents:write"
-	PermWritePipelines  Permission = "pipelines:write"
-	PermWriteJobs       Permission = "jobs:write"
-	PermApproveRequests Permission = "approvals:approve"
+	PermWriteSessions     Permission = "sessions:write"
+	PermWriteAgents       Permission = "agents:write"
+	PermWritePipelines    Permission = "pipelines:write"
+	PermWriteJobs         Permission = "jobs:write"
+	PermWriteMail         Permission = "mail:write"
+	PermWriteReservations Permission = "reservations:write"
+	PermWriteBeads        Permission = "beads:write"
+	PermWriteAccounts     Permission = "accounts:write"
+	PermWriteMemory       Permission = "memory:write"
+	PermApproveRequests   Permission = "approvals:approve"
 
 	// Dangerous operations (require admin or approval)
 	PermDangerousOps    Permission = "dangerous:execute"
@@ -78,6 +88,11 @@ var rolePermissions = map[Role][]Permission{
 		PermReadHealth,
 		PermReadEvents,
 		PermReadWebSocket,
+		PermReadMail,
+		PermReadReservations,
+		PermReadBeads,
+		PermReadAccounts,
+		PermReadMemory,
 	},
 	RoleOperator: {
 		// Viewer permissions
@@ -89,11 +104,21 @@ var rolePermissions = map[Role][]Permission{
 		PermReadHealth,
 		PermReadEvents,
 		PermReadWebSocket,
+		PermReadMail,
+		PermReadReservations,
+		PermReadBeads,
+		PermReadAccounts,
+		PermReadMemory,
 		// Operator permissions
 		PermWriteSessions,
 		PermWriteAgents,
 		PermWritePipelines,
 		PermWriteJobs,
+		PermWriteMail,
+		PermWriteReservations,
+		PermWriteBeads,
+		PermWriteAccounts,
+		PermWriteMemory,
 	},
 	RoleAdmin: {
 		// All viewer and operator permissions
@@ -105,10 +130,20 @@ var rolePermissions = map[Role][]Permission{
 		PermReadHealth,
 		PermReadEvents,
 		PermReadWebSocket,
+		PermReadMail,
+		PermReadReservations,
+		PermReadBeads,
+		PermReadAccounts,
+		PermReadMemory,
 		PermWriteSessions,
 		PermWriteAgents,
 		PermWritePipelines,
 		PermWriteJobs,
+		PermWriteMail,
+		PermWriteReservations,
+		PermWriteBeads,
+		PermWriteAccounts,
+		PermWriteMemory,
 		// Admin-only permissions
 		PermApproveRequests,
 		PermDangerousOps,

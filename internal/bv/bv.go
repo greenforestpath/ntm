@@ -36,13 +36,23 @@ func init() {
 }
 
 func getNoDBState(dir string) bool {
-	m := noDBCache.Load().(*sync.Map)
+	m, ok := noDBCache.Load().(*sync.Map)
+	if !ok || m == nil {
+		return false
+	}
 	v, ok := m.Load(dir)
-	return ok && v.(bool)
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	return ok && b
 }
 
 func setNoDBState(dir string, val bool) {
-	m := noDBCache.Load().(*sync.Map)
+	m, ok := noDBCache.Load().(*sync.Map)
+	if !ok || m == nil {
+		return
+	}
 	m.Store(dir, val)
 }
 
@@ -59,8 +69,8 @@ func run(dir string, args ...string) (string, error) {
 	}
 
 	// Resolve empty dir to current working directory
+	var err error
 	if dir == "" {
-		var err error
 		dir, err = os.Getwd()
 		if err != nil {
 			return "", fmt.Errorf("failed to get working directory: %w", err)
@@ -76,15 +86,16 @@ func run(dir string, args ...string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 	if err != nil {
-		// Check for specific error conditions
+		// Check context timeout first since it's more fundamental
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("bv timed out after %v", DefaultTimeout)
+		}
+		// Check for specific error conditions in stderr
 		stderrStr := stderr.String()
 		if strings.Contains(stderrStr, "No baseline found") {
 			return "", ErrNoBaseline
-		}
-		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("bv timed out after %v", DefaultTimeout)
 		}
 		return "", fmt.Errorf("bv %s: %w: %s", strings.Join(args, " "), err, stderrStr)
 	}
@@ -630,18 +641,16 @@ func GetDependencyContext(dir string, n int) (*DependencyContext, error) {
 	return ctx, nil
 }
 
-// RunBd executes bd with given args and returns stdout.
-// If bd reports a missing database and suggests `--no-db`, it retries once with `--no-db`
+// RunBd executes br (beads_rust) with given args and returns stdout.
+// If br reports a missing database and suggests `--no-db`, it retries once with `--no-db`
 // and caches that preference for the remainder of the process.
 func RunBd(dir string, args ...string) (string, error) {
-	// Resolve empty dir to current working directory first to ensure consistent cache keys
-	if dir == "" {
-		var err error
-		dir, err = os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("failed to get working directory: %w", err)
-		}
+	// Normalize dir to ensure consistent cache keys.
+	normalizedDir, err := normalizeTriageDir(dir)
+	if err != nil {
+		return "", err
 	}
+	dir = normalizedDir
 
 	// Check cache for this specific directory
 	if getNoDBState(dir) && !containsString(args, "--no-db") {
@@ -651,16 +660,16 @@ func RunBd(dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bd", args...)
+	cmd := exec.CommandContext(ctx, "br", args...)
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("bd timed out after %v", DefaultTimeout)
+			return "", fmt.Errorf("br timed out after %v", DefaultTimeout)
 		}
 
 		stderrStr := stderr.String()
@@ -669,7 +678,7 @@ func RunBd(dir string, args ...string) (string, error) {
 			setNoDBState(dir, true)
 			return RunBd(dir, append([]string{"--no-db"}, args...)...)
 		}
-		return "", fmt.Errorf("bd %s: %w: %s", strings.Join(args, " "), err, stderrStr)
+		return "", fmt.Errorf("br %s: %w: %s", strings.Join(args, " "), err, stderrStr)
 	}
 
 	return strings.TrimSpace(stdout.String()), nil
@@ -677,7 +686,7 @@ func RunBd(dir string, args ...string) (string, error) {
 
 func isNoBeadsDBError(stderr string) bool {
 	s := strings.ToLower(stderr)
-	return strings.Contains(s, "no beads database found") || strings.Contains(s, "use 'bd --no-db'")
+	return strings.Contains(s, "no beads database found") || strings.Contains(s, "use 'br --no-db'")
 }
 
 func containsString(list []string, value string) bool {
@@ -689,9 +698,9 @@ func containsString(list []string, value string) bool {
 	return false
 }
 
-// IsBdInstalled checks if bd is available in PATH
+// IsBdInstalled checks if br is available in PATH (legacy name).
 func IsBdInstalled() bool {
-	_, err := exec.LookPath("bd")
+	_, err := exec.LookPath("br")
 	return err == nil
 }
 
@@ -699,16 +708,13 @@ func IsBdInstalled() bool {
 func GetBeadsSummary(dir string, limit int) *BeadsSummary {
 	result := &BeadsSummary{}
 
-	// Resolve empty dir to current working directory
-	if dir == "" {
-		var err error
-		dir, err = os.Getwd()
-		if err != nil {
-			result.Available = false
-			result.Reason = fmt.Sprintf("failed to get working directory: %v", err)
-			return result
-		}
+	normalizedDir, err := normalizeTriageDir(dir)
+	if err != nil {
+		result.Available = false
+		result.Reason = err.Error()
+		return result
 	}
+	dir = normalizedDir
 
 	// Validate directory exists
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
@@ -952,7 +958,7 @@ func GetImpact(dir, filePath string) (*ImpactResponse, error) {
 
 // GetSearch performs semantic search
 func GetSearch(dir, query string) (*SearchResponse, error) {
-	output, err := run(dir, "-robot-search", query)
+	output, err := run(dir, "-robot-search", "-search", query)
 	if err != nil {
 		return nil, err
 	}
@@ -967,7 +973,7 @@ func GetSearch(dir, query string) (*SearchResponse, error) {
 func GetLabelAttention(dir string, limit int) (*LabelAttentionResponse, error) {
 	args := []string{"-robot-label-attention"}
 	if limit > 0 {
-		args = append(args, fmt.Sprintf("--attention-limit=%d", limit))
+		args = append(args, fmt.Sprintf("-attention-limit=%d", limit))
 	}
 	output, err := run(dir, args...)
 	if err != nil {
@@ -1010,7 +1016,7 @@ func GetLabelHealth(dir string) (*LabelHealthResponse, error) {
 func GetFileBeads(dir, filePath string, limit int) (*FileBeadsResponse, error) {
 	args := []string{"-robot-file-beads", filePath}
 	if limit > 0 {
-		args = append(args, fmt.Sprintf("--limit=%d", limit))
+		args = append(args, fmt.Sprintf("-file-beads-limit=%d", limit))
 	}
 	output, err := run(dir, args...)
 	if err != nil {
@@ -1027,7 +1033,7 @@ func GetFileBeads(dir, filePath string, limit int) (*FileBeadsResponse, error) {
 func GetFileHotspots(dir string, limit int) (*FileHotspotsResponse, error) {
 	args := []string{"-robot-file-hotspots"}
 	if limit > 0 {
-		args = append(args, fmt.Sprintf("--limit=%d", limit))
+		args = append(args, fmt.Sprintf("-hotspots-limit=%d", limit))
 	}
 	output, err := run(dir, args...)
 	if err != nil {
@@ -1044,10 +1050,10 @@ func GetFileHotspots(dir string, limit int) (*FileHotspotsResponse, error) {
 func GetFileRelations(dir, filePath string, limit int, threshold float64) (*FileRelationsResponse, error) {
 	args := []string{"-robot-file-relations", filePath}
 	if limit > 0 {
-		args = append(args, fmt.Sprintf("--limit=%d", limit))
+		args = append(args, fmt.Sprintf("-relations-limit=%d", limit))
 	}
 	if threshold > 0 {
-		args = append(args, fmt.Sprintf("--threshold=%f", threshold))
+		args = append(args, fmt.Sprintf("-relations-threshold=%f", threshold))
 	}
 	output, err := run(dir, args...)
 	if err != nil {

@@ -59,21 +59,17 @@ func NewVelocityTrackerWithSize(paneID string, maxSamples int) *VelocityTracker 
 // It compares the new output to the previous capture to determine chars added.
 // Returns the new sample and any error from capture.
 func (vt *VelocityTracker) Update() (*VelocitySample, error) {
-	vt.mu.Lock()
-	defer vt.mu.Unlock()
-
-	return vt.updateLocked()
-}
-
-// updateLocked performs the update with the lock already held.
-func (vt *VelocityTracker) updateLocked() (*VelocitySample, error) {
-	// Capture current pane output
+	// Capture current pane output BEFORE locking to avoid blocking readers
+	// PaneID is immutable after creation, so safe to read without lock
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	output, err := tmux.CaptureForStatusDetectionContext(ctx, vt.PaneID)
 	if err != nil {
 		return nil, err
 	}
+
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
 
 	now := time.Now()
 

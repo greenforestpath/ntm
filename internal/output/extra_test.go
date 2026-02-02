@@ -596,3 +596,135 @@ func TestKillSuggestions(t *testing.T) {
 		t.Fatalf("KillSuggestions() returned %d suggestions, want 2", len(suggestions))
 	}
 }
+
+func TestStatusBadge(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status string
+	}{
+		// Green statuses
+		{"active", "active"},
+		{"running", "running"},
+		{"ok", "ok"},
+		{"ready", "ready"},
+		// Yellow statuses
+		{"idle", "idle"},
+		{"waiting", "waiting"},
+		{"pending", "pending"},
+		// Blue statuses
+		{"busy", "busy"},
+		{"working", "working"},
+		{"processing", "processing"},
+		// Error statuses
+		{"error", "error"},
+		{"failed", "failed"},
+		{"stopped", "stopped"},
+		// Warning statuses
+		{"warning", "warning"},
+		{"warn", "warn"},
+		// Default/unknown
+		{"unknown status", "something_else"},
+		{"empty string", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := StatusBadge(tc.status)
+			// The rendered string should contain the original status text
+			if !strings.Contains(result, tc.status) {
+				t.Errorf("StatusBadge(%q) = %q, does not contain input", tc.status, result)
+			}
+		})
+	}
+}
+
+func TestStatusBadge_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	// Upper case should still render the input text
+	result := StatusBadge("ACTIVE")
+	if !strings.Contains(result, "ACTIVE") {
+		t.Errorf("StatusBadge(\"ACTIVE\") should contain 'ACTIVE', got %q", result)
+	}
+
+	result = StatusBadge("Error")
+	if !strings.Contains(result, "Error") {
+		t.Errorf("StatusBadge(\"Error\") should contain 'Error', got %q", result)
+	}
+}
+
+func TestAgentBadge(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		agentType string
+	}{
+		// Claude variants
+		{"claude", "claude"},
+		{"cc", "cc"},
+		// Codex variants
+		{"codex", "codex"},
+		{"cod", "cod"},
+		// Gemini variants
+		{"gemini", "gemini"},
+		{"gmi", "gmi"},
+		// Default/unknown
+		{"unknown agent", "other"},
+		{"empty string", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := AgentBadge(tc.agentType)
+			if !strings.Contains(result, tc.agentType) {
+				t.Errorf("AgentBadge(%q) = %q, does not contain input", tc.agentType, result)
+			}
+		})
+	}
+}
+
+func TestAgentBadge_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	result := AgentBadge("Claude")
+	if !strings.Contains(result, "Claude") {
+		t.Errorf("AgentBadge(\"Claude\") should contain 'Claude', got %q", result)
+	}
+
+	result = AgentBadge("CODEX")
+	if !strings.Contains(result, "CODEX") {
+		t.Errorf("AgentBadge(\"CODEX\") should contain 'CODEX', got %q", result)
+	}
+}
+
+func TestStyledTableCompact(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	tbl := NewStyledTableWriter(&buf, "A", "B")
+	tbl.Compact = true
+	tbl.AddRow("1", "2")
+	tbl.Render()
+
+	output := buf.String()
+	if !strings.Contains(output, "A") || !strings.Contains(output, "1") {
+		t.Error("compact table should contain data")
+	}
+}
+
+func TestNewStyledTable_DefaultsToStdout(t *testing.T) {
+	t.Parallel()
+
+	tbl := NewStyledTable("X", "Y")
+	if tbl == nil {
+		t.Fatal("NewStyledTable returned nil")
+	}
+	if tbl.RowCount() != 0 {
+		t.Errorf("new table RowCount() = %d, want 0", tbl.RowCount())
+	}
+}

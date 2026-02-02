@@ -7,9 +7,48 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/shirou/gopsutil/v4/cpu"
 )
+
+// CPUOverloadThreshold is the percentage above which a core is considered overloaded.
+const CPUOverloadThreshold = 95.0
+
+// SkipIfCPUOverloaded checks if all CPU cores are at 95%+ utilization and skips
+// the test if so. This prevents flaky timing-based benchmark tests when the
+// system is under extreme load.
+//
+// Use this at the start of any test that asserts on wall-clock time.
+func SkipIfCPUOverloaded(t *testing.T) {
+	t.Helper()
+
+	// Sample CPU usage over 200ms per-core
+	perCPU, err := cpu.Percent(200*time.Millisecond, true)
+	if err != nil {
+		// If we can't measure CPU, proceed with the test
+		t.Logf("Warning: could not measure CPU load: %v", err)
+		return
+	}
+
+	if len(perCPU) == 0 {
+		return
+	}
+
+	// Check if ALL cores are at 95%+
+	overloadedCores := 0
+	for _, usage := range perCPU {
+		if usage >= CPUOverloadThreshold {
+			overloadedCores++
+		}
+	}
+
+	if overloadedCores == len(perCPU) {
+		t.Skipf("Skipping benchmark: system under extreme CPU load (all %d cores at %.0f%%+ utilization)",
+			len(perCPU), CPUOverloadThreshold)
+	}
+}
 
 // RequireTmux skips the test if tmux is not installed.
 func RequireTmux(t *testing.T) {
@@ -156,4 +195,38 @@ func E2ETestPrecheck(t *testing.T) {
 	RequireE2E(t)
 	RequireTmux(t)
 	RequireNTMBinary(t)
+}
+
+// SkipIfBdUnavailable skips the test if bd (beads_rust) is not installed.
+func SkipIfBdUnavailable(t *testing.T) {
+	t.Helper()
+	if err := exec.Command("br", "--version").Run(); err != nil {
+		t.Skip("br (beads_rust) not installed, skipping test")
+	}
+}
+
+// SkipIfBvUnavailable skips the test if bv is not installed.
+func SkipIfBvUnavailable(t *testing.T) {
+	t.Helper()
+	if err := exec.Command("bv", "--version").Run(); err != nil {
+		t.Skip("bv not installed, skipping test")
+	}
+}
+
+// SkipIfMailUnavailable skips the test if Agent Mail MCP server is not available.
+func SkipIfMailUnavailable(t *testing.T) {
+	t.Helper()
+	// Agent Mail requires MCP server running - check for socket or command
+	// For now, skip based on environment variable
+	if os.Getenv("NTM_MAIL_TESTS") == "" {
+		t.Skip("Agent Mail tests disabled, set NTM_MAIL_TESTS=1 to enable")
+	}
+}
+
+// SkipIfUBSUnavailable skips the test if UBS scanner is not installed.
+func SkipIfUBSUnavailable(t *testing.T) {
+	t.Helper()
+	if err := exec.Command("ubs", "--version").Run(); err != nil {
+		t.Skip("ubs (Ultimate Bug Scanner) not installed, skipping test")
+	}
 }

@@ -500,3 +500,24 @@ func TestSmartStaggerPromptDelayUsesTracker(t *testing.T) {
 		t.Errorf("smart prompt delay = %v, want %v", got, want)
 	}
 }
+
+func TestCodexCooldownRemaining_Once(t *testing.T) {
+	tracker := ratelimit.NewRateLimitTracker("")
+	tracker.RecordRateLimitWithCooldown("openai", "spawn", 30)
+
+	cooldown, waited := codexCooldownRemaining(tracker, false)
+	if cooldown <= 0 {
+		t.Fatalf("expected positive cooldown, got %v", cooldown)
+	}
+	if !waited {
+		t.Fatal("expected waited=true after first check")
+	}
+
+	cooldown, waited = codexCooldownRemaining(tracker, waited)
+	if cooldown != 0 {
+		t.Fatalf("expected cooldown=0 after already waited, got %v", cooldown)
+	}
+	if !waited {
+		t.Fatal("expected waited to remain true")
+	}
+}

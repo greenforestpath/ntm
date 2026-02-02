@@ -78,6 +78,19 @@ func TestNewHandoffShowCmd(t *testing.T) {
 	}
 }
 
+func TestNewHandoffLedgerCmd(t *testing.T) {
+	cmd := newHandoffLedgerCmd()
+	if cmd == nil {
+		t.Fatal("newHandoffLedgerCmd() returned nil")
+	}
+	if cmd.Use != "ledger [session]" {
+		t.Errorf("Use = %q, want %q", cmd.Use, "ledger [session]")
+	}
+	if cmd.Flags().Lookup("json") == nil {
+		t.Error("expected flag 'json' to exist")
+	}
+}
+
 func TestGenerateDescription(t *testing.T) {
 	tests := []struct {
 		goal     string
@@ -99,6 +112,91 @@ func TestGenerateDescription(t *testing.T) {
 				t.Errorf("generateDescription(%q) = %q, want %q", tc.goal, got, tc.expected)
 			}
 		})
+	}
+}
+
+func TestRunHandoffLedgerTextOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	ledgerDir := filepath.Join(tmpDir, ".ntm", "ledgers")
+	if err := os.MkdirAll(ledgerDir, 0755); err != nil {
+		t.Fatalf("failed to create ledger dir: %v", err)
+	}
+
+	ledgerPath := filepath.Join(ledgerDir, "CONTINUITY_testsession.md")
+	content := "## 2026-01-01T00:00:00Z (manual)\n- goal: test\n\n"
+	if err := os.WriteFile(ledgerPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write ledger: %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&buf)
+
+	if err := runHandoffLedger(cmd, "testsession", false); err != nil {
+		t.Fatalf("runHandoffLedger() error: %v", err)
+	}
+
+	if got := buf.String(); got != content {
+		t.Errorf("unexpected ledger output: %q", got)
+	}
+}
+
+func TestRunHandoffLedgerJSONOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	ledgerDir := filepath.Join(tmpDir, ".ntm", "ledgers")
+	if err := os.MkdirAll(ledgerDir, 0755); err != nil {
+		t.Fatalf("failed to create ledger dir: %v", err)
+	}
+
+	ledgerPath := filepath.Join(ledgerDir, "CONTINUITY_testsession.md")
+	content := "## 2026-01-01T00:00:00Z (manual)\n- goal: test\n\n"
+	if err := os.WriteFile(ledgerPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write ledger: %v", err)
+	}
+
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+	defer os.Chdir(oldWd)
+
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&buf)
+
+	if err := runHandoffLedger(cmd, "testsession", true); err != nil {
+		t.Fatalf("runHandoffLedger() error: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to unmarshal json: %v", err)
+	}
+
+	if payload["session"] != "testsession" {
+		t.Errorf("session = %v, want testsession", payload["session"])
+	}
+	if payload["path"] == "" {
+		t.Error("expected path to be set")
+	}
+	if payload["content"] != content {
+		t.Errorf("content mismatch: %q", payload["content"])
+	}
+}
+
+func TestRunHandoffLedgerInvalidSession(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&buf)
+
+	if err := runHandoffLedger(cmd, "../bad", false); err == nil {
+		t.Fatal("expected error for invalid session name")
 	}
 }
 
@@ -177,7 +275,7 @@ func TestRunHandoffCreateWithFlags(t *testing.T) {
 	cmd.SetOut(&buf)
 
 	// Run create with flags
-	err = runHandoffCreate(cmd, "testsession", "Test goal", "Next task", "", false, "test-desc", false)
+	err = runHandoffCreate(cmd, "testsession", "Test goal", "Next task", "", false, "test-desc", false, "", "yaml", false)
 	if err != nil {
 		t.Fatalf("runHandoffCreate() error: %v", err)
 	}
@@ -232,7 +330,7 @@ func TestRunHandoffCreateJSONOutput(t *testing.T) {
 	cmd.SetOut(&buf)
 
 	// Run create with JSON output
-	err = runHandoffCreate(cmd, "testsession", "Test goal", "Next task", "", false, "", true)
+	err = runHandoffCreate(cmd, "testsession", "Test goal", "Next task", "", false, "", true, "", "json", false)
 	if err != nil {
 		t.Fatalf("runHandoffCreate() error: %v", err)
 	}
@@ -566,7 +664,7 @@ func TestRunHandoffCreateFromFile(t *testing.T) {
 	cmd.SetOut(&buf)
 
 	// Run create from file, overriding session name
-	err = runHandoffCreate(cmd, "newsession", "", "", sourcePath, false, "from-file", false)
+	err = runHandoffCreate(cmd, "newsession", "", "", sourcePath, false, "from-file", false, "", "yaml", false)
 	if err != nil {
 		t.Fatalf("runHandoffCreate() error: %v", err)
 	}
@@ -747,7 +845,7 @@ func TestRunHandoffCreateValidation(t *testing.T) {
 	cmd.SetOut(&buf)
 
 	// Run create with goal but without now should still work (uses defaults)
-	err = runHandoffCreate(cmd, "testsession", "Test goal", "Task now", "", false, "", false)
+	err = runHandoffCreate(cmd, "testsession", "Test goal", "Task now", "", false, "", false, "", "yaml", false)
 	if err != nil {
 		t.Fatalf("runHandoffCreate() with goal and now should succeed: %v", err)
 	}

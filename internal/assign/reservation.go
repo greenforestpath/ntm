@@ -57,8 +57,8 @@ func ExtractFilePaths(title, description string) []string {
 	seen := make(map[string]bool)
 
 	// Pattern for file paths with extensions
-	// Matches: src/api/handler.go, lib/utils.ts, config.json
-	filePathRegex := regexp.MustCompile(`(?m)(?:^|\s|[(\["'])([a-zA-Z0-9_./-]+(?:\.[a-zA-Z0-9]+)+)(?:\s|[)\]"']|$)`)
+	// Matches: src/api/handler.go, lib/utils.ts, config.json, internal/file.go:123
+	filePathRegex := regexp.MustCompile(`(?m)(?:^|\s|[(\["'])([a-zA-Z0-9_./-]+(?:\.[a-zA-Z0-9]+)+)(?:\:\d+(?::\d+)?)?(?:\s|[)\]"']|$)`)
 
 	// Pattern for dotfiles (.env, .env.local, .gitignore)
 	// Matches: .env, .env.local, .gitignore, .eslintrc.js
@@ -232,5 +232,10 @@ func (m *FileReservationManager) RenewReservations(ctx context.Context, agentNam
 		return nil
 	}
 
-	return m.client.RenewReservations(ctx, m.projectKey, agentName, extendSeconds)
+	_, err := m.client.RenewReservations(ctx, agentmail.RenewReservationsOptions{
+		ProjectKey:    m.projectKey,
+		AgentName:     agentName,
+		ExtendSeconds: extendSeconds,
+	})
+	return err
 }

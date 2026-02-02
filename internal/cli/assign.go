@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
 	"github.com/Dicklesworthstone/ntm/internal/assign"
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
@@ -631,7 +632,7 @@ func getAssignOutput(opts robot.AssignOptions) (*robot.AssignOutput, error) {
 		totalAgents++
 
 		// Capture state
-		scrollback, _ := tmux.CapturePaneOutput(pane.ID, 10)
+		scrollback, _ := tmux.CaptureForStatusDetection(pane.ID)
 		state := determineAgentState(scrollback, agentType)
 		if state == "idle" {
 			idleAgentPanes = append(idleAgentPanes, fmt.Sprintf("%d", pane.Index))
@@ -789,27 +790,24 @@ func detectModelFromTitle(agentType, title string) string {
 
 // determineAgentState checks if agent is idle or working
 func determineAgentState(scrollback, agentType string) string {
-	lines := strings.Split(scrollback, "\n")
-	if len(lines) == 0 {
+	// Use the robust agent parser
+	parser := agent.NewParser()
+	
+	// If agentType is known, we can hint it or verify it, but Parse detects it too.
+	// For now, let Parse do its work.
+	state, err := parser.Parse(scrollback)
+	if err != nil {
 		return "unknown"
 	}
 
-	lastLine := strings.TrimSpace(lines[len(lines)-1])
-
-	// Look for common idle patterns
-	idlePatterns := []string{
-		"$", ">", ">>> ", "claude>", "codex>", "gemini>", "›", "context left",
-		"What would you like", "How can I help",
-		"Ready for", "Waiting for",
+	if state.IsIdle {
+		return "idle"
 	}
-
-	for _, p := range idlePatterns {
-		if strings.HasSuffix(lastLine, p) || strings.Contains(lastLine, p) {
-			return "idle"
-		}
+	if state.IsWorking {
+		return "working"
 	}
-
-	return "working"
+	
+	return "unknown"
 }
 
 func assignmentAgentName(session, agentType string, paneIndex int) string {
@@ -1154,7 +1152,7 @@ func getAssignOutputEnhanced(opts *AssignCommandOptions) (*AssignOutputEnhanced,
 		}
 
 		model := detectModelFromTitle(at, pane.Title)
-		scrollback, _ := tmux.CapturePaneOutput(pane.ID, 10)
+		scrollback, _ := tmux.CaptureForStatusDetection(pane.ID)
 		state := determineAgentState(scrollback, at)
 
 		if state == "idle" {
@@ -3801,7 +3799,7 @@ func getIdleAgents(session, agentTypeFilter string, verbose bool) ([]assignAgent
 		}
 
 		model := detectModelFromTitle(agentType, pane.Title)
-		scrollback, _ := tmux.CapturePaneOutput(pane.ID, 10)
+		scrollback, _ := tmux.CaptureForStatusDetection(pane.ID)
 		state := determineAgentState(scrollback, agentType)
 
 		if state == "idle" {

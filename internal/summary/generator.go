@@ -1,10 +1,12 @@
 package summary
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -76,6 +78,8 @@ type Options struct {
 	Format          SummaryFormat
 	MaxTokens       int
 	ProjectKey      string
+	ProjectDir      string // Working directory for git operations
+	IncludeGitDiff  bool   // Include git diff in summary
 	ThreadIDs       []string
 	AgentMailClient *agentmail.Client
 	Summarizer      Summarizer
@@ -98,6 +102,12 @@ func SummarizeSession(ctx context.Context, opts Options) (*SessionSummary, error
 
 	data := aggregateOutputs(opts.Outputs)
 
+	// Enrich with git state if requested
+	if opts.IncludeGitDiff && opts.ProjectDir != "" {
+		gitFiles := getGitFileChanges(opts.ProjectDir)
+		data.files = mergeFileChanges(data.files, gitFiles)
+	}
+
 	// Agent Mail thread summaries
 	var threadSummaries []agentmail.ThreadSummary
 	if opts.AgentMailClient != nil && len(opts.ThreadIDs) > 0 {
@@ -105,7 +115,11 @@ func SummarizeSession(ctx context.Context, opts Options) (*SessionSummary, error
 			data.errors = appendUnique(data.errors, "agent mail project key missing")
 		} else {
 			for _, tid := range opts.ThreadIDs {
-				thread, err := opts.AgentMailClient.SummarizeThread(ctx, opts.ProjectKey, tid, false)
+				thread, err := opts.AgentMailClient.SummarizeThread(ctx, agentmail.SummarizeThreadOptions{
+					ProjectKey:      opts.ProjectKey,
+					ThreadID:        tid,
+					IncludeExamples: false,
+				})
 				if err != nil {
 					data.errors = appendUnique(data.errors, fmt.Sprintf("agent mail summarize %s: %v", tid, err))
 					continue
@@ -818,6 +832,34 @@ func formatHandoff(h *handoff.Handoff) string {
 	return strings.TrimSpace(string(data))
 }
 
+// RenderSummary formats an existing summary using the requested format.
+// It regenerates text from structured fields when possible.
+func RenderSummary(summary *SessionSummary, format SummaryFormat) string {
+	if summary == nil {
+		return ""
+	}
+	if format == "" {
+		format = summary.Format
+	}
+	switch format {
+	case FormatDetailed:
+		return strings.TrimSpace(formatDetailed(summary))
+	case FormatHandoff:
+		h := summary.Handoff
+		if h == nil {
+			h = buildHandoffSummary(summary)
+		}
+		return strings.TrimSpace(formatHandoff(h))
+	case FormatBrief:
+		return strings.TrimSpace(formatBrief(summary))
+	default:
+		if summary.Text != "" {
+			return strings.TrimSpace(summary.Text)
+		}
+		return strings.TrimSpace(formatBrief(summary))
+	}
+}
+
 func buildHandoffSummary(summary *SessionSummary) *handoff.Handoff {
 	h := handoff.New(summary.Session)
 
@@ -1014,9 +1056,75 @@ func truncateAtRuneBoundary(s string, maxBytes int) string {
 	return util.SafeSlice(s, maxBytes)
 }
 
-
-
 // yamlMarshal is a small wrapper to avoid leaking yaml dependency in callers.
 func yamlMarshal(h *handoff.Handoff) ([]byte, error) {
 	return yaml.Marshal(h)
+}
+
+// getGitFileChanges retrieves file changes from git working directory.
+// Returns modified, untracked, and deleted files.
+func getGitFileChanges(projectDir string) []FileChange {
+	var changes []FileChange
+
+	// Get modified files from git diff
+	cmd := exec.Command("git", "diff", "--name-only", "HEAD")
+	cmd.Dir = projectDir
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err == nil {
+		for _, path := range parseLines(out.String()) {
+			if path != "" {
+				changes = append(changes, FileChange{
+					Path:   path,
+					Action: FileActionModified,
+				})
+			}
+		}
+	}
+
+	// Get untracked files
+	cmd = exec.Command("git", "ls-files", "--others", "--exclude-standard")
+	cmd.Dir = projectDir
+	out.Reset()
+	cmd.Stdout = &out
+	if err := cmd.Run(); err == nil {
+		for _, path := range parseLines(out.String()) {
+			if path != "" {
+				changes = append(changes, FileChange{
+					Path:   path,
+					Action: FileActionCreated,
+				})
+			}
+		}
+	}
+
+	// Get deleted files from git status
+	cmd = exec.Command("git", "diff", "--name-only", "--diff-filter=D", "HEAD")
+	cmd.Dir = projectDir
+	out.Reset()
+	cmd.Stdout = &out
+	if err := cmd.Run(); err == nil {
+		for _, path := range parseLines(out.String()) {
+			if path != "" {
+				changes = append(changes, FileChange{
+					Path:   path,
+					Action: FileActionDeleted,
+				})
+			}
+		}
+	}
+
+	return changes
+}
+
+// parseLines splits output by newlines and filters empty lines.
+func parseLines(s string) []string {
+	var lines []string
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }

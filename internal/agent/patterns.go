@@ -201,6 +201,99 @@ var (
 	gmiHeaderPattern = regexp.MustCompile(`(?i)(gemini.*preview|gemini-\d|google\s+ai)`)
 )
 
+// Cursor (cursor) patterns.
+var (
+	cursorRateLimitPatterns = []string{
+		"rate limit",
+		"too many requests",
+		"quota exceeded",
+	}
+
+	cursorWorkingPatterns = []string{
+		"```",
+		"writing ",
+		"reading ",
+		"searching ",
+		"analyzing ",
+		"generating ",
+	}
+
+	cursorIdlePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`>\s*$`),
+		regexp.MustCompile(`cursor>\s*$`),
+	}
+
+	cursorErrorPatterns = []string{
+		"error:",
+		"failed:",
+		"exception:",
+	}
+
+	cursorHeaderPattern = regexp.MustCompile(`(?i)(cursor|cursor\s+ai)`)
+)
+
+// Windsurf (windsurf) patterns.
+var (
+	windsurfRateLimitPatterns = []string{
+		"rate limit",
+		"too many requests",
+		"quota exceeded",
+	}
+
+	windsurfWorkingPatterns = []string{
+		"```",
+		"writing ",
+		"reading ",
+		"searching ",
+		"analyzing ",
+		"generating ",
+	}
+
+	windsurfIdlePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`>\s*$`),
+		regexp.MustCompile(`windsurf>\s*$`),
+	}
+
+	windsurfErrorPatterns = []string{
+		"error:",
+		"failed:",
+		"exception:",
+	}
+
+	windsurfHeaderPattern = regexp.MustCompile(`(?i)(windsurf|windsurf\s+ide)`)
+)
+
+// Aider (aider) patterns.
+var (
+	aiderRateLimitPatterns = []string{
+		"rate limit",
+		"too many requests",
+		"quota exceeded",
+	}
+
+	aiderWorkingPatterns = []string{
+		"```",
+		"applied edit",
+		"committing",
+		"repo-map",
+		"analyzing",
+		"searching",
+	}
+
+	aiderIdlePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`>\s*$`),
+		regexp.MustCompile(`aider>\s*$`),
+	}
+
+	aiderErrorPatterns = []string{
+		"error:",
+		"failed:",
+		"exception:",
+	}
+
+	aiderHeaderPattern = regexp.MustCompile(`(?i)(aider|aider\s+chat)`)
+)
+
 // matchAny returns true if text contains any of the patterns (case-insensitive).
 func matchAny(text string, patterns []string) bool {
 	textLower := strings.ToLower(text)
@@ -329,6 +422,30 @@ func GetPatternSet(agentType AgentType) *PatternSet {
 			ErrorPatterns:     gmiErrorPatterns,
 			MemoryPattern:     gmiMemoryPattern,
 			HeaderPattern:     gmiHeaderPattern,
+		}
+	case AgentTypeCursor:
+		return &PatternSet{
+			RateLimitPatterns: cursorRateLimitPatterns,
+			WorkingPatterns:   cursorWorkingPatterns,
+			IdlePatterns:      cursorIdlePatterns,
+			ErrorPatterns:     cursorErrorPatterns,
+			HeaderPattern:     cursorHeaderPattern,
+		}
+	case AgentTypeWindsurf:
+		return &PatternSet{
+			RateLimitPatterns: windsurfRateLimitPatterns,
+			WorkingPatterns:   windsurfWorkingPatterns,
+			IdlePatterns:      windsurfIdlePatterns,
+			ErrorPatterns:     windsurfErrorPatterns,
+			HeaderPattern:     windsurfHeaderPattern,
+		}
+	case AgentTypeAider:
+		return &PatternSet{
+			RateLimitPatterns: aiderRateLimitPatterns,
+			WorkingPatterns:   aiderWorkingPatterns,
+			IdlePatterns:      aiderIdlePatterns,
+			ErrorPatterns:     aiderErrorPatterns,
+			HeaderPattern:     aiderHeaderPattern,
 		}
 	default:
 		return &PatternSet{} // Empty pattern set for unknown types

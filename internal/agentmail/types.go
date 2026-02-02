@@ -72,10 +72,14 @@ type InboxMessage struct {
 
 // ContactLink represents a contact relationship between agents.
 type ContactLink struct {
-	FromAgent string    `json:"from_agent"`
-	ToAgent   string    `json:"to_agent"`
-	Approved  bool      `json:"approved"`
-	ExpiresTS time.Time `json:"expires_ts"`
+	FromAgent string     `json:"from_agent,omitempty"`
+	ToAgent   string     `json:"to_agent,omitempty"`
+	To        string     `json:"to,omitempty"`
+	Status    string     `json:"status,omitempty"`
+	Reason    string     `json:"reason,omitempty"`
+	Approved  bool       `json:"approved,omitempty"`
+	UpdatedTS *time.Time `json:"updated_ts,omitempty"`
+	ExpiresTS *time.Time `json:"expires_ts,omitempty"`
 }
 
 // ThreadSummary contains summary information for a message thread.
@@ -264,6 +268,64 @@ type ContactHandshakeResult struct {
 	ContactStatus string       `json:"contact_status"` // "approved", "pending", "denied"
 	Link          *ContactLink `json:"link,omitempty"`
 	WelcomeMsg    *Message     `json:"welcome_message,omitempty"`
+}
+
+// RequestContactOptions contains options for requesting contact with an agent.
+type RequestContactOptions struct {
+	ProjectKey string
+	FromAgent  string
+	ToAgent    string
+	ToProject  string
+	Reason     string
+	TTLSeconds int
+}
+
+// RespondContactOptions contains options for responding to a contact request.
+type RespondContactOptions struct {
+	ProjectKey string
+	ToAgent    string
+	FromAgent  string
+	Accept     bool
+	TTLSeconds int
+}
+
+// SummarizeThreadOptions contains options for summarizing a thread.
+type SummarizeThreadOptions struct {
+	ProjectKey      string
+	ThreadID        string
+	IncludeExamples bool
+	LLMMode         bool
+	LLMModel        string
+}
+
+// ThreadSummaryResponse contains the summarize_thread response for a single thread.
+type ThreadSummaryResponse struct {
+	ThreadID string        `json:"thread_id"`
+	Summary  ThreadSummary `json:"summary"`
+	Examples []InboxMessage `json:"examples,omitempty"`
+}
+
+// RenewReservationsOptions contains options for renewing file reservations.
+type RenewReservationsOptions struct {
+	ProjectKey     string
+	AgentName      string
+	ExtendSeconds  int
+	ReservationIDs []int
+	Paths          []string
+}
+
+// RenewReservationsResult contains the result of renewing reservations.
+type RenewReservationsResult struct {
+	Renewed      int                 `json:"renewed"`
+	Reservations []RenewedReservation `json:"reservations"`
+}
+
+// RenewedReservation contains info about a renewed reservation.
+type RenewedReservation struct {
+	ID           int       `json:"id"`
+	PathPattern  string    `json:"path_pattern"`
+	OldExpiresTS time.Time `json:"old_expires_ts"`
+	NewExpiresTS time.Time `json:"new_expires_ts"`
 }
 
 // ForceReleaseOptions contains options for forcibly releasing a stale reservation.

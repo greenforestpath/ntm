@@ -53,12 +53,12 @@ const (
 // CompleteIdleThreshold is the time without activity to consider "complete".
 const CompleteIdleThreshold = 5 * time.Second
 
-// PrintWait executes the wait operation and outputs JSON.
-// Returns exit code: 0 = success, 1 = timeout, 2 = error, 3 = agent error
-func PrintWait(opts WaitOptions) int {
+// GetWait executes the wait operation and returns the response data.
+// Returns the response and exit code (0=success, 1=timeout, 2=error, 3=agent error).
+func GetWait(opts WaitOptions) (*WaitResponse, int) {
 	// Validate session exists
 	if !tmux.SessionExists(opts.Session) {
-		resp := WaitResponse{
+		return &WaitResponse{
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("session '%s' not found", opts.Session),
 				ErrCodeSessionNotFound,
@@ -66,14 +66,12 @@ func PrintWait(opts WaitOptions) int {
 			),
 			Session:   opts.Session,
 			Condition: opts.Condition,
-		}
-		outputJSON(resp)
-		return 2
+		}, 2
 	}
 
 	// Validate condition
 	if !isValidWaitCondition(opts.Condition) {
-		resp := WaitResponse{
+		return &WaitResponse{
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("invalid condition '%s'", opts.Condition),
 				ErrCodeInvalidFlag,
@@ -81,9 +79,7 @@ func PrintWait(opts WaitOptions) int {
 			),
 			Session:   opts.Session,
 			Condition: opts.Condition,
-		}
-		outputJSON(resp)
-		return 2
+		}, 2
 	}
 
 	// Set default count for --any mode
@@ -117,7 +113,7 @@ func PrintWait(opts WaitOptions) int {
 			for _, pane := range filterWaitPanes(panes, opts) {
 				pending = append(pending, pane.ID)
 			}
-			resp := WaitResponse{
+			return &WaitResponse{
 				RobotResponse: NewErrorResponse(
 					fmt.Errorf("timeout after %v", opts.Timeout),
 					ErrCodeTimeout,
@@ -127,15 +123,13 @@ func PrintWait(opts WaitOptions) int {
 				Condition:     opts.Condition,
 				WaitedSeconds: elapsed.Seconds(),
 				AgentsPending: pending,
-			}
-			outputJSON(resp)
-			return 1
+			}, 1
 		}
 
 		// Get all panes
 		panes, err := tmux.GetPanes(opts.Session)
 		if err != nil {
-			resp := WaitResponse{
+			return &WaitResponse{
 				RobotResponse: NewErrorResponse(
 					fmt.Errorf("failed to list panes: %w", err),
 					ErrCodeInternalError,
@@ -143,16 +137,14 @@ func PrintWait(opts WaitOptions) int {
 				),
 				Session:   opts.Session,
 				Condition: opts.Condition,
-			}
-			outputJSON(resp)
-			return 2
+			}, 2
 		}
 
 		// Filter panes based on options
 		filteredPanes := filterWaitPanes(panes, opts)
 
 		if len(filteredPanes) == 0 {
-			resp := WaitResponse{
+			return &WaitResponse{
 				RobotResponse: NewErrorResponse(
 					fmt.Errorf("no panes match the filter criteria"),
 					ErrCodePaneNotFound,
@@ -160,9 +152,7 @@ func PrintWait(opts WaitOptions) int {
 				),
 				Session:   opts.Session,
 				Condition: opts.Condition,
-			}
-			outputJSON(resp)
-			return 2
+			}, 2
 		}
 
 		// Update activity state for each pane
@@ -202,7 +192,7 @@ func PrintWait(opts WaitOptions) int {
 			for _, a := range activities {
 				if a.State == StateError {
 					elapsed := time.Since(startTime)
-					resp := WaitResponse{
+					return &WaitResponse{
 						RobotResponse: NewErrorResponse(
 							fmt.Errorf("agent error detected in pane '%s'", a.PaneID),
 							"AGENT_ERROR",
@@ -216,9 +206,7 @@ func PrintWait(opts WaitOptions) int {
 							State:     string(a.State),
 							AgentType: a.AgentType,
 						}},
-					}
-					outputJSON(resp)
-					return 3
+					}, 3
 				}
 			}
 		}
@@ -227,15 +215,13 @@ func PrintWait(opts WaitOptions) int {
 		met, matching, pending := checkWaitConditionMetWithTransition(activities, opts, conditions, initiallyInTarget, sawTransition)
 		if met {
 			elapsed := time.Since(startTime)
-			resp := WaitResponse{
+			return &WaitResponse{
 				RobotResponse: NewRobotResponse(true),
 				Session:       opts.Session,
 				Condition:     opts.Condition,
 				WaitedSeconds: elapsed.Seconds(),
 				Agents:        matching,
-			}
-			outputJSON(resp)
-			return 0
+			}, 0
 		}
 
 		// Store pending for potential timeout response
@@ -244,6 +230,14 @@ func PrintWait(opts WaitOptions) int {
 		// Sleep and poll again
 		time.Sleep(opts.PollInterval)
 	}
+}
+
+// PrintWait executes the wait operation and outputs JSON.
+// Returns exit code: 0 = success, 1 = timeout, 2 = error, 3 = agent error
+func PrintWait(opts WaitOptions) int {
+	resp, exitCode := GetWait(opts)
+	outputJSON(resp)
+	return exitCode
 }
 
 // isValidWaitCondition checks if the condition string is valid.

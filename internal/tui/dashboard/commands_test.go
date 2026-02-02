@@ -11,6 +11,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
@@ -98,15 +99,9 @@ func TestFetchMetricsCmd_NoPanes(t *testing.T) {
 		t.Fatalf("expected MetricsUpdateMsg, got %T", msg)
 	}
 
-	// With no panes, should have zero metrics
-	if metricsMsg.Data.TotalTokens != 0 {
-		t.Errorf("expected 0 tokens with no panes, got %d", metricsMsg.Data.TotalTokens)
-	}
-	if metricsMsg.Data.TotalCost != 0 {
-		t.Errorf("expected 0 cost with no panes, got %f", metricsMsg.Data.TotalCost)
-	}
-	if len(metricsMsg.Data.Agents) != 0 {
-		t.Errorf("expected 0 agent metrics, got %d", len(metricsMsg.Data.Agents))
+	// With no panes, metrics should be empty
+	if metricsMsg.Data.Coverage != nil || metricsMsg.Data.Redundancy != nil || metricsMsg.Data.Velocity != nil || metricsMsg.Data.Conflicts != nil {
+		t.Error("expected empty metrics data with no panes")
 	}
 }
 
@@ -125,9 +120,9 @@ func TestFetchMetricsCmd_SkipsUserPanes(t *testing.T) {
 		t.Fatalf("expected MetricsUpdateMsg, got %T", msg)
 	}
 
-	// User panes should be skipped
-	if len(metricsMsg.Data.Agents) != 0 {
-		t.Errorf("expected user panes to be skipped, got %d agents", len(metricsMsg.Data.Agents))
+	// User panes should be skipped (no metrics computed here)
+	if metricsMsg.Data.Coverage != nil || metricsMsg.Data.Redundancy != nil || metricsMsg.Data.Velocity != nil || metricsMsg.Data.Conflicts != nil {
+		t.Error("expected no metrics with user panes only")
 	}
 }
 
@@ -199,6 +194,7 @@ func TestCommandsReturnTeaCmd(t *testing.T) {
 		{"fetchHistoryCmd", func() tea.Cmd { return m.fetchHistoryCmd() }},
 		{"fetchFileChangesCmd", func() tea.Cmd { return m.fetchFileChangesCmd() }},
 		{"fetchCASSContextCmd", func() tea.Cmd { return m.fetchCASSContextCmd() }},
+		{"fetchTimelineCmd", func() tea.Cmd { return m.fetchTimelineCmd() }},
 	}
 
 	for _, tc := range tests {
@@ -241,15 +237,11 @@ func TestMessageTypes(t *testing.T) {
 	t.Run("MetricsUpdateMsg", func(t *testing.T) {
 		msg := MetricsUpdateMsg{
 			Data: panels.MetricsData{
-				TotalTokens: 1000,
-				TotalCost:   0.01,
-				Agents: []panels.AgentMetric{
-					{Name: "cc_1", Tokens: 500},
-				},
+				Coverage: &ensemble.CoverageReport{Overall: 0.5},
 			},
 		}
-		if msg.Data.TotalTokens != 1000 {
-			t.Errorf("expected 1000 tokens, got %d", msg.Data.TotalTokens)
+		if msg.Data.Coverage == nil {
+			t.Error("expected coverage report to be set")
 		}
 	})
 

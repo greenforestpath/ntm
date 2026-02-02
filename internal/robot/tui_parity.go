@@ -122,6 +122,7 @@ func GetFiles(opts FilesOptions) (*FilesOutput, error) {
 			cutoff = time.Now().Add(-d)
 		} else {
 			cutoff = time.Now().Add(-15 * time.Minute) // Default
+			opts.TimeWindow = "15m"
 		}
 	}
 

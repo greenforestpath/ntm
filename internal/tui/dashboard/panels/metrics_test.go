@@ -5,6 +5,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 )
 
 func TestNewMetricsPanel(t *testing.T) {
@@ -21,8 +25,8 @@ func TestMetricsPanelConfig(t *testing.T) {
 	if cfg.ID != "metrics" {
 		t.Errorf("expected ID 'metrics', got %q", cfg.ID)
 	}
-	if cfg.Title != "Metrics & Usage" {
-		t.Errorf("expected Title 'Metrics & Usage', got %q", cfg.Title)
+	if cfg.Title != "Metrics" {
+		t.Errorf("expected Title 'Metrics', got %q", cfg.Title)
 	}
 	if cfg.Priority != PriorityNormal {
 		t.Errorf("expected PriorityNormal, got %v", cfg.Priority)
@@ -63,26 +67,21 @@ func TestMetricsPanelFocusBlur(t *testing.T) {
 
 func TestMetricsPanelSetData(t *testing.T) {
 	panel := NewMetricsPanel()
-
-	data := MetricsData{
-		TotalTokens: 150000,
-		TotalCost:   12.50,
-		Agents: []AgentMetric{
-			{Name: "cc_1", Type: "cc", Tokens: 50000, Cost: 4.00, ContextPct: 25.0},
-			{Name: "cod_1", Type: "cod", Tokens: 100000, Cost: 8.50, ContextPct: 50.0},
-		},
-	}
+	data := sampleMetricsData()
 
 	panel.SetData(data, nil)
 
-	if panel.data.TotalTokens != 150000 {
-		t.Errorf("expected TotalTokens 150000, got %d", panel.data.TotalTokens)
+	if panel.data.Coverage == nil {
+		t.Error("expected Coverage to be set")
 	}
-	if panel.data.TotalCost != 12.50 {
-		t.Errorf("expected TotalCost 12.50, got %f", panel.data.TotalCost)
+	if panel.data.Redundancy == nil {
+		t.Error("expected Redundancy to be set")
 	}
-	if len(panel.data.Agents) != 2 {
-		t.Errorf("expected 2 agents, got %d", len(panel.data.Agents))
+	if panel.data.Velocity == nil {
+		t.Error("expected Velocity to be set")
+	}
+	if panel.data.Conflicts == nil {
+		t.Error("expected Conflicts to be set")
 	}
 }
 
@@ -94,17 +93,15 @@ func TestMetricsPanelKeybindings(t *testing.T) {
 		t.Error("expected non-empty keybindings")
 	}
 
-	// Check for expected actions
 	actions := make(map[string]bool)
 	for _, b := range bindings {
 		actions[b.Action] = true
 	}
 
-	if !actions["refresh"] {
-		t.Error("expected 'refresh' action in keybindings")
-	}
-	if !actions["copy"] {
-		t.Error("expected 'copy' action in keybindings")
+	for _, action := range []string{"toggle_coverage", "toggle_redundancy", "toggle_velocity", "toggle_conflicts"} {
+		if !actions[action] {
+			t.Errorf("expected action %q in keybindings", action)
+		}
 	}
 }
 
@@ -116,16 +113,15 @@ func TestMetricsPanelInit(t *testing.T) {
 	}
 }
 
-func TestMetricsPanelUpdate(t *testing.T) {
+func TestMetricsPanelUpdate_TogglesCoverage(t *testing.T) {
 	panel := NewMetricsPanel()
+	panel.Focus()
 
-	newModel, cmd := panel.Update(nil)
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}}
+	panel.Update(msg)
 
-	if newModel != panel {
-		t.Error("expected Update to return same model")
-	}
-	if cmd != nil {
-		t.Error("expected Update to return nil cmd")
+	if !panel.expanded["coverage"] {
+		t.Error("expected coverage section to be expanded after toggle")
 	}
 }
 
@@ -135,54 +131,50 @@ func TestMetricsPanelViewContainsTitle(t *testing.T) {
 
 	view := panel.View()
 
-	if !strings.Contains(view, "Metrics & Usage") {
+	if !strings.Contains(view, "Metrics") {
 		t.Error("expected view to contain title")
 	}
 }
 
-func TestMetricsPanelViewShowsStats(t *testing.T) {
+func TestMetricsPanelViewShowsNA(t *testing.T) {
 	panel := NewMetricsPanel()
 	panel.SetSize(80, 20)
 
-	data := MetricsData{
-		TotalTokens: 100000,
-		TotalCost:   10.00,
-		Agents:      []AgentMetric{},
-	}
-	panel.SetData(data, nil)
-
+	panel.SetData(MetricsData{}, nil)
 	view := panel.View()
 
-	if !strings.Contains(view, "100000 tokens") {
-		t.Error("expected view to contain token count")
+	if !strings.Contains(view, "Coverage: N/A") {
+		t.Error("expected view to show Coverage N/A")
 	}
-	if !strings.Contains(view, "$10.00") {
-		t.Error("expected view to contain cost")
+	if !strings.Contains(view, "Redundancy: N/A") {
+		t.Error("expected view to show Redundancy N/A")
+	}
+	if !strings.Contains(view, "Velocity: N/A") {
+		t.Error("expected view to show Velocity N/A")
+	}
+	if !strings.Contains(view, "Conflicts: N/A") {
+		t.Error("expected view to show Conflicts N/A")
 	}
 }
 
-func TestMetricsPanelViewShowsAgents(t *testing.T) {
+func TestMetricsPanelViewRendersMetrics(t *testing.T) {
 	panel := NewMetricsPanel()
-	panel.SetSize(80, 30)
+	panel.SetSize(80, 24)
 
-	data := MetricsData{
-		TotalTokens: 75000,
-		TotalCost:   7.50,
-		Agents: []AgentMetric{
-			{Name: "cc_1", Type: "cc", Tokens: 50000, Cost: 5.00, ContextPct: 33.0},
-			{Name: "cod_1", Type: "cod", Tokens: 25000, Cost: 2.50, ContextPct: 17.0},
-		},
-	}
-	panel.SetData(data, nil)
-
+	panel.SetData(sampleMetricsData(), nil)
 	view := panel.View()
 
-	// Should contain agent names
-	if !strings.Contains(view, "cc_1") {
-		t.Error("expected view to contain agent name 'cc_1'")
+	if !strings.Contains(view, "Coverage: 50%") {
+		t.Error("expected view to include coverage summary")
 	}
-	if !strings.Contains(view, "cod_1") {
-		t.Error("expected view to contain agent name 'cod_1'")
+	if !strings.Contains(view, "Redundancy: 0.34") {
+		t.Error("expected view to include redundancy summary")
+	}
+	if !strings.Contains(view, "Velocity: 2.30 findings/1k tokens") {
+		t.Error("expected view to include velocity summary")
+	}
+	if !strings.Contains(view, "Conflicts: 3 detected") {
+		t.Error("expected view to include conflict summary")
 	}
 }
 
@@ -191,174 +183,65 @@ func TestMetricsPanelViewShowsErrorState(t *testing.T) {
 	panel.SetSize(80, 20)
 
 	panel.SetData(MetricsData{}, errors.New("metrics backend down"))
-
 	view := panel.View()
 
 	if !strings.Contains(view, "Error") {
 		t.Error("expected view to include error badge")
 	}
 	if !strings.Contains(view, "metrics backend down") {
-		t.Error("expected view to include error message")
-	}
-	if !strings.Contains(view, "Press r") {
-		t.Error("expected view to include retry hint")
+		t.Error("expected view to contain error message")
 	}
 }
 
-func TestMetricsPanelViewSessionTotal(t *testing.T) {
-	panel := NewMetricsPanel()
-	panel.SetSize(80, 20)
-
-	// Provide some data so it renders the stats
-	data := MetricsData{
-		TotalTokens: 100,
-		TotalCost:   0.01,
-		Agents:      []AgentMetric{{Name: "agent", Tokens: 100}},
-	}
-	panel.SetData(data, nil)
-
-	view := panel.View()
-
-	if !strings.Contains(view, "Session Total") {
-		t.Error("expected view to contain 'Session Total'")
-	}
-}
-
-func TestAgentMetricStruct(t *testing.T) {
-	metric := AgentMetric{
-		Name:       "test_agent",
-		Type:       "cc",
-		Tokens:     50000,
-		Cost:       5.00,
-		ContextPct: 25.5,
-	}
-
-	if metric.Name != "test_agent" {
-		t.Errorf("expected Name 'test_agent', got %q", metric.Name)
-	}
-	if metric.Type != "cc" {
-		t.Errorf("expected Type 'cc', got %q", metric.Type)
-	}
-	if metric.Tokens != 50000 {
-		t.Errorf("expected Tokens 50000, got %d", metric.Tokens)
-	}
-	if metric.Cost != 5.00 {
-		t.Errorf("expected Cost 5.00, got %f", metric.Cost)
-	}
-	if metric.ContextPct != 25.5 {
-		t.Errorf("expected ContextPct 25.5, got %f", metric.ContextPct)
-	}
-}
-
-func TestMetricsDataStruct(t *testing.T) {
-	data := MetricsData{
-		TotalTokens: 100000,
-		TotalCost:   10.00,
-		Agents: []AgentMetric{
-			{Name: "agent1"},
-		},
-	}
-
-	if data.TotalTokens != 100000 {
-		t.Errorf("expected TotalTokens 100000, got %d", data.TotalTokens)
-	}
-	if data.TotalCost != 10.00 {
-		t.Errorf("expected TotalCost 10.00, got %f", data.TotalCost)
-	}
-	if len(data.Agents) != 1 {
-		t.Errorf("expected 1 agent, got %d", len(data.Agents))
-	}
-}
-
-func TestMetricsPanelViewShowsRoutingScore(t *testing.T) {
-	panel := NewMetricsPanel()
-	panel.SetSize(80, 20)
-
-	// Provide data with routing score
-	data := MetricsData{
-		TotalTokens: 100,
-		TotalCost:   0.01,
-		Agents: []AgentMetric{
-			{
-				Name:         "claude-1",
-				Type:         "cc",
-				Tokens:       100,
-				ContextPct:   50.0,
-				RoutingScore: 85.0,
-				State:        "waiting",
+func sampleMetricsData() MetricsData {
+	coverage := &ensemble.CoverageReport{
+		Overall: 0.5,
+		PerCategory: map[ensemble.ModeCategory]ensemble.CategoryCoverage{
+			ensemble.CategoryFormal: {
+				Category:   ensemble.CategoryFormal,
+				TotalModes: 2,
+				UsedModes:  []string{"deductive"},
+				Coverage:   0.5,
+			},
+			ensemble.CategoryAmpliative: {
+				Category:   ensemble.CategoryAmpliative,
+				TotalModes: 2,
+				UsedModes:  []string{"inductive"},
+				Coverage:   0.5,
 			},
 		},
 	}
-	panel.SetData(data, nil)
 
-	view := panel.View()
-
-	// Routing score should be visible
-	if !strings.Contains(view, "85") {
-		t.Error("expected view to contain routing score '85'")
-	}
-	// State should be visible
-	if !strings.Contains(view, "waiting") {
-		t.Error("expected view to contain state 'waiting'")
-	}
-}
-
-func TestMetricsPanelViewShowsRecommendedIndicator(t *testing.T) {
-	panel := NewMetricsPanel()
-	panel.SetSize(80, 20)
-
-	// Provide data with recommended agent
-	data := MetricsData{
-		TotalTokens: 200,
-		TotalCost:   0.02,
-		Agents: []AgentMetric{
-			{
-				Name:          "claude-1",
-				Type:          "cc",
-				Tokens:        100,
-				ContextPct:    30.0,
-				RoutingScore:  90.0,
-				IsRecommended: true,
-			},
-			{
-				Name:          "codex-1",
-				Type:          "cod",
-				Tokens:        100,
-				ContextPct:    40.0,
-				RoutingScore:  70.0,
-				IsRecommended: false,
-			},
+	redundancy := &ensemble.RedundancyAnalysis{
+		OverallScore: 0.34,
+		PairwiseScores: []ensemble.PairSimilarity{
+			{ModeA: "F1", ModeB: "E2", Similarity: 0.23},
+			{ModeA: "K1", ModeB: "H2", Similarity: 0.67},
 		},
 	}
-	panel.SetData(data, nil)
 
-	view := panel.View()
-
-	// Recommended indicator (star) should be visible
-	if !strings.Contains(view, "★") {
-		t.Error("expected view to contain recommended indicator '★'")
-	}
-}
-
-func TestAgentMetricRoutingFields(t *testing.T) {
-	metric := AgentMetric{
-		Name:          "test_agent",
-		Type:          "cc",
-		Tokens:        50000,
-		Cost:          5.00,
-		ContextPct:    25.5,
-		RoutingScore:  75.0,
-		IsRecommended: true,
-		State:         "generating",
+	velocity := &ensemble.VelocityReport{
+		Overall: 2.3,
+		PerMode: []ensemble.VelocityEntry{
+			{ModeID: "F1", ModeName: "F1", TokensSpent: 1000, UniqueFindings: 3, Velocity: 3.1},
+			{ModeID: "K1", ModeName: "K1", TokensSpent: 1000, UniqueFindings: 1, Velocity: 1.2},
+		},
+		HighPerformers: []string{"F1"},
+		LowPerformers:  []string{"K1"},
+		Suggestions:    []string{"K1 underperforming, consider early stop"},
 	}
 
-	if metric.RoutingScore != 75.0 {
-		t.Errorf("expected RoutingScore 75.0, got %f", metric.RoutingScore)
+	conflicts := &ensemble.ConflictDensity{
+		TotalConflicts:      3,
+		ResolvedConflicts:   1,
+		UnresolvedConflicts: 2,
+		HighConflictPairs:   []string{"F1 <-> E2"},
 	}
-	if !metric.IsRecommended {
-		t.Error("expected IsRecommended true")
-	}
-	if metric.State != "generating" {
-		t.Errorf("expected State 'generating', got %q", metric.State)
+
+	return MetricsData{
+		Coverage:   coverage,
+		Redundancy: redundancy,
+		Velocity:   velocity,
+		Conflicts:  conflicts,
 	}
 }

@@ -36,9 +36,10 @@ type EnsembleStopResult struct {
 	Message     string `json:"message,omitempty"`
 }
 
-// PrintEnsembleStop outputs ensemble stop result for a session.
-func PrintEnsembleStop(session string, opts EnsembleStopOptions) error {
-	output := EnsembleStopOutput{
+// GetEnsembleStop stops an ensemble and returns the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetEnsembleStop(session string, opts EnsembleStopOptions) (*EnsembleStopOutput, error) {
+	output := &EnsembleStopOutput{
 		RobotResponse: NewRobotResponse(true),
 		Result: EnsembleStopResult{
 			Session: session,
@@ -51,7 +52,7 @@ func PrintEnsembleStop(session string, opts EnsembleStopOptions) error {
 			ErrCodeInvalidFlag,
 			"Provide a session name: ntm --robot-ensemble-stop=myproject",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 
 	if !tmux.SessionExists(session) {
@@ -60,7 +61,7 @@ func PrintEnsembleStop(session string, opts EnsembleStopOptions) error {
 			ErrCodeSessionNotFound,
 			"Use 'ntm list' to see available sessions",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 
 	// Load ensemble session state
@@ -72,14 +73,14 @@ func PrintEnsembleStop(session string, opts EnsembleStopOptions) error {
 				ErrCodeEnsembleNotFound,
 				"No ensemble running in this session",
 			)
-			return outputJSON(output)
+			return output, nil
 		}
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("failed to load ensemble state: %w", err),
 			ErrCodeInternalError,
 			"Check state store availability",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 
 	output.Result.PrevStatus = state.Status.String()
@@ -91,7 +92,7 @@ func PrintEnsembleStop(session string, opts EnsembleStopOptions) error {
 		output.AgentHints = &AgentHints{
 			Summary: output.Result.Message,
 		}
-		return outputJSON(output)
+		return output, nil
 	}
 
 	// Collect partial outputs if requested
@@ -125,7 +126,7 @@ func PrintEnsembleStop(session string, opts EnsembleStopOptions) error {
 			"Session may require manual cleanup",
 		)
 		output.Result.FinalStatus = state.Status.String()
-		return outputJSON(output)
+		return output, nil
 	}
 
 	// Update ensemble state to stopped
@@ -155,5 +156,14 @@ func PrintEnsembleStop(session string, opts EnsembleStopOptions) error {
 		},
 	}
 
+	return output, nil
+}
+
+// PrintEnsembleStop outputs ensemble stop result for a session.
+func PrintEnsembleStop(session string, opts EnsembleStopOptions) error {
+	output, err := GetEnsembleStop(session, opts)
+	if err != nil {
+		return err
+	}
 	return outputJSON(output)
 }

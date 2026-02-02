@@ -13,6 +13,7 @@ func TestRotateCmdValidation(t *testing.T) {
 		args                     []string
 		flags                    map[string]string
 		wantError                string
+		wantErrorAny             []string
 		skipIfAutoSelectPossible bool // Skip if exactly one session is running (auto-select applies)
 	}{
 		{
@@ -22,9 +23,12 @@ func TestRotateCmdValidation(t *testing.T) {
 			skipIfAutoSelectPossible: true, // Session auto-selected when only one exists
 		},
 		{
-			name:      "missing pane index",
-			args:      []string{"mysession"},
-			wantError: "pane index required",
+			name: "missing pane index",
+			args: []string{"mysession"},
+			wantErrorAny: []string{
+				"pane index required",
+				"session", // session may not exist in shared tmux environment
+			},
 		},
 		{
 			name: "dry run requires valid session/pane",
@@ -34,7 +38,10 @@ func TestRotateCmdValidation(t *testing.T) {
 				"dry-run": "true",
 			},
 			// Dry run still needs to look up pane info, which fails without tmux
-			wantError: "getting panes",
+			wantErrorAny: []string{
+				"getting panes",
+				"session", // session may not exist in shared tmux environment
+			},
 		},
 	}
 
@@ -78,11 +85,19 @@ func TestRotateCmdValidation(t *testing.T) {
 			// Execute
 			err := cmd.Execute()
 
-			if tt.wantError != "" {
+			if tt.wantError != "" || len(tt.wantErrorAny) > 0 {
 				if err == nil {
-					t.Errorf("expected error containing %q, got nil", tt.wantError)
-				} else if len(tt.wantError) > 0 && err.Error() != "" && !strings.Contains(err.Error(), tt.wantError) {
-					t.Errorf("expected error containing %q, got %q", tt.wantError, err.Error())
+					if tt.wantError != "" {
+						t.Errorf("expected error containing %q, got nil", tt.wantError)
+					} else {
+						t.Errorf("expected error containing one of %q, got nil", tt.wantErrorAny)
+					}
+				} else if !errorMatchesAny(err.Error(), append(tt.wantErrorAny, tt.wantError)) {
+					if tt.wantError != "" {
+						t.Errorf("expected error containing %q, got %q", tt.wantError, err.Error())
+					} else {
+						t.Errorf("expected error containing one of %q, got %q", tt.wantErrorAny, err.Error())
+					}
 				}
 			} else {
 				if err != nil {
@@ -91,4 +106,16 @@ func TestRotateCmdValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func errorMatchesAny(err string, matches []string) bool {
+	for _, match := range matches {
+		if match == "" {
+			continue
+		}
+		if strings.Contains(err, match) {
+			return true
+		}
+	}
+	return false
 }

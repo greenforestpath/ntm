@@ -103,7 +103,6 @@ func sanitizeName(name string) string {
 		"|", "-",
 		"%", "_",
 		" ", "_",
-		".", "_", // Prevent dotfiles and directory traversal
 	)
 	safe := replacer.Replace(strings.TrimSpace(name))
 

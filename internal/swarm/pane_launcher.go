@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -32,27 +33,32 @@ type PaneLauncher struct {
 
 	// Logger for structured logging.
 	Logger *slog.Logger
+
+	// RateLimitTracker enables adaptive throttling for Codex.
+	RateLimitTracker *ratelimit.RateLimitTracker
 }
 
 // NewPaneLauncher creates a new PaneLauncher with default settings.
 func NewPaneLauncher() *PaneLauncher {
 	return &PaneLauncher{
-		TmuxClient:    nil,
-		CmdBuilder:    nil,
-		CDDelay:       100 * time.Millisecond,
-		ValidatePaths: true,
-		Logger:        slog.Default(),
+		TmuxClient:       nil,
+		CmdBuilder:       nil,
+		CDDelay:          100 * time.Millisecond,
+		ValidatePaths:    true,
+		Logger:           slog.Default(),
+		RateLimitTracker: nil,
 	}
 }
 
 // NewPaneLauncherWithClient creates a PaneLauncher with a custom tmux client.
 func NewPaneLauncherWithClient(client *tmux.Client) *PaneLauncher {
 	return &PaneLauncher{
-		TmuxClient:    client,
-		CmdBuilder:    nil,
-		CDDelay:       100 * time.Millisecond,
-		ValidatePaths: true,
-		Logger:        slog.Default(),
+		TmuxClient:       client,
+		CmdBuilder:       nil,
+		CDDelay:          100 * time.Millisecond,
+		ValidatePaths:    true,
+		Logger:           slog.Default(),
+		RateLimitTracker: nil,
 	}
 }
 
@@ -77,6 +83,12 @@ func (pl *PaneLauncher) WithValidatePaths(validate bool) *PaneLauncher {
 // WithLogger sets a custom logger.
 func (pl *PaneLauncher) WithLogger(logger *slog.Logger) *PaneLauncher {
 	pl.Logger = logger
+	return pl
+}
+
+// WithRateLimitTracker enables adaptive throttling based on rate limit history.
+func (pl *PaneLauncher) WithRateLimitTracker(tracker *ratelimit.RateLimitTracker) *PaneLauncher {
+	pl.RateLimitTracker = tracker
 	return pl
 }
 
@@ -215,6 +227,16 @@ func (pl *PaneLauncher) LaunchAgentInPane(ctx context.Context, sessionName strin
 		return result, fmt.Errorf("launch agent: %w", err)
 	}
 
+	if pl.RateLimitTracker != nil && isCodexProvider(paneSpec.AgentType) {
+		pl.RateLimitTracker.RecordSuccess("openai")
+		saveDir := paneSpec.Project
+		if err := pl.RateLimitTracker.SaveToDir(saveDir); err != nil {
+			pl.logger().Warn("[PaneLauncher] tracker_persist_failed",
+				"provider", "openai",
+				"error", err)
+		}
+	}
+
 	result.Success = true
 	result.Duration = time.Since(start)
 
@@ -247,6 +269,7 @@ func (pl *PaneLauncher) LaunchSession(ctx context.Context, sessionSpec SessionSp
 		TotalPanes: len(sessionSpec.Panes),
 		Results:    make([]PaneLaunchResult, 0, len(sessionSpec.Panes)),
 	}
+	openAICooldownWaited := false
 
 	pl.logger().Info("[PaneLauncher] session_launch_start",
 		"session", sessionSpec.Name,
@@ -260,6 +283,22 @@ func (pl *PaneLauncher) LaunchSession(ctx context.Context, sessionSpec SessionSp
 				result.Duration = time.Since(start)
 				return result, ctx.Err()
 			case <-time.After(staggerDelay):
+			}
+		}
+
+		if pl.RateLimitTracker != nil && isCodexProvider(paneSpec.AgentType) && !openAICooldownWaited {
+			cooldown := pl.RateLimitTracker.CooldownRemaining("openai")
+			openAICooldownWaited = true
+			if cooldown > 0 {
+				pl.logger().Info("[PaneLauncher] codex_cooldown_wait",
+					"session", sessionSpec.Name,
+					"cooldown", ratelimit.FormatDelay(cooldown))
+				select {
+				case <-ctx.Done():
+					result.Duration = time.Since(start)
+					return result, ctx.Err()
+				case <-time.After(cooldown):
+				}
 			}
 		}
 
@@ -355,4 +394,13 @@ func ValidateProjectPath(path string) error {
 	}
 
 	return nil
+}
+
+func isCodexProvider(agentType string) bool {
+	switch agentType {
+	case "cod", "codex", "openai", "gpt":
+		return true
+	default:
+		return false
+	}
 }

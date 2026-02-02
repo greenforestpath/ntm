@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
@@ -114,12 +115,15 @@ Primary usage:
 
 	bindEnsembleSharedFlags(cmd, &opts)
 	cmd.AddCommand(newEnsembleSpawnCmd())
+	cmd.AddCommand(newEnsemblePresetsCmd())
 	cmd.AddCommand(newEnsembleStatusCmd())
 	cmd.AddCommand(newEnsembleStopCmd())
 	cmd.AddCommand(newEnsembleSuggestCmd())
+	cmd.AddCommand(newEnsembleEstimateCmd())
 	cmd.AddCommand(newEnsembleSynthesizeCmd())
 	cmd.AddCommand(newEnsembleExportFindingsCmd())
 	cmd.AddCommand(newEnsembleProvenanceCmd())
+	cmd.AddCommand(newEnsembleCompareCmd())
 	cmd.AddCommand(newEnsembleResumeCmd())
 	cmd.AddCommand(newEnsembleRerunModeCmd())
 	cmd.AddCommand(newEnsembleCleanCheckpointsCmd())
@@ -741,6 +745,9 @@ type synthesizeOptions struct {
 	Force    bool
 	Verbose  bool
 	Explain  bool
+	Stream   bool
+	RunID    string
+	Resume   bool
 }
 
 func newEnsembleSynthesizeCmd() *cobra.Command {
@@ -760,6 +767,10 @@ Output formats:
   --format=markdown (default) - Human-readable report
   --format=json               - Machine-readable JSON
   --format=yaml               - YAML format
+
+Streaming:
+  --stream                    - Emit incremental chunks (use --format=json or --json for JSONL)
+  --resume --run-id=<id>      - Resume a streamed run from the last chunk index
 
 Use --force to synthesize even if some agents haven't completed.`,
 		Args: cobra.MaximumNArgs(1),
@@ -784,6 +795,9 @@ Use --force to synthesize even if some agents haven't completed.`,
 	cmd.Flags().BoolVar(&opts.Force, "force", false, "Synthesize even if some agents incomplete")
 	cmd.Flags().BoolVarP(&opts.Verbose, "verbose", "v", false, "Include verbose details in output")
 	cmd.Flags().BoolVar(&opts.Explain, "explain", false, "Include detailed reasoning for each conclusion")
+	cmd.Flags().BoolVar(&opts.Stream, "stream", false, "Stream synthesis output incrementally")
+	cmd.Flags().StringVar(&opts.RunID, "run-id", "", "Checkpoint run ID for streaming resume")
+	cmd.Flags().BoolVar(&opts.Resume, "resume", false, "Resume streaming from checkpoint run ID")
 	cmd.ValidArgsFunction = completeSessionArgs
 	return cmd
 }
@@ -812,6 +826,14 @@ func runEnsembleSynthesize(w io.Writer, session string, opts synthesizeOptions) 
 	}
 	if ready == 0 && !opts.Force {
 		return fmt.Errorf("no completed outputs to synthesize")
+	}
+
+	format := strings.ToLower(strings.TrimSpace(opts.Format))
+	if format == "" {
+		format = "markdown"
+	}
+	if jsonOutput {
+		format = "json"
 	}
 
 	slog.Default().Info("ensemble synthesis starting",
@@ -867,6 +889,10 @@ func runEnsembleSynthesize(w io.Writer, session string, opts synthesizeOptions) 
 		return fmt.Errorf("build synthesis input: %w", err)
 	}
 
+	if opts.Stream {
+		return streamEnsembleSynthesis(w, session, state, collector, synth, input, format, opts)
+	}
+
 	// Run synthesis
 	result, err := synth.Synthesize(input)
 	if err != nil {
@@ -883,7 +909,7 @@ func runEnsembleSynthesize(w io.Writer, session string, opts synthesizeOptions) 
 
 	// Format output
 	outputFormat := ensemble.FormatMarkdown
-	switch strings.ToLower(opts.Format) {
+	switch format {
 	case "json":
 		outputFormat = ensemble.FormatJSON
 	case "yaml", "yml":
@@ -911,6 +937,263 @@ func runEnsembleSynthesize(w io.Writer, session string, opts synthesizeOptions) 
 	}
 
 	return nil
+}
+
+func streamEnsembleSynthesis(
+	w io.Writer,
+	session string,
+	state *ensemble.EnsembleSession,
+	collector *ensemble.OutputCollector,
+	synth *ensemble.Synthesizer,
+	input *ensemble.SynthesisInput,
+	format string,
+	opts synthesizeOptions,
+) error {
+	if opts.Resume && opts.RunID == "" {
+		return fmt.Errorf("--resume requires --run-id")
+	}
+
+	store, err := ensemble.NewCheckpointStore("")
+	if err != nil {
+		return fmt.Errorf("open checkpoint store: %w", err)
+	}
+
+	runID := strings.TrimSpace(opts.RunID)
+	resumeIndex := 0
+	if opts.Resume {
+		if !store.RunExists(runID) {
+			return fmt.Errorf("checkpoint run '%s' not found", runID)
+		}
+		if _, err := store.LoadMetadata(runID); err != nil {
+			return fmt.Errorf("load checkpoint metadata: %w", err)
+		}
+		checkpoint, err := store.LoadSynthesisCheckpoint(runID)
+		if err != nil {
+			return fmt.Errorf("load synthesis checkpoint: %w", err)
+		}
+		resumeIndex = checkpoint.LastIndex
+	} else {
+		if runID == "" {
+			runID = buildSynthesisRunID(session)
+		}
+		if store.RunExists(runID) {
+			return fmt.Errorf("checkpoint run '%s' already exists (use --resume)", runID)
+		}
+		meta := buildSynthesisCheckpointMetadata(state, collector, runID)
+		if err := store.SaveMetadata(meta); err != nil {
+			return fmt.Errorf("save checkpoint metadata: %w", err)
+		}
+	}
+
+	var out io.Writer = w
+	if opts.Output != "" {
+		f, err := os.Create(opts.Output)
+		if err != nil {
+			return fmt.Errorf("create output file: %w", err)
+		}
+		defer f.Close()
+		out = f
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	startedAt := time.Now()
+	var firstChunkAt time.Time
+	chunkCount := 0
+
+	slog.Default().Info("ensemble synthesis streaming",
+		"session", session,
+		"run_id", runID,
+		"resume", opts.Resume,
+		"start_index", resumeIndex,
+		"format", format,
+	)
+
+	chunkCh, errCh := synth.StreamSynthesize(ctx, input)
+	lastIndex := resumeIndex
+
+	for chunk := range chunkCh {
+		var ok bool
+		chunk, ok = applyResumeIndex(chunk, resumeIndex)
+		if !ok {
+			continue
+		}
+		if firstChunkAt.IsZero() {
+			firstChunkAt = time.Now()
+		}
+		lastIndex = chunk.Index
+		chunkCount++
+		if err := writeSynthesisChunk(out, chunk, format); err != nil {
+			stop()
+			return err
+		}
+	}
+
+	var streamErr error
+	if errCh != nil {
+		if err, ok := <-errCh; ok && err != nil {
+			streamErr = err
+		}
+	}
+	if ctx.Err() != nil {
+		streamErr = ctx.Err()
+	}
+
+	timeToFirstChunk := time.Duration(0)
+	if !firstChunkAt.IsZero() {
+		timeToFirstChunk = firstChunkAt.Sub(startedAt)
+	}
+	streamDuration := time.Since(startedAt)
+
+	if streamErr != nil {
+		cancelReason := "error"
+		if errors.Is(streamErr, context.Canceled) {
+			cancelReason = "canceled"
+		} else if errors.Is(streamErr, context.DeadlineExceeded) {
+			cancelReason = "timeout"
+		}
+		slog.Default().Warn("ensemble synthesis streaming interrupted",
+			"session", session,
+			"run_id", runID,
+			"chunk_count", chunkCount,
+			"time_to_first_chunk", timeToFirstChunk,
+			"duration", streamDuration,
+			"reason", cancelReason,
+			"error", streamErr,
+		)
+		saveErr := store.SaveSynthesisCheckpoint(runID, ensemble.SynthesisCheckpoint{
+			RunID:       runID,
+			SessionName: session,
+			LastIndex:   lastIndex,
+			Error:       streamErr.Error(),
+		})
+		if saveErr != nil {
+			slog.Default().Warn("failed to save synthesis checkpoint",
+				"run_id", runID,
+				"error", saveErr,
+			)
+		}
+		printSynthesisResumeHint(session, runID, format)
+		return streamErr
+	}
+
+	saveErr := store.SaveSynthesisCheckpoint(runID, ensemble.SynthesisCheckpoint{
+		RunID:       runID,
+		SessionName: session,
+		LastIndex:   lastIndex,
+	})
+	if saveErr != nil {
+		slog.Default().Warn("failed to save synthesis checkpoint",
+			"run_id", runID,
+			"error", saveErr,
+		)
+	}
+
+	slog.Default().Info("ensemble synthesis streaming completed",
+		"session", session,
+		"run_id", runID,
+		"chunk_count", chunkCount,
+		"time_to_first_chunk", timeToFirstChunk,
+		"duration", streamDuration,
+	)
+
+	return nil
+}
+
+func buildSynthesisRunID(session string) string {
+	name := strings.TrimSpace(session)
+	if name == "" {
+		name = "ensemble"
+	}
+	name = strings.ReplaceAll(name, " ", "-")
+	return fmt.Sprintf("%s-synth-%s", name, time.Now().UTC().Format("20060102-150405"))
+}
+
+func buildSynthesisCheckpointMetadata(state *ensemble.EnsembleSession, collector *ensemble.OutputCollector, runID string) ensemble.CheckpointMetadata {
+	modeIDs := make([]string, 0, collector.Count())
+	for _, output := range collector.Outputs {
+		modeIDs = append(modeIDs, output.ModeID)
+	}
+	sort.Strings(modeIDs)
+
+	meta := ensemble.CheckpointMetadata{
+		SessionName:  state.SessionName,
+		Question:     state.Question,
+		RunID:        runID,
+		Status:       state.Status,
+		CreatedAt:    state.CreatedAt,
+		CompletedIDs: modeIDs,
+		PendingIDs:   []string{},
+		TotalModes:   len(state.Assignments),
+	}
+
+	if meta.TotalModes == 0 {
+		meta.TotalModes = len(modeIDs)
+	}
+
+	return meta
+}
+
+func applyResumeIndex(chunk ensemble.SynthesisChunk, resumeIndex int) (ensemble.SynthesisChunk, bool) {
+	if resumeIndex <= 0 {
+		return chunk, true
+	}
+	if chunk.Index <= resumeIndex {
+		return chunk, false
+	}
+	return chunk, true
+}
+
+func writeSynthesisChunk(w io.Writer, chunk ensemble.SynthesisChunk, format string) error {
+	if format == "json" {
+		data, err := json.Marshal(chunk)
+		if err != nil {
+			return fmt.Errorf("marshal chunk: %w", err)
+		}
+		if _, err := w.Write(data); err != nil {
+			return err
+		}
+		if _, err := w.Write([]byte("\n")); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	switch chunk.Type {
+	case ensemble.ChunkStatus:
+		_, err := fmt.Fprintf(w, "[synthesis] %s\n", chunk.Content)
+		return err
+	case ensemble.ChunkFinding:
+		_, err := fmt.Fprintf(w, "- Finding: %s\n", chunk.Content)
+		return err
+	case ensemble.ChunkRisk:
+		_, err := fmt.Fprintf(w, "- Risk: %s\n", chunk.Content)
+		return err
+	case ensemble.ChunkRecommendation:
+		_, err := fmt.Fprintf(w, "- Recommendation: %s\n", chunk.Content)
+		return err
+	case ensemble.ChunkQuestion:
+		_, err := fmt.Fprintf(w, "- Question: %s\n", chunk.Content)
+		return err
+	case ensemble.ChunkExplanation:
+		_, err := fmt.Fprintf(w, "\n%s\n", chunk.Content)
+		return err
+	case ensemble.ChunkComplete:
+		_, err := fmt.Fprintf(w, "\nSummary: %s\n", chunk.Content)
+		return err
+	default:
+		_, err := fmt.Fprintf(w, "%s\n", chunk.Content)
+		return err
+	}
+}
+
+func printSynthesisResumeHint(session, runID, format string) {
+	formatFlag := ""
+	if format == "json" {
+		formatFlag = " --format json"
+	}
+	fmt.Fprintf(os.Stderr, "Resume with: ntm ensemble synthesize %s --stream --resume --run-id %s%s\n", session, runID, formatFlag)
 }
 
 type exportFindingsOptions struct {

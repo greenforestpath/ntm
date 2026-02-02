@@ -460,7 +460,11 @@ func runRenewLocks(session string, extendMinutes int) error {
 	defer cancel()
 
 	extendSeconds := extendMinutes * 60
-	err = client.RenewReservations(ctx, wd, agentName, extendSeconds)
+	_, err = client.RenewReservations(ctx, agentmail.RenewReservationsOptions{
+		ProjectKey:    wd,
+		AgentName:     agentName,
+		ExtendSeconds: extendSeconds,
+	})
 
 	result := RenewResult{
 		Session:       session,

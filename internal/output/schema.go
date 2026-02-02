@@ -83,11 +83,14 @@ type PaneResponse struct {
 
 // AgentCountsResponse is the standard format for agent counts
 type AgentCountsResponse struct {
-	Claude int `json:"claude"`
-	Codex  int `json:"codex"`
-	Gemini int `json:"gemini"`
-	User   int `json:"user,omitempty"`
-	Total  int `json:"total"`
+	Claude   int `json:"claude"`
+	Codex    int `json:"codex"`
+	Gemini   int `json:"gemini"`
+	Cursor   int `json:"cursor"`
+	Windsurf int `json:"windsurf"`
+	Aider    int `json:"aider"`
+	User     int `json:"user,omitempty"`
+	Total    int `json:"total"`
 }
 
 // StaggerConfig represents stagger settings in spawn response
@@ -131,12 +134,15 @@ type CreateResponse struct {
 // AddResponse is the output format for add command (adding agents to session)
 type AddResponse struct {
 	TimestampedResponse
-	Session     string         `json:"session"`
-	AddedClaude int            `json:"added_claude"`
-	AddedCodex  int            `json:"added_codex"`
-	AddedGemini int            `json:"added_gemini"`
-	TotalAdded  int            `json:"total_added"`
-	NewPanes    []PaneResponse `json:"new_panes,omitempty"`
+	Session       string         `json:"session"`
+	AddedClaude   int            `json:"added_claude"`
+	AddedCodex    int            `json:"added_codex"`
+	AddedGemini   int            `json:"added_gemini"`
+	AddedCursor   int            `json:"added_cursor"`
+	AddedWindsurf int            `json:"added_windsurf"`
+	AddedAider    int            `json:"added_aider"`
+	TotalAdded    int            `json:"total_added"`
+	NewPanes      []PaneResponse `json:"new_panes,omitempty"`
 }
 
 // SendResponse is the output format for send command
@@ -309,4 +315,22 @@ type AssignmentSummary struct {
 	ByAgent        []AssignmentStatsByAgent `json:"by_agent"`
 	CompletionRate float64                  `json:"completion_rate"`
 	AvgDurationSec float64                  `json:"avg_duration_seconds,omitempty"`
+}
+
+// InterruptResponse is the output format for interrupt command
+type InterruptResponse struct {
+	TimestampedResponse
+	Session       string `json:"session"`
+	Interrupted   int    `json:"interrupted"`
+	Skipped       int    `json:"skipped,omitempty"`
+	TargetedPanes []int  `json:"targeted_panes,omitempty"`
+}
+
+// KillResponse is the output format for kill command
+type KillResponse struct {
+	TimestampedResponse
+	Session string      `json:"session"`
+	Killed  bool        `json:"killed"`
+	Message string      `json:"message,omitempty"`
+	Summary interface{} `json:"summary,omitempty"` // *summary.SessionSummary when --summarize is used
 }

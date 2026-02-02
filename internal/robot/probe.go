@@ -4,6 +4,7 @@ package robot
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -151,6 +152,42 @@ type ProbeOutput struct {
 	Confidence     ProbeConfidence     `json:"confidence"`
 	Recommendation ProbeRecommendation `json:"recommendation"`
 	Reasoning      string              `json:"reasoning"`
+}
+
+// ProbeEntry represents a single pane probe result inside a session response.
+type ProbeEntry struct {
+	Pane           int                 `json:"pane"`
+	Responsive     bool                `json:"responsive"`
+	ProbeMethod    ProbeMethod         `json:"probe_method"`
+	ProbeDetails   ProbeDetails        `json:"probe_details"`
+	Confidence     ProbeConfidence     `json:"confidence"`
+	Recommendation ProbeRecommendation `json:"recommendation"`
+	Reasoning      string              `json:"reasoning"`
+	Error          string              `json:"error,omitempty"`
+	ErrorCode      string              `json:"error_code,omitempty"`
+	Hint           string              `json:"hint,omitempty"`
+}
+
+// ProbeSummary provides aggregate counts for a probe session.
+type ProbeSummary struct {
+	TotalProbed  int `json:"total_probed"`
+	Responsive   int `json:"responsive"`
+	Unresponsive int `json:"unresponsive"`
+}
+
+// ProbeSessionOutput is the response for --robot-probe with multi-pane support.
+type ProbeSessionOutput struct {
+	RobotResponse
+	Session string       `json:"session"`
+	Probes  []ProbeEntry `json:"probes"`
+	Summary ProbeSummary `json:"summary"`
+}
+
+// ProbeSessionOptions configures multi-pane probe operations.
+type ProbeSessionOptions struct {
+	Session string
+	Panes   []int
+	Flags   ProbeFlags
 }
 
 // ProbeFlagError is the error output for invalid probe flags
@@ -616,6 +653,132 @@ func PrintProbe(opts ProbeOptions) error {
 		return err
 	}
 	return encodeJSON(output)
+}
+
+func probeEntryFromOutput(output *ProbeOutput) ProbeEntry {
+	entry := ProbeEntry{
+		Pane:           output.Pane,
+		Responsive:     output.Responsive,
+		ProbeMethod:    output.ProbeMethod,
+		ProbeDetails:   output.ProbeDetails,
+		Confidence:     output.Confidence,
+		Recommendation: output.Recommendation,
+		Reasoning:      output.Reasoning,
+	}
+	if !output.Success {
+		entry.Error = output.Error
+		entry.ErrorCode = output.ErrorCode
+		entry.Hint = output.Hint
+	}
+	return entry
+}
+
+// GetProbeSession probes panes in a session and returns aggregated output and exit code.
+// Exit code: 0 = all responsive, 1 = partial failures, 2 = complete failure.
+func GetProbeSession(opts ProbeSessionOptions) (*ProbeSessionOutput, int) {
+	output := &ProbeSessionOutput{
+		RobotResponse: NewRobotResponse(true),
+		Session:       opts.Session,
+		Probes:        []ProbeEntry{},
+		Summary:       ProbeSummary{},
+	}
+
+	if opts.Session == "" {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("session name is required"),
+			ErrCodeInvalidFlag,
+			"Provide a session name: ntm --robot-probe=myproject",
+		)
+		return output, 2
+	}
+
+	if !CurrentTmuxClient.SessionExists(opts.Session) {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("session '%s' not found", opts.Session),
+			ErrCodeSessionNotFound,
+			"Use 'ntm list' to see available sessions",
+		)
+		return output, 2
+	}
+
+	panes, err := CurrentTmuxClient.GetPanes(opts.Session)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("failed to get panes: %w", err),
+			ErrCodeInternalError,
+			"Check tmux session state",
+		)
+		return output, 2
+	}
+
+	var targetPanes []int
+	if len(opts.Panes) == 0 {
+		for _, pane := range panes {
+			agentType := detectAgentTypeFromPane(pane)
+			if agentType == "user" {
+				continue
+			}
+			targetPanes = append(targetPanes, pane.Index)
+		}
+	} else {
+		seen := make(map[int]struct{}, len(opts.Panes))
+		for _, pane := range opts.Panes {
+			if _, ok := seen[pane]; ok {
+				continue
+			}
+			seen[pane] = struct{}{}
+			targetPanes = append(targetPanes, pane)
+		}
+	}
+
+	if len(targetPanes) == 0 {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("no panes to probe in session '%s'", opts.Session),
+			ErrCodePaneNotFound,
+			"Use --panes to target a specific pane or spawn agents first",
+		)
+		return output, 2
+	}
+
+	sort.Ints(targetPanes)
+
+	for _, paneIndex := range targetPanes {
+		probeOutput, _ := GetProbe(ProbeOptions{
+			Session: opts.Session,
+			Pane:    paneIndex,
+			Flags:   opts.Flags,
+		})
+		entry := probeEntryFromOutput(probeOutput)
+		output.Probes = append(output.Probes, entry)
+		output.Summary.TotalProbed++
+		if entry.Error == "" && entry.Responsive {
+			output.Summary.Responsive++
+		} else {
+			output.Summary.Unresponsive++
+		}
+	}
+
+	if !output.Success {
+		return output, 2
+	}
+	if output.Summary.TotalProbed == 0 {
+		return output, 2
+	}
+	if output.Summary.Responsive == output.Summary.TotalProbed {
+		return output, 0
+	}
+	if output.Summary.Responsive == 0 {
+		return output, 2
+	}
+	return output, 1
+}
+
+// PrintProbeSession outputs multi-pane probe results as JSON.
+// Returns 0 on success, 1 on partial failure, 2 on complete failure.
+func PrintProbeSession(opts ProbeSessionOptions) int {
+	output, exitCode := GetProbeSession(opts)
+	outputJSON(output)
+	return exitCode
 }
 
 // FormatProbeDuration formats a probe duration in milliseconds

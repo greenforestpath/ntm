@@ -252,6 +252,65 @@ func TestDefaultParserConfig(t *testing.T) {
 	}
 }
 
+func TestAgentType_ProfileName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		at   AgentType
+		want string
+	}{
+		{AgentTypeClaudeCode, "Claude"},
+		{AgentTypeCodex, "Codex"},
+		{AgentTypeGemini, "Gemini"},
+		{AgentTypeCursor, "Cursor"},
+		{AgentTypeWindsurf, "Windsurf"},
+		{AgentTypeAider, "Aider"},
+		{AgentTypeUser, "User"},
+		{AgentTypeUnknown, "Unknown"},
+		{AgentType("custom"), "Custom"}, // default: capitalize first letter
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.at), func(t *testing.T) {
+			t.Parallel()
+			if got := tt.at.ProfileName(); got != tt.want {
+				t.Errorf("AgentType(%q).ProfileName() = %q, want %q", tt.at, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAgentType_ProfileName_Empty(t *testing.T) {
+	t.Parallel()
+	// Empty AgentType should return empty string from default branch
+	at := AgentType("")
+	if got := at.ProfileName(); got != "" {
+		t.Errorf("AgentType(\"\").ProfileName() = %q, want \"\"", got)
+	}
+}
+
+func TestRecommendation_String(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		r    Recommendation
+		want string
+	}{
+		{RecommendDoNotInterrupt, "DO_NOT_INTERRUPT"},
+		{RecommendSafeToRestart, "SAFE_TO_RESTART"},
+		{RecommendContextLowContinue, "CONTEXT_LOW_CONTINUE"},
+		{RecommendRateLimitedWait, "RATE_LIMITED_WAIT"},
+		{RecommendErrorState, "ERROR_STATE"},
+		{RecommendUnknown, "UNKNOWN"},
+	}
+
+	for _, tt := range tests {
+		if got := tt.r.String(); got != tt.want {
+			t.Errorf("Recommendation(%q).String() = %q, want %q", tt.r, got, tt.want)
+		}
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
 }

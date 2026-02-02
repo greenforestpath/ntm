@@ -536,3 +536,62 @@ func TestHost(t *testing.T) {
 		t.Errorf("expected host %q, got %q", server.URL, a.Host())
 	}
 }
+
+func TestClassifyError(t *testing.T) {
+	t.Parallel()
+
+	a := NewAdapter()
+
+	tests := []struct {
+		name        string
+		err         error
+		wantNil     bool
+		wantContain string
+	}{
+		{
+			name:    "nil error",
+			err:     nil,
+			wantNil: true,
+		},
+		{
+			name:        "connection refused",
+			err:         fmt.Errorf("dial tcp: connection refused"),
+			wantContain: "is Ollama running?",
+		},
+		{
+			name:        "timeout error",
+			err:         fmt.Errorf("request timeout"),
+			wantContain: "timed out",
+		},
+		{
+			name:        "deadline exceeded",
+			err:         fmt.Errorf("context deadline exceeded"),
+			wantContain: "timed out",
+		},
+		{
+			name:        "other error passthrough",
+			err:         fmt.Errorf("some other error"),
+			wantContain: "some other error",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := a.classifyError(tc.err)
+			if tc.wantNil {
+				if result != nil {
+					t.Errorf("classifyError(nil) = %v, want nil", result)
+				}
+				return
+			}
+			if result == nil {
+				t.Fatal("classifyError returned nil, want error")
+			}
+			if !strings.Contains(result.Error(), tc.wantContain) {
+				t.Errorf("classifyError(%v) = %q, want to contain %q",
+					tc.err, result.Error(), tc.wantContain)
+			}
+		})
+	}
+}

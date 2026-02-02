@@ -1,5 +1,5 @@
 // Package bv provides integration with the beads_viewer (bv) tool.
-// client.go implements a client-oriented API for bv --robot-triage integration.
+// client.go implements a client-oriented API for bv -robot-triage integration.
 package bv
 
 import (
@@ -127,7 +127,7 @@ func (c *BVClient) IsAvailable() bool {
 	return cmd.Run() == nil
 }
 
-// GetRecommendations returns task recommendations from bv --robot-triage.
+// GetRecommendations returns task recommendations from bv -robot-triage.
 // Results are cached according to the client's CacheTTL.
 func (c *BVClient) GetRecommendations(opts RecommendationOpts) ([]Recommendation, error) {
 	// Set defaults
@@ -165,12 +165,18 @@ func (c *BVClient) GetRecommendations(opts RecommendationOpts) ([]Recommendation
 // GetInsights returns graph analysis insights.
 func (c *BVClient) GetInsights() (*Insights, error) {
 	// Try to get insights from bv -robot-insights
-	insightsResp, err := GetInsights(c.workDir())
+	workDir, err := c.workDir()
+	if err != nil {
+		return nil, err
+	}
+
+	insightsResp, err := GetInsights(workDir)
 	if err != nil {
 		// Fall back to triage data if insights fail
 		triage, triageErr := c.getTriage()
 		if triageErr != nil {
-			return nil, err // Return original error
+			// Return original error with context about fallback failure
+			return nil, fmt.Errorf("%w (fallback also failed: %v)", err, triageErr)
 		}
 
 		// Build insights from triage data
@@ -245,7 +251,10 @@ func (c *BVClient) InvalidateCache() {
 
 // getTriage returns triage data, using cache if valid.
 func (c *BVClient) getTriage() (*TriageResponse, error) {
-	dir := c.workDir()
+	dir, err := c.workDir()
+	if err != nil {
+		return nil, err
+	}
 
 	c.mu.RLock()
 	if c.triageCache != nil && c.triageCacheDir == dir && time.Since(c.triageCacheAt) < c.CacheTTL {
@@ -271,7 +280,7 @@ func (c *BVClient) getTriage() (*TriageResponse, error) {
 	return resp, nil
 }
 
-// fetchTriage executes bv --robot-triage and parses the response.
+// fetchTriage executes bv -robot-triage and parses the response.
 func (c *BVClient) fetchTriage(dir string) (*TriageResponse, error) {
 	if !IsInstalled() {
 		return nil, fmt.Errorf("%w: bv is not installed. Install it with: go install github.com/Dicklesworthstone/beads_viewer@latest", ErrNotInstalled)
@@ -280,7 +289,7 @@ func (c *BVClient) fetchTriage(dir string) (*TriageResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.Timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bv", "--robot-triage")
+	cmd := exec.CommandContext(ctx, "bv", "-robot-triage")
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -294,7 +303,7 @@ func (c *BVClient) fetchTriage(dir string) (*TriageResponse, error) {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, fmt.Errorf("%w after %v", ErrTimeout, c.Timeout)
 		}
-		return nil, fmt.Errorf("bv --robot-triage failed: %w: %s", err, stderr.String())
+		return nil, fmt.Errorf("bv -robot-triage failed: %w: %s", err, stderr.String())
 	}
 
 	// Validate and parse JSON
@@ -311,9 +320,9 @@ func (c *BVClient) fetchTriage(dir string) (*TriageResponse, error) {
 	return &resp, nil
 }
 
-// workDir returns the workspace directory, defaulting to empty (current dir).
-func (c *BVClient) workDir() string {
-	return c.WorkspacePath
+// workDir returns the normalized workspace directory, defaulting to current dir.
+func (c *BVClient) workDir() (string, error) {
+	return normalizeTriageDir(c.WorkspacePath)
 }
 
 // convertRecommendation converts a TriageRecommendation to our Recommendation format.

@@ -463,6 +463,162 @@ func TestTrackerAddAlert(t *testing.T) {
 	}
 }
 
+// ============ stripANSI tests ============
+
+func TestStripANSI(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain text unchanged", "hello world", "hello world"},
+		{"empty string", "", ""},
+		{"CSI color code", "\x1b[31mred text\x1b[0m", "red text"},
+		{"CSI bold", "\x1b[1mbold\x1b[22m", "bold"},
+		{"CSI multiple params", "\x1b[1;31;42mcolored\x1b[0m", "colored"},
+		{"CSI question mark", "\x1b[?25h", ""}, // Show cursor
+		{"OSC with BEL", "\x1b]0;window title\a", ""},
+		{"OSC with ST", "\x1b]0;window title\x1b\\", ""},
+		{"mixed content", "before\x1b[31mred\x1b[0m after", "beforered after"},
+		{"nested sequences", "\x1b[1m\x1b[31mbold red\x1b[0m\x1b[22m", "bold red"},
+		{"only escape sequences", "\x1b[31m\x1b[0m", ""},
+		{"multiline with ANSI", "line1\n\x1b[32mline2\x1b[0m\nline3", "line1\nline2\nline3"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := stripANSI(tt.input)
+			if got != tt.want {
+				t.Errorf("stripANSI(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// ============ truncateString edge cases ============
+
+func TestTruncateString_EdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+		want   string
+	}{
+		{"empty input", "", 10, ""},
+		{"zero maxLen", "hello", 0, ""},
+		{"negative maxLen", "hello", -5, ""},
+		{"maxLen 1", "hello", 1, "."},
+		{"maxLen 2", "hello", 2, ".."},
+		{"maxLen 3", "hello", 3, "..."},
+		{"maxLen 4", "hello", 4, "h..."},
+		{"exact fit", "hello", 5, "hello"},
+		{"one over", "hello!", 5, "he..."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := truncateString(tt.input, tt.maxLen)
+			if got != tt.want {
+				t.Errorf("truncateString(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTruncateString_UTF8(t *testing.T) {
+	t.Parallel()
+
+	// Multi-byte chars: "世" is 3 bytes, "界" is 3 bytes
+	input := "世界hello"
+	got := truncateString(input, 8)
+	// Should not split a multi-byte char
+	if len(got) > 8 {
+		t.Errorf("truncateString(%q, 8) = %q (len=%d), exceeds maxLen 8", input, got, len(got))
+	}
+}
+
+// ============ ToConfigAlerts test ============
+
+func TestToConfigAlerts(t *testing.T) {
+	t.Parallel()
+
+	cfg := ToConfigAlerts(true, 10, 2.5, 20, 48, 120, "/tmp/projects")
+	if !cfg.Enabled {
+		t.Error("expected Enabled=true")
+	}
+	if cfg.AgentStuckMinutes != 10 {
+		t.Errorf("AgentStuckMinutes = %d, want 10", cfg.AgentStuckMinutes)
+	}
+	if cfg.DiskLowThresholdGB != 2.5 {
+		t.Errorf("DiskLowThresholdGB = %f, want 2.5", cfg.DiskLowThresholdGB)
+	}
+	if cfg.MailBacklogThreshold != 20 {
+		t.Errorf("MailBacklogThreshold = %d, want 20", cfg.MailBacklogThreshold)
+	}
+	if cfg.BeadStaleHours != 48 {
+		t.Errorf("BeadStaleHours = %d, want 48", cfg.BeadStaleHours)
+	}
+	if cfg.ResolvedPruneMinutes != 120 {
+		t.Errorf("ResolvedPruneMinutes = %d, want 120", cfg.ResolvedPruneMinutes)
+	}
+	if cfg.ProjectsDir != "/tmp/projects" {
+		t.Errorf("ProjectsDir = %q, want /tmp/projects", cfg.ProjectsDir)
+	}
+}
+
+// ============ Alert type/severity constants ============
+
+func TestAlertTypeConstants(t *testing.T) {
+	t.Parallel()
+
+	// Verify key alert type strings
+	types := map[AlertType]string{
+		AlertAgentStuck:          "agent_stuck",
+		AlertAgentCrashed:        "agent_crashed",
+		AlertAgentError:          "agent_error",
+		AlertDiskLow:             "disk_low",
+		AlertBeadStale:           "bead_stale",
+		AlertRateLimit:           "rate_limit",
+		AlertDependencyCycle:     "dependency_cycle",
+		AlertContextWarning:      "context_warning",
+		AlertRotationStarted:     "rotation_started",
+		AlertRotationComplete:    "rotation_complete",
+		AlertRotationFailed:      "rotation_failed",
+		AlertCompactionTriggered: "compaction_triggered",
+		AlertCompactionComplete:  "compaction_complete",
+		AlertCompactionFailed:    "compaction_failed",
+	}
+
+	for got, want := range types {
+		if string(got) != want {
+			t.Errorf("AlertType %q != expected %q", got, want)
+		}
+	}
+}
+
+func TestSeverityConstants(t *testing.T) {
+	t.Parallel()
+
+	if string(SeverityInfo) != "info" {
+		t.Errorf("SeverityInfo = %q", SeverityInfo)
+	}
+	if string(SeverityWarning) != "warning" {
+		t.Errorf("SeverityWarning = %q", SeverityWarning)
+	}
+	if string(SeverityError) != "error" {
+		t.Errorf("SeverityError = %q", SeverityError)
+	}
+	if string(SeverityCritical) != "critical" {
+		t.Errorf("SeverityCritical = %q", SeverityCritical)
+	}
+}
+
 func TestGlobalTracker(t *testing.T) {
 	// Get global tracker twice - should be same instance
 	t1 := GetGlobalTracker()

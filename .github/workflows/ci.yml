@@ -60,7 +60,7 @@ jobs:
         with:
           bun-version: "latest"
 
-      - name: OpenAPI drift check
+      - name: OpenAPI drift check (TypeScript)
         run: |
           bun run gen:openapi
           # Strip generated_at timestamp before comparing (changes on every run)
@@ -71,6 +71,31 @@ jobs:
 
       - name: Validate OpenAPI
         run: bun run lint:openapi
+
+      - name: OpenAPI drift check (Go Kernel)
+        run: |
+          # Build ntm and generate kernel-based OpenAPI spec
+          go build -o ntm ./cmd/ntm
+          ./ntm openapi generate -o /tmp/openapi-kernel-new.json
+
+          # Compare against checked-in spec if it exists
+          if [ -f docs/openapi-kernel.json ]; then
+            echo "Comparing generated spec against checked-in docs/openapi-kernel.json"
+            diff docs/openapi-kernel.json /tmp/openapi-kernel-new.json || {
+              echo ""
+              echo "========================================================================"
+              echo "  ERROR: OpenAPI kernel spec drift detected!"
+              echo ""
+              echo "  The generated OpenAPI spec differs from the checked-in version."
+              echo "  Run: ntm openapi generate -o docs/openapi-kernel.json"
+              echo "  Then commit the updated spec."
+              echo "========================================================================"
+              exit 1
+            }
+            echo "OpenAPI kernel spec is up to date"
+          else
+            echo "Warning: docs/openapi-kernel.json not found, skipping drift check"
+          fi
 
   # ============================================================================
   # TEST - Unit tests with coverage on multiple platforms

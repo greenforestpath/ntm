@@ -67,11 +67,12 @@ type EnsembleSpawnBudget struct {
 	PerModeTokens int `json:"per_mode_tokens,omitempty"`
 }
 
-// PrintEnsembleSpawn spawns a reasoning ensemble session and returns structured JSON.
-func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
+// GetEnsembleSpawn spawns a reasoning ensemble session and returns the result.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) (*EnsembleSpawnOutput, error) {
 	opts = applyEnsembleSpawnDefaults(opts, cfg)
 
-	output := EnsembleSpawnOutput{
+	output := &EnsembleSpawnOutput{
 		RobotResponse: NewRobotResponse(true),
 		Action:        "ensemble_spawn",
 		Session:       strings.TrimSpace(opts.Session),
@@ -88,15 +89,15 @@ func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
 			ErrCodeInvalidFlag,
 			"Provide a session name: ntm --robot-ensemble-spawn=myproject",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 	if err := tmux.ValidateSessionName(output.Session); err != nil {
 		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Use a valid tmux session name")
-		return outputJSON(output)
+		return output, nil
 	}
 	if err := tmux.EnsureInstalled(); err != nil {
 		output.RobotResponse = NewErrorResponse(err, ErrCodeDependencyMissing, "Install tmux to spawn ensembles")
-		return outputJSON(output)
+		return output, nil
 	}
 	if tmux.SessionExists(output.Session) {
 		output.RobotResponse = NewErrorResponse(
@@ -104,7 +105,7 @@ func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
 			ErrCodeInvalidFlag,
 			"Choose a new session name or terminate the existing session",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 	if output.Question == "" {
 		output.RobotResponse = NewErrorResponse(
@@ -112,7 +113,7 @@ func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
 			ErrCodeInvalidFlag,
 			"Provide a question: --question='What should we analyze?'",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 
 	rawModes := splitModeList(opts.Modes)
@@ -122,7 +123,7 @@ func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
 			ErrCodeInvalidFlag,
 			"Provide --preset or --modes",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 	if output.Preset != "" && len(rawModes) > 0 {
 		output.RobotResponse = NewErrorResponse(
@@ -130,7 +131,7 @@ func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
 			ErrCodeInvalidFlag,
 			"Use either --preset or --modes, not both",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 
 	if !isValidEnsembleAssignment(output.Assignment) {
@@ -139,7 +140,7 @@ func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
 			ErrCodeInvalidFlag,
 			"Use assignment: round-robin, affinity, category, or explicit",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 	if output.Assignment == "explicit" && len(rawModes) == 0 {
 		output.RobotResponse = NewErrorResponse(
@@ -147,7 +148,7 @@ func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
 			ErrCodeInvalidFlag,
 			"Provide --modes entries like deductive:cc,abductive:cod",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 	if opts.BudgetPerMode < 0 || opts.BudgetTotal < 0 {
 		output.RobotResponse = NewErrorResponse(
@@ -155,27 +156,27 @@ func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
 			ErrCodeInvalidFlag,
 			"Use non-negative values for --budget-total and --budget-per-agent",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 
 	projectDir, err := resolveEnsembleSpawnProjectDir(opts.ProjectDir)
 	if err != nil {
 		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Provide a valid project directory")
-		return outputJSON(output)
+		return output, nil
 	}
 	output.ProjectDir = projectDir
 
 	agentMix, err := parseEnsembleAgentMix(opts.Agents)
 	if err != nil {
 		output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Provide agents as cc=2,cod=1,gmi=1")
-		return outputJSON(output)
+		return output, nil
 	}
 	output.Agents = agentMix
 
 	manager, catalog, registry, err := buildEnsembleSpawnManager(projectDir)
 	if err != nil {
 		output.RobotResponse = NewErrorResponse(err, ErrCodeInternalError, "Failed to load ensemble catalog")
-		return outputJSON(output)
+		return output, nil
 	}
 
 	if output.Preset != "" {
@@ -186,7 +187,7 @@ func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
 				ErrCodeInvalidFlag,
 				"Use a valid ensemble preset name",
 			)
-			return outputJSON(output)
+			return output, nil
 		}
 		effective := *preset
 		if opts.AllowAdvanced {
@@ -194,7 +195,7 @@ func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
 		}
 		if err := effective.Validate(catalog); err != nil {
 			output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Preset validation failed")
-			return outputJSON(output)
+			return output, nil
 		}
 	}
 
@@ -202,7 +203,7 @@ func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
 		modeIDs, err := validateEnsembleModeRefs(rawModes, catalog, opts.AllowAdvanced)
 		if err != nil {
 			output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Invalid mode references")
-			return outputJSON(output)
+			return output, nil
 		}
 		if len(modeIDs) < 2 || len(modeIDs) > 10 {
 			output.RobotResponse = NewErrorResponse(
@@ -210,14 +211,14 @@ func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
 				ErrCodeInvalidFlag,
 				"Use between 2 and 10 modes",
 			)
-			return outputJSON(output)
+			return output, nil
 		}
 	}
 	if output.Preset == "" && output.Assignment == "explicit" {
 		normalized, err := normalizeExplicitModeSpecs(rawModes, catalog, opts.AllowAdvanced)
 		if err != nil {
 			output.RobotResponse = NewErrorResponse(err, ErrCodeInvalidFlag, "Invalid explicit mode specs")
-			return outputJSON(output)
+			return output, nil
 		}
 		if len(normalized) < 2 || len(normalized) > 10 {
 			output.RobotResponse = NewErrorResponse(
@@ -225,7 +226,7 @@ func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
 				ErrCodeInvalidFlag,
 				"Use between 2 and 10 modes",
 			)
-			return outputJSON(output)
+			return output, nil
 		}
 		rawModes = normalized
 	}
@@ -272,6 +273,15 @@ func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
 		output.RobotResponse = NewErrorResponse(spawnErr, ErrCodeInternalError, "Ensemble spawn encountered errors")
 	}
 
+	return output, nil
+}
+
+// PrintEnsembleSpawn spawns a reasoning ensemble session and returns structured JSON.
+func PrintEnsembleSpawn(opts EnsembleSpawnOptions, cfg *config.Config) error {
+	output, err := GetEnsembleSpawn(opts, cfg)
+	if err != nil {
+		return err
+	}
 	return outputJSON(output)
 }
 

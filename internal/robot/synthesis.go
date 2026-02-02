@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -362,6 +363,13 @@ func matchesPattern(filePath, pattern string) bool {
 
 	// Handle single * patterns (match single path segment)
 	if strings.Contains(pattern, "*") {
+		if strings.Contains(pattern, "/") {
+			normalizedPath := path.Clean(strings.TrimPrefix(filePath, "./"))
+			normalizedPattern := path.Clean(strings.TrimPrefix(pattern, "./"))
+			matched, err := path.Match(normalizedPattern, normalizedPath)
+			return err == nil && matched
+		}
+
 		parts := strings.Split(pattern, "*")
 
 		// Must start with first part and end with last part
@@ -388,6 +396,9 @@ func matchesPattern(filePath, pattern string) bool {
 	}
 
 	// Prefix match (pattern is a directory)
+	if strings.HasSuffix(pattern, "/") {
+		return strings.HasPrefix(filePath, pattern)
+	}
 	return strings.HasPrefix(filePath, pattern+"/")
 }
 

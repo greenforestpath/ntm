@@ -25,11 +25,13 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/dcg"
+	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/prompt"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/summary"
 	"github.com/Dicklesworthstone/ntm/internal/templates"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tools"
@@ -55,6 +57,119 @@ type SendRoutingResult struct {
 	Strategy  string  `json:"strategy"`
 	Reason    string  `json:"reason"`
 	Score     float64 `json:"score"`
+}
+
+// SessionInterruptInput is the kernel input for sessions.interrupt.
+type SessionInterruptInput struct {
+	Session string   `json:"session"`
+	Tags    []string `json:"tags,omitempty"`
+}
+
+// SessionKillInput is the kernel input for sessions.kill.
+type SessionKillInput struct {
+	Session   string   `json:"session"`
+	Force     bool     `json:"force,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
+	NoHooks   bool     `json:"no_hooks,omitempty"`
+	Summarize bool     `json:"summarize,omitempty"` // Generate summary before killing
+}
+
+func init() {
+	// Register sessions.interrupt command
+	kernel.MustRegister(kernel.Command{
+		Name:        "sessions.interrupt",
+		Description: "Send Ctrl+C to all agent panes in a session",
+		Category:    "sessions",
+		Input: &kernel.SchemaRef{
+			Name: "SessionInterruptInput",
+			Ref:  "cli.SessionInterruptInput",
+		},
+		Output: &kernel.SchemaRef{
+			Name: "InterruptResponse",
+			Ref:  "output.InterruptResponse",
+		},
+		REST: &kernel.RESTBinding{
+			Method: "POST",
+			Path:   "/sessions/{session}/interrupt",
+		},
+		Examples: []kernel.Example{
+			{
+				Name:        "interrupt",
+				Description: "Send Ctrl+C to all agents",
+				Command:     "ntm interrupt myproject",
+			},
+			{
+				Name:        "interrupt-tags",
+				Description: "Interrupt only panes with specific tag",
+				Command:     "ntm interrupt myproject --tag=frontend",
+			},
+		},
+		SafetyLevel: kernel.SafetySafe,
+		Idempotent:  true,
+	})
+	kernel.MustRegisterHandler("sessions.interrupt", func(ctx context.Context, input any) (any, error) {
+		opts := SessionInterruptInput{}
+		switch value := input.(type) {
+		case SessionInterruptInput:
+			opts = value
+		case *SessionInterruptInput:
+			if value != nil {
+				opts = *value
+			}
+		}
+		if strings.TrimSpace(opts.Session) == "" {
+			return nil, fmt.Errorf("session is required")
+		}
+		return buildInterruptResponse(opts.Session, opts.Tags)
+	})
+
+	// Register sessions.kill command
+	kernel.MustRegister(kernel.Command{
+		Name:        "sessions.kill",
+		Description: "Kill a tmux session",
+		Category:    "sessions",
+		Input: &kernel.SchemaRef{
+			Name: "SessionKillInput",
+			Ref:  "cli.SessionKillInput",
+		},
+		Output: &kernel.SchemaRef{
+			Name: "KillResponse",
+			Ref:  "output.KillResponse",
+		},
+		REST: &kernel.RESTBinding{
+			Method: "DELETE",
+			Path:   "/sessions/{session}",
+		},
+		Examples: []kernel.Example{
+			{
+				Name:        "kill",
+				Description: "Kill a session (prompts confirmation)",
+				Command:     "ntm kill myproject",
+			},
+			{
+				Name:        "kill-force",
+				Description: "Kill without confirmation",
+				Command:     "ntm kill myproject --force",
+			},
+		},
+		SafetyLevel: kernel.SafetyDanger,
+		Idempotent:  true,
+	})
+	kernel.MustRegisterHandler("sessions.kill", func(ctx context.Context, input any) (any, error) {
+		opts := SessionKillInput{}
+		switch value := input.(type) {
+		case SessionKillInput:
+			opts = value
+		case *SessionKillInput:
+			if value != nil {
+				opts = *value
+			}
+		}
+		if strings.TrimSpace(opts.Session) == "" {
+			return nil, fmt.Errorf("session is required")
+		}
+		return buildKillResponse(opts.Session, opts.Force, opts.Tags, opts.NoHooks, opts.Summarize)
+	})
 }
 
 // SendOptions configures the send operation
@@ -959,7 +1074,7 @@ func runSendInternal(opts SendOptions) error {
 	// If specific pane requested
 	if paneIndex >= 0 {
 		p := selectedPanes[0]
-		if err := sendPromptToPane(p, prompt); err != nil {
+		if err := sendPromptToPane(session, p, prompt); err != nil {
 			failed++
 			histErr = err
 			if jsonOutput {
@@ -1003,7 +1118,7 @@ func runSendInternal(opts SendOptions) error {
 	}
 
 	for _, p := range selectedPanes {
-		if err := sendPromptToPane(p, prompt); err != nil {
+		if err := sendPromptToPane(session, p, prompt); err != nil {
 			failed++
 			histErr = err
 			if !jsonOutput {
@@ -1114,6 +1229,18 @@ Examples:
 }
 
 func runInterrupt(session string, tags []string) error {
+	// Use kernel for JSON output mode
+	if IsJSONOutput() {
+		result, err := kernel.Run(context.Background(), "sessions.interrupt", SessionInterruptInput{
+			Session: session,
+			Tags:    tags,
+		})
+		if err != nil {
+			return output.PrintJSON(output.NewError(err.Error()))
+		}
+		return output.PrintJSON(result)
+	}
+
 	if err := tmux.EnsureInstalled(); err != nil {
 		return err
 	}
@@ -1149,10 +1276,59 @@ func runInterrupt(session string, tags []string) error {
 	return nil
 }
 
+// buildInterruptResponse constructs the response for session interrupt.
+// Used by both kernel handler and direct CLI calls.
+func buildInterruptResponse(session string, tags []string) (*output.InterruptResponse, error) {
+	if err := tmux.EnsureInstalled(); err != nil {
+		return nil, err
+	}
+
+	if !tmux.SessionExists(session) {
+		return nil, fmt.Errorf("session '%s' not found", session)
+	}
+
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		return nil, err
+	}
+
+	var targetedPanes []int
+	interrupted := 0
+	skipped := 0
+
+	for _, p := range panes {
+		// Only interrupt agent panes
+		if p.Type == tmux.AgentClaude || p.Type == tmux.AgentCodex || p.Type == tmux.AgentGemini {
+			// Check tags
+			if len(tags) > 0 {
+				if !HasAnyTag(p.Tags, tags) {
+					skipped++
+					continue
+				}
+			}
+
+			targetedPanes = append(targetedPanes, p.Index)
+			if err := tmux.SendInterrupt(p.ID); err != nil {
+				return nil, fmt.Errorf("interrupting pane %d: %w", p.Index, err)
+			}
+			interrupted++
+		}
+	}
+
+	return &output.InterruptResponse{
+		TimestampedResponse: output.NewTimestamped(),
+		Session:             session,
+		Interrupted:         interrupted,
+		Skipped:             skipped,
+		TargetedPanes:       targetedPanes,
+	}, nil
+}
+
 func newKillCmd() *cobra.Command {
 	var force bool
 	var tags []string
 	var noHooks bool
+	var summarize bool
 
 	cmd := &cobra.Command{
 		Use:   "kill <session>",
@@ -1162,21 +1338,38 @@ func newKillCmd() *cobra.Command {
 Examples:
   ntm kill myproject           # Prompts for confirmation
   ntm kill myproject --force   # No confirmation
-  ntm kill myproject --tag=ui  # Kill only panes with 'ui' tag`,
+  ntm kill myproject --tag=ui  # Kill only panes with 'ui' tag
+  ntm kill myproject --summarize # Generate summary before killing`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runKill(args[0], force, tags, noHooks)
+			return runKill(args[0], force, tags, noHooks, summarize)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "skip confirmation")
 	cmd.Flags().StringSliceVar(&tags, "tag", nil, "filter panes to kill by tag (if used, only matching panes are killed)")
 	cmd.Flags().BoolVar(&noHooks, "no-hooks", false, "Disable command hooks")
+	cmd.Flags().BoolVar(&summarize, "summarize", false, "Generate session summary before killing")
 
 	return cmd
 }
 
-func runKill(session string, force bool, tags []string, noHooks bool) error {
+func runKill(session string, force bool, tags []string, noHooks bool, summarize bool) error {
+	// Use kernel for JSON output mode
+	if IsJSONOutput() {
+		result, err := kernel.Run(context.Background(), "sessions.kill", SessionKillInput{
+			Session:   session,
+			Force:     force,
+			Tags:      tags,
+			NoHooks:   noHooks,
+			Summarize: summarize,
+		})
+		if err != nil {
+			return output.PrintJSON(output.NewError(err.Error()))
+		}
+		return output.PrintJSON(result)
+	}
+
 	if err := tmux.EnsureInstalled(); err != nil {
 		return err
 	}
@@ -1226,6 +1419,17 @@ func runKill(session string, force bool, tags []string, noHooks bool) error {
 		}
 	}
 
+	// Generate summary before killing if requested
+	if summarize {
+		fmt.Println("Generating session summary...")
+		summaryResult, err := generateKillSummary(session)
+		if err != nil {
+			fmt.Printf("⚠ Summary generation failed: %v\n", err)
+		} else {
+			fmt.Println("\n" + summaryResult.Text + "\n")
+		}
+	}
+
 	// If tags are provided, kill specific panes
 	if len(tags) > 0 {
 		panes, err := tmux.GetPanes(session)
@@ -1257,6 +1461,7 @@ func runKill(session string, force bool, tags []string, noHooks bool) error {
 				return fmt.Errorf("killing pane %s: %w", p.ID, err)
 			}
 		}
+		addTimelineStopMarkers(session, toKill)
 		fmt.Printf("Killed %d pane(s)\n", len(toKill))
 		return nil
 	}
@@ -1271,6 +1476,11 @@ func runKill(session string, force bool, tags []string, noHooks bool) error {
 			fmt.Println("Aborted.")
 			return nil
 		}
+	}
+
+	panesForStop, err := tmux.GetPanes(session)
+	if err == nil {
+		addTimelineStopMarkers(session, panesForStop)
 	}
 
 	// Finalize timeline persistence before killing the session
@@ -1308,6 +1518,178 @@ func runKill(session string, force bool, tags []string, noHooks bool) error {
 	}
 
 	return nil
+}
+
+// buildKillResponse constructs the response for session kill.
+// Used by both kernel handler and direct CLI calls.
+// In JSON/robot mode, force is effectively always true (no interactive confirmation).
+func buildKillResponse(session string, force bool, tags []string, noHooks bool, summarize bool) (*output.KillResponse, error) {
+	if err := tmux.EnsureInstalled(); err != nil {
+		return nil, err
+	}
+
+	if !tmux.SessionExists(session) {
+		return nil, fmt.Errorf("session '%s' not found", session)
+	}
+
+	dir := cfg.GetProjectDir(session)
+
+	// Initialize hook executor
+	var hookExec *hooks.Executor
+	if !noHooks {
+		var err error
+		hookExec, err = hooks.NewExecutorFromConfig()
+		if err != nil {
+			// In kernel mode, we don't have interactive output
+			hookExec = hooks.NewExecutor(nil)
+		}
+	}
+
+	// Build hook context
+	hookCtx := hooks.ExecutionContext{
+		SessionName: session,
+		ProjectDir:  dir,
+		AdditionalEnv: map[string]string{
+			"NTM_FORCE_KILL": boolToStr(force),
+			"NTM_KILL_TAGS":  strings.Join(tags, ","),
+		},
+	}
+
+	// Run pre-kill hooks
+	if hookExec != nil && hookExec.HasHooksForEvent(hooks.EventPreKill) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		results, err := hookExec.RunHooksForEvent(ctx, hooks.EventPreKill, hookCtx)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("pre-kill hook failed: %w", err)
+		}
+		if hooks.AnyFailed(results) {
+			return nil, fmt.Errorf("pre-kill hook failed: %w", hooks.AllErrors(results))
+		}
+	}
+
+	// Generate summary before killing if requested
+	var summaryResult *summary.SessionSummary
+	if summarize {
+		var err error
+		summaryResult, err = generateKillSummary(session)
+		if err != nil {
+			// Non-fatal - continue with kill but note the error
+			summaryResult = nil
+		}
+	}
+
+	var message string
+
+	// If tags are provided, kill specific panes
+	if len(tags) > 0 {
+		panes, err := tmux.GetPanes(session)
+		if err != nil {
+			return nil, err
+		}
+
+		var toKill []tmux.Pane
+		for _, p := range panes {
+			if HasAnyTag(p.Tags, tags) {
+				toKill = append(toKill, p)
+			}
+		}
+
+		if len(toKill) == 0 {
+			return &output.KillResponse{
+				TimestampedResponse: output.NewTimestamped(),
+				Session:             session,
+				Killed:              false,
+				Message:             "No panes found matching tags",
+			}, nil
+		}
+
+		for _, p := range toKill {
+			if err := tmux.KillPane(p.ID); err != nil {
+				return nil, fmt.Errorf("killing pane %s: %w", p.ID, err)
+			}
+		}
+		addTimelineStopMarkers(session, toKill)
+		message = fmt.Sprintf("Killed %d pane(s) matching tags", len(toKill))
+	} else {
+		panesForStop, err := tmux.GetPanes(session)
+		if err == nil {
+			addTimelineStopMarkers(session, panesForStop)
+		}
+
+		// Finalize timeline persistence before killing the session
+		_ = state.EndSessionTimeline(session) // Ignore error - not critical
+
+		if err := tmux.KillSession(session); err != nil {
+			return nil, err
+		}
+		message = fmt.Sprintf("Killed session '%s'", session)
+	}
+
+	// Post-kill hooks
+	if hookExec != nil && hookExec.HasHooksForEvent(hooks.EventPostKill) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		_, _ = hookExec.RunHooksForEvent(ctx, hooks.EventPostKill, hookCtx)
+		cancel()
+		// Post-kill hook errors are logged but don't fail the response
+	}
+
+	return &output.KillResponse{
+		TimestampedResponse: output.NewTimestamped(),
+		Session:             session,
+		Killed:              true,
+		Message:             message,
+		Summary:             summaryResult,
+	}, nil
+}
+
+// generateKillSummary generates a session summary for use before killing.
+// It captures pane outputs and runs them through the summary generator.
+func generateKillSummary(session string) (*summary.SessionSummary, error) {
+	// Get panes from session
+	panes, err := tmux.GetPanes(session)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get panes: %w", err)
+	}
+
+	// Build agent outputs by capturing pane content
+	var outputs []summary.AgentOutput
+	for _, pane := range panes {
+		agentType := string(pane.Type)
+		if agentType == "" || agentType == "unknown" {
+			continue // Skip non-agent panes
+		}
+
+		// Capture output (500 lines)
+		out, _ := tmux.CapturePaneOutput(pane.ID, 500)
+
+		outputs = append(outputs, summary.AgentOutput{
+			AgentID:   pane.ID,
+			AgentType: agentType,
+			Output:    out,
+		})
+	}
+
+	if len(outputs) == 0 {
+		return nil, fmt.Errorf("no agent outputs to summarize")
+	}
+
+	wd, _ := os.Getwd()
+	projectDir := cfg.GetProjectDir(session)
+	if projectDir == "" {
+		projectDir = wd
+	}
+
+	opts := summary.Options{
+		Session:        session,
+		Outputs:        outputs,
+		Format:         summary.FormatBrief,
+		ProjectKey:     wd,
+		ProjectDir:     projectDir,
+		IncludeGitDiff: true, // Include git changes in summary
+	}
+
+	return summary.SummarizeSession(context.Background(), opts)
 }
 
 // truncatePrompt truncates a prompt to the specified length for display, respecting UTF-8 boundaries.
@@ -1508,11 +1890,18 @@ const (
 	agentPromptSecondEnterDelay = 500 * time.Millisecond
 )
 
-func sendPromptToPane(p tmux.Pane, prompt string) error {
+func sendPromptToPane(session string, p tmux.Pane, prompt string) error {
 	if p.Type == tmux.AgentUser {
-		return tmux.PasteKeys(p.ID, prompt, true)
+		if err := tmux.PasteKeys(p.ID, prompt, true); err != nil {
+			return err
+		}
+		return nil
 	}
-	return sendPromptWithDoubleEnter(p.ID, prompt)
+	if err := sendPromptWithDoubleEnter(p.ID, prompt); err != nil {
+		return err
+	}
+	addTimelinePromptMarker(session, p, prompt)
+	return nil
 }
 
 func sendPromptWithDoubleEnter(paneID, prompt string) error {
@@ -1528,6 +1917,88 @@ func sendPromptWithDoubleEnter(paneID, prompt string) error {
 		return err
 	}
 	return nil
+}
+
+func addTimelinePromptMarker(session string, p tmux.Pane, prompt string) {
+	if session == "" {
+		return
+	}
+	if p.Type == tmux.AgentUser || p.Type == tmux.AgentUnknown {
+		return
+	}
+	agentID := timelineAgentIDFromPane(p)
+	if agentID == "" {
+		return
+	}
+	tracker := state.GetGlobalTimelineTracker()
+	tracker.AddMarker(state.TimelineMarker{
+		AgentID:   agentID,
+		SessionID: session,
+		Type:      state.MarkerPrompt,
+		Timestamp: time.Now(),
+		Message:   truncatePrompt(prompt, 80),
+	})
+}
+
+func addTimelineStopMarkers(session string, panes []tmux.Pane) {
+	if session == "" {
+		return
+	}
+	tracker := state.GetGlobalTimelineTracker()
+	now := time.Now()
+
+	if len(panes) == 0 {
+		events := tracker.GetEventsForSession(session, time.Time{})
+		seen := make(map[string]struct{})
+		for _, e := range events {
+			if e.AgentID == "" {
+				continue
+			}
+			if _, ok := seen[e.AgentID]; ok {
+				continue
+			}
+			seen[e.AgentID] = struct{}{}
+			tracker.AddMarker(state.TimelineMarker{
+				AgentID:   e.AgentID,
+				SessionID: session,
+				Type:      state.MarkerStop,
+				Timestamp: now,
+			})
+		}
+		return
+	}
+
+	for _, p := range panes {
+		if p.Type == tmux.AgentUser || p.Type == tmux.AgentUnknown {
+			continue
+		}
+		agentID := timelineAgentIDFromPane(p)
+		if agentID == "" {
+			continue
+		}
+		tracker.AddMarker(state.TimelineMarker{
+			AgentID:   agentID,
+			SessionID: session,
+			Type:      state.MarkerStop,
+			Timestamp: now,
+		})
+	}
+}
+
+func timelineAgentIDFromPane(p tmux.Pane) string {
+	if p.NTMIndex > 0 && p.Type != tmux.AgentUnknown && p.Type != tmux.AgentUser {
+		return fmt.Sprintf("%s_%d", p.Type, p.NTMIndex)
+	}
+	if p.Title != "" {
+		if parts := strings.SplitN(p.Title, "__", 2); len(parts) == 2 && parts[1] != "" {
+			return parts[1]
+		}
+		return p.Title
+	}
+	if p.ID != "" {
+		return p.ID
+	}
+	return ""
 }
 
 func logDCGBlocked(command, session string, panes []tmux.Pane, blocked *tools.BlockedCommand) {
@@ -2080,7 +2551,7 @@ func runSendBatch(opts SendOptions) error {
 				sendErr = fmt.Errorf("pane %d not found", paneIdx)
 				continue
 			}
-			if err := sendPromptToPane(p, promptText); err != nil {
+			if err := sendPromptToPane(opts.Session, p, promptText); err != nil {
 				paneFailed++
 				sendErr = err
 			} else {

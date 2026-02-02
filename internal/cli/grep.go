@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -22,16 +23,21 @@ type GrepMatch struct {
 	Line    int      `json:"line"`
 	Content string   `json:"content"`
 	Context []string `json:"context,omitempty"`
+	// ContextBefore/After track how many lines in Context are before/after the match.
+	// This avoids assuming a symmetric split when only -A or -B is provided.
+	ContextBefore int `json:"context_before,omitempty"`
+	ContextAfter  int `json:"context_after,omitempty"`
 }
 
 // GrepResult contains all matches from a grep operation
 type GrepResult struct {
-	Pattern    string      `json:"pattern"`
-	Session    string      `json:"session"`
-	Matches    []GrepMatch `json:"matches"`
-	TotalLines int         `json:"total_lines_searched"`
-	MatchCount int         `json:"match_count"`
-	PaneCount  int         `json:"panes_searched"`
+	Pattern         string      `json:"pattern"`
+	Session         string      `json:"session"`
+	Matches         []GrepMatch `json:"matches"`
+	TotalLines      int         `json:"total_lines_searched"`
+	MatchCount      int         `json:"match_count"`
+	PaneCount       int         `json:"panes_searched"`
+	CaseInsensitive bool        `json:"case_insensitive,omitempty"`
 }
 
 // Text outputs the grep result as human-readable text
@@ -58,7 +64,11 @@ func (r *GrepResult) Text(w io.Writer) error {
 
 		// Print context before (if any)
 		if len(m.Context) > 0 {
-			contextBefore := len(m.Context) / 2
+			contextBefore := m.ContextBefore
+			if contextBefore < 0 || contextBefore > len(m.Context) ||
+				(contextBefore == 0 && m.ContextAfter == 0) {
+				contextBefore = len(m.Context) / 2
+			}
 			for j := 0; j < contextBefore && j < len(m.Context); j++ {
 				lineNum := m.Line - contextBefore + j
 				if lineNum > 0 {
@@ -71,11 +81,15 @@ func (r *GrepResult) Text(w io.Writer) error {
 		// Print matching line with highlighting
 		fmt.Fprintf(w, "%s%s/%s:%d:%s %s\n",
 			colorize(t.Blue), m.Session, m.Pane, m.Line, colorize(t.Text),
-			highlightMatch(m.Content, r.Pattern, t))
+			highlightMatch(m.Content, r.Pattern, r.CaseInsensitive, t))
 
 		// Print context after (if any)
 		if len(m.Context) > 0 {
-			contextBefore := len(m.Context) / 2
+			contextBefore := m.ContextBefore
+			if contextBefore < 0 || contextBefore > len(m.Context) ||
+				(contextBefore == 0 && m.ContextAfter == 0) {
+				contextBefore = len(m.Context) / 2
+			}
 			for j := contextBefore; j < len(m.Context); j++ {
 				lineNum := m.Line + j - contextBefore + 1
 				fmt.Fprintf(w, "%s%s/%s:%d-%s %s\n",
@@ -282,6 +296,8 @@ func runGrep(pattern, session string, opts GrepOptions) error {
 					if !opts.ListOnly {
 						// Build context
 						var context []string
+						actualBefore := 0
+						actualAfter := 0
 						beforeCount := opts.BeforeLines
 						afterCount := opts.AfterLines
 						if opts.ContextLines > 0 {
@@ -292,19 +308,23 @@ func runGrep(pattern, session string, opts GrepOptions) error {
 						// Get lines before
 						for j := i - beforeCount; j < i && j >= 0; j++ {
 							context = append(context, lines[j])
+							actualBefore++
 						}
 						// Get lines after
 						for j := i + 1; j <= i+afterCount && j < len(lines); j++ {
 							context = append(context, lines[j])
+							actualAfter++
 						}
 
 						allMatches = append(allMatches, GrepMatch{
-							Session: sess,
-							Pane:    pane.Title,
-							PaneID:  pane.ID,
-							Line:    i + 1, // 1-indexed
-							Content: line,
-							Context: context,
+							Session:       sess,
+							Pane:          pane.Title,
+							PaneID:        pane.ID,
+							Line:          i + 1, // 1-indexed
+							Content:       line,
+							Context:       context,
+							ContextBefore: actualBefore,
+							ContextAfter:  actualAfter,
 						})
 					}
 				}
@@ -314,12 +334,13 @@ func runGrep(pattern, session string, opts GrepOptions) error {
 
 	// Build result
 	result := &GrepResult{
-		Pattern:    pattern,
-		Session:    session,
-		Matches:    allMatches,
-		TotalLines: totalLines,
-		MatchCount: len(allMatches),
-		PaneCount:  panesSearched,
+		Pattern:         pattern,
+		Session:         session,
+		Matches:         allMatches,
+		TotalLines:      totalLines,
+		MatchCount:      len(allMatches),
+		PaneCount:       panesSearched,
+		CaseInsensitive: opts.CaseInsensitive,
 	}
 	if opts.AllSessions {
 		result.Session = "<all>"
@@ -344,6 +365,7 @@ func outputMatchingPanes(panes map[string]bool) error {
 		for p := range panes {
 			paneList = append(paneList, p)
 		}
+		sort.Strings(paneList)
 		return output.PrintJSON(map[string]interface{}{
 			"matching_panes": paneList,
 			"count":          len(paneList),
@@ -355,19 +377,32 @@ func outputMatchingPanes(panes map[string]bool) error {
 		return nil
 	}
 
+	paneList := make([]string, 0, len(panes))
 	for p := range panes {
+		paneList = append(paneList, p)
+	}
+	sort.Strings(paneList)
+	for _, p := range paneList {
 		fmt.Printf("%s%s%s\n", colorize(t.Blue), p, colorize(t.Text))
 	}
 	return nil
 }
 
 // highlightMatch highlights the matched portion in the line
-func highlightMatch(line, pattern string, t theme.Theme) string {
-	// Try raw pattern first (matches what the search actually uses)
-	re, err := regexp.Compile("(?i)(" + pattern + ")")
+func highlightMatch(line, pattern string, caseInsensitive bool, t theme.Theme) string {
+	// Build pattern with optional case-insensitivity to match actual search behavior
+	rePattern := "(" + pattern + ")"
+	if caseInsensitive {
+		rePattern = "(?i)" + rePattern
+	}
+	re, err := regexp.Compile(rePattern)
 	if err != nil {
 		// If pattern fails to compile as regex, use escaped literal
-		re, err = regexp.Compile("(?i)(" + regexp.QuoteMeta(pattern) + ")")
+		rePattern = "(" + regexp.QuoteMeta(pattern) + ")"
+		if caseInsensitive {
+			rePattern = "(?i)" + rePattern
+		}
+		re, err = regexp.Compile(rePattern)
 		if err != nil {
 			return line // Can't highlight, return as-is
 		}

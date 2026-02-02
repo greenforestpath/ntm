@@ -11,6 +11,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/notify"
+	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -43,10 +44,11 @@ type AgentState struct {
 
 // Monitor watches agent health and handles auto-restart
 type Monitor struct {
-	session    string
-	projectDir string
-	cfg        *config.Config
-	notifier   *notify.Notifier
+	session          string
+	projectDir       string
+	cfg              *config.Config
+	notifier         *notify.Notifier
+	rateLimitTracker *ratelimit.RateLimitTracker
 
 	autoRestart bool // Whether to automatically restart crashed agents
 
@@ -64,14 +66,23 @@ func NewMonitor(session, projectDir string, cfg *config.Config, autoRestart bool
 		notifier = notify.New(cfg.Notifications)
 	}
 
+	var tracker *ratelimit.RateLimitTracker
+	if cfg.Resilience.RateLimit.Detect {
+		tracker = ratelimit.NewRateLimitTracker(projectDir)
+		if err := tracker.LoadFromDir(projectDir); err != nil {
+			log.Printf("[resilience] Warning: failed to load rate limit history: %v", err)
+		}
+	}
+
 	return &Monitor{
-		session:     session,
-		projectDir:  projectDir,
-		cfg:         cfg,
-		notifier:    notifier,
-		autoRestart: autoRestart,
-		agents:      make(map[string]*AgentState),
-		done:        make(chan struct{}),
+		session:          session,
+		projectDir:       projectDir,
+		cfg:              cfg,
+		notifier:         notifier,
+		rateLimitTracker: tracker,
+		autoRestart:      autoRestart,
+		agents:           make(map[string]*AgentState),
+		done:             make(chan struct{}),
 	}
 }
 
@@ -277,6 +288,7 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 			}
 		} else if agentState.RateLimited {
 			// Rate limit cleared
+			m.recordRateLimitSuccess(agentState.AgentType)
 			agentState.RateLimited = false
 			agentState.WaitSeconds = 0
 			log.Printf("[resilience] Agent %s rate limit cleared", agentState.PaneID)
@@ -314,6 +326,8 @@ func (m *Monitor) handleRateLimit(agent *AgentState, waitSeconds int) {
 	log.Printf("[resilience] Agent %s (pane %d, type %s) hit rate limit (wait %ds)",
 		agent.PaneID, agent.PaneIndex, agent.AgentType, waitSeconds)
 
+	m.recordRateLimitHit(agent.AgentType, waitSeconds)
+
 	// Snapshot values for async operations
 	session := m.session
 	paneID := agent.PaneID
@@ -339,6 +353,45 @@ func (m *Monitor) handleRateLimit(agent *AgentState, waitSeconds int) {
 			m.triggerRotationAssistance(session, paneIndex, agentType, rotateConfig)
 		}
 	}()
+}
+
+func (m *Monitor) recordRateLimitHit(agentType string, waitSeconds int) {
+	tracker := m.ensureRateLimitTracker()
+	if tracker == nil {
+		return
+	}
+	provider := ratelimit.NormalizeProvider(agentType)
+	tracker.RecordRateLimitWithCooldown(provider, "send", waitSeconds)
+	if err := tracker.SaveToDir(m.projectDir); err != nil {
+		log.Printf("[resilience] Warning: failed to persist rate limit history: %v", err)
+	}
+}
+
+func (m *Monitor) recordRateLimitSuccess(agentType string) {
+	tracker := m.ensureRateLimitTracker()
+	if tracker == nil {
+		return
+	}
+	provider := ratelimit.NormalizeProvider(agentType)
+	tracker.RecordSuccess(provider)
+	if err := tracker.SaveToDir(m.projectDir); err != nil {
+		log.Printf("[resilience] Warning: failed to persist rate limit history: %v", err)
+	}
+}
+
+func (m *Monitor) ensureRateLimitTracker() *ratelimit.RateLimitTracker {
+	if m.rateLimitTracker != nil {
+		return m.rateLimitTracker
+	}
+	if !m.cfg.Resilience.RateLimit.Detect {
+		return nil
+	}
+	tracker := ratelimit.NewRateLimitTracker(m.projectDir)
+	if err := tracker.LoadFromDir(m.projectDir); err != nil {
+		log.Printf("[resilience] Warning: failed to load rate limit history: %v", err)
+	}
+	m.rateLimitTracker = tracker
+	return tracker
 }
 
 // triggerRotationAssistance sends a notification with rotation command or auto-initiates rotation

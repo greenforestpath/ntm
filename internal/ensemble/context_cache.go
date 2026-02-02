@@ -151,6 +151,8 @@ func (c *ContextPackCache) Get(key string) (*ContextPack, bool) {
 	}
 
 	c.mem.Set(key, stored.Pack)
+	// Update mtime to implement LRU pruning behavior on disk
+	_ = os.Chtimes(path, time.Now(), time.Now())
 	return stored.Pack, true
 }
 

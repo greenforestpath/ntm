@@ -48,13 +48,13 @@ func (f *fakeTransferClient) ReleaseReservations(ctx context.Context, projectKey
 	return nil
 }
 
-func (f *fakeTransferClient) RenewReservations(ctx context.Context, projectKey, agentName string, extendSeconds int) error {
+func (f *fakeTransferClient) RenewReservations(ctx context.Context, opts agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error) {
 	f.renewCalls = append(f.renewCalls, renewCall{
-		projectKey:    projectKey,
-		agentName:     agentName,
-		extendSeconds: extendSeconds,
+		projectKey:    opts.ProjectKey,
+		agentName:     opts.AgentName,
+		extendSeconds: opts.ExtendSeconds,
 	})
-	return nil
+	return &agentmail.RenewReservationsResult{}, nil
 }
 
 func TestTransferReservationsSuccess(t *testing.T) {

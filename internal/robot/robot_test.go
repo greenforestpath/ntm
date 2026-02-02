@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -212,6 +213,76 @@ func TestTruncateMessage(t *testing.T) {
 				t.Errorf("truncateMessage(%q) = %q, want %q", tc.input, got, tc.expected)
 			}
 		})
+	}
+}
+
+func TestGetMSSearch_MissingBinary(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	output, err := GetMSSearch("workflow")
+	if err != nil {
+		t.Fatalf("GetMSSearch returned error: %v", err)
+	}
+	if output.Success {
+		t.Fatalf("expected failure when ms missing")
+	}
+	if output.ErrorCode != ErrCodeDependencyMissing {
+		t.Fatalf("expected %s, got %s", ErrCodeDependencyMissing, output.ErrorCode)
+	}
+}
+
+func TestGetMSSearch_EmptyQuery(t *testing.T) {
+	tmpDir := t.TempDir()
+	stubPath := filepath.Join(tmpDir, "ms")
+	if err := os.WriteFile(stubPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("failed to write ms stub: %v", err)
+	}
+	t.Setenv("PATH", tmpDir)
+
+	output, err := GetMSSearch(" ")
+	if err != nil {
+		t.Fatalf("GetMSSearch returned error: %v", err)
+	}
+	if output.Success {
+		t.Fatalf("expected failure when query empty")
+	}
+	if output.ErrorCode != ErrCodeInvalidFlag {
+		t.Fatalf("expected %s, got %s", ErrCodeInvalidFlag, output.ErrorCode)
+	}
+}
+
+func TestGetMSShow_MissingBinary(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	output, err := GetMSShow("skill-123")
+	if err != nil {
+		t.Fatalf("GetMSShow returned error: %v", err)
+	}
+	if output.Success {
+		t.Fatalf("expected failure when ms missing")
+	}
+	if output.ErrorCode != ErrCodeDependencyMissing {
+		t.Fatalf("expected %s, got %s", ErrCodeDependencyMissing, output.ErrorCode)
+	}
+}
+
+func TestGetMSShow_EmptyID(t *testing.T) {
+	tmpDir := t.TempDir()
+	stubPath := filepath.Join(tmpDir, "ms")
+	if err := os.WriteFile(stubPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("failed to write ms stub: %v", err)
+	}
+	t.Setenv("PATH", tmpDir)
+
+	output, err := GetMSShow(" ")
+	if err != nil {
+		t.Fatalf("GetMSShow returned error: %v", err)
+	}
+	if output.Success {
+		t.Fatalf("expected failure when id empty")
+	}
+	if output.ErrorCode != ErrCodeInvalidFlag {
+		t.Fatalf("expected %s, got %s", ErrCodeInvalidFlag, output.ErrorCode)
 	}
 }
 

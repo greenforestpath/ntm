@@ -73,6 +73,46 @@ func TestNewWithCustomPort(t *testing.T) {
 	}
 }
 
+func TestValidateConfigDefaults(t *testing.T) {
+	if err := ValidateConfig(Config{}); err != nil {
+		t.Fatalf("ValidateConfig default should succeed, got %v", err)
+	}
+}
+
+func TestValidateConfigRejectsExternalLocalAuth(t *testing.T) {
+	cfg := Config{
+		Host: "0.0.0.0",
+		Auth: AuthConfig{Mode: AuthModeLocal},
+	}
+	if err := ValidateConfig(cfg); err == nil || !strings.Contains(err.Error(), "refusing to bind") {
+		t.Fatalf("expected bind refusal error, got %v", err)
+	}
+}
+
+func TestValidateConfigAllowsExternalWithAuth(t *testing.T) {
+	cfg := Config{
+		Host: "0.0.0.0",
+		Auth: AuthConfig{Mode: AuthModeAPIKey, APIKey: "test-key"},
+	}
+	if err := ValidateConfig(cfg); err != nil {
+		t.Fatalf("expected external bind with auth to succeed, got %v", err)
+	}
+}
+
+func TestValidateConfigPublicBaseURL(t *testing.T) {
+	cfg := Config{
+		PublicBaseURL: "https://ntm.example.com",
+	}
+	if err := ValidateConfig(cfg); err != nil {
+		t.Fatalf("expected valid public base URL, got %v", err)
+	}
+
+	cfg.PublicBaseURL = "not-a-url"
+	if err := ValidateConfig(cfg); err == nil {
+		t.Fatalf("expected invalid public base URL error")
+	}
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	srv, _ := setupTestServer(t)
 
@@ -494,6 +534,38 @@ func TestWebSocketRejectedWithoutToken(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("ws unauth status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestCheckWSOriginAllowsConfiguredOrigin(t *testing.T) {
+	srv := New(Config{
+		Auth: AuthConfig{
+			Mode:   AuthModeAPIKey,
+			APIKey: "secret",
+		},
+		AllowedOrigins: []string{"https://ui.example.com"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ws", nil)
+	req.Header.Set("Origin", "https://ui.example.com")
+
+	if !srv.checkWSOrigin(req) {
+		t.Fatalf("expected origin to be allowed")
+	}
+}
+
+func TestCheckWSOriginRejectsUnlistedOrigin(t *testing.T) {
+	srv := New(Config{
+		Auth: AuthConfig{
+			Mode:   AuthModeAPIKey,
+			APIKey: "secret",
+		},
+		AllowedOrigins: []string{"https://ui.example.com"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ws", nil)
+	req.Header.Set("Origin", "https://evil.example.com")
+
+	if srv.checkWSOrigin(req) {
+		t.Fatalf("expected origin to be rejected")
 	}
 }
 
@@ -1084,4 +1156,675 @@ func TestWSHubPublish(t *testing.T) {
 	if seq != 1 {
 		t.Errorf("seq = %d, want 1", seq)
 	}
+}
+
+// =============================================================================
+// WebSocket Streaming Tests (bd-3ef1l)
+// Tests for streaming event delivery and client subscription behavior
+// =============================================================================
+
+func TestWSHub_PaneOutputSequence(t *testing.T) {
+	hub := NewWSHub()
+	go hub.Run()
+	defer hub.Stop()
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Publish multiple pane output events
+	for i := 0; i < 10; i++ {
+		hub.Publish("panes:test:0", "pane.output", map[string]interface{}{
+			"lines": []string{"output line " + string(rune('A'+i))},
+			"seq":   i,
+		})
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify sequence numbers
+	hub.seqMu.Lock()
+	finalSeq := hub.seq
+	hub.seqMu.Unlock()
+
+	if finalSeq != 10 {
+		t.Errorf("expected final seq 10, got %d", finalSeq)
+	}
+
+	t.Logf("WS_STREAMING_TEST: hub assigned sequences 1-%d for 10 pane output events", finalSeq)
+}
+
+func TestWSHub_MultiClientFanOut(t *testing.T) {
+	hub := NewWSHub()
+	go hub.Run()
+	defer hub.Stop()
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Create simulated clients
+	clients := make([]*WSClient, 3)
+	for i := 0; i < 3; i++ {
+		clients[i] = &WSClient{
+			id:     "client-" + string(rune('A'+i)),
+			hub:    hub,
+			send:   make(chan []byte, 100),
+			topics: make(map[string]struct{}),
+		}
+		// Subscribe to pane output
+		clients[i].Subscribe([]string{"panes:*"})
+
+		// Register with hub
+		hub.register <- clients[i]
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	// Verify client count
+	if hub.ClientCount() != 3 {
+		t.Errorf("expected 3 clients, got %d", hub.ClientCount())
+	}
+
+	// Publish an event
+	hub.Publish("panes:test:0", "pane.output", map[string]interface{}{
+		"lines": []string{"test output"},
+	})
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Each client should receive the message
+	for i, client := range clients {
+		select {
+		case msg := <-client.send:
+			if len(msg) == 0 {
+				t.Errorf("client %d received empty message", i)
+			}
+			t.Logf("WS_STREAMING_TEST: client %s received %d bytes", client.id, len(msg))
+		default:
+			t.Errorf("client %d did not receive message", i)
+		}
+	}
+
+	// Cleanup
+	for _, client := range clients {
+		hub.unregister <- client
+	}
+}
+
+func TestWSHub_TopicFiltering(t *testing.T) {
+	hub := NewWSHub()
+	go hub.Run()
+	defer hub.Stop()
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Create two clients with different subscriptions
+	paneClient := &WSClient{
+		id:     "pane-watcher",
+		hub:    hub,
+		send:   make(chan []byte, 100),
+		topics: make(map[string]struct{}),
+	}
+	paneClient.Subscribe([]string{"panes:*"})
+	hub.register <- paneClient
+
+	sessionClient := &WSClient{
+		id:     "session-watcher",
+		hub:    hub,
+		send:   make(chan []byte, 100),
+		topics: make(map[string]struct{}),
+	}
+	sessionClient.Subscribe([]string{"sessions:*"})
+	hub.register <- sessionClient
+
+	time.Sleep(20 * time.Millisecond)
+
+	// Publish a pane event
+	hub.Publish("panes:test:0", "pane.output", map[string]interface{}{"data": "pane"})
+
+	// Publish a session event
+	hub.Publish("sessions:test", "session.started", map[string]interface{}{"data": "session"})
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Pane client should only receive pane event
+	paneCount := 0
+	for {
+		select {
+		case <-paneClient.send:
+			paneCount++
+		default:
+			goto donePane
+		}
+	}
+donePane:
+
+	// Session client should only receive session event
+	sessionCount := 0
+	for {
+		select {
+		case <-sessionClient.send:
+			sessionCount++
+		default:
+			goto doneSession
+		}
+	}
+doneSession:
+
+	if paneCount != 1 {
+		t.Errorf("pane client expected 1 message, got %d", paneCount)
+	}
+	if sessionCount != 1 {
+		t.Errorf("session client expected 1 message, got %d", sessionCount)
+	}
+
+	t.Logf("WS_STREAMING_TEST: topic filtering verified, pane_client=%d session_client=%d", paneCount, sessionCount)
+
+	// Cleanup
+	hub.unregister <- paneClient
+	hub.unregister <- sessionClient
+}
+
+func TestWSHub_ClientBufferFull(t *testing.T) {
+	hub := NewWSHub()
+	go hub.Run()
+	defer hub.Stop()
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Create client with tiny buffer (1)
+	slowClient := &WSClient{
+		id:     "slow-client",
+		hub:    hub,
+		send:   make(chan []byte, 1), // Very small buffer
+		topics: make(map[string]struct{}),
+	}
+	slowClient.Subscribe([]string{"panes:*"})
+	hub.register <- slowClient
+
+	time.Sleep(20 * time.Millisecond)
+
+	// Publish many events quickly - some should be dropped due to full buffer
+	for i := 0; i < 50; i++ {
+		hub.Publish("panes:test:0", "pane.output", map[string]interface{}{"idx": i})
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Count received messages
+	received := 0
+	for {
+		select {
+		case <-slowClient.send:
+			received++
+		default:
+			goto done
+		}
+	}
+done:
+
+	// Should receive some but not all (buffer was full)
+	if received >= 50 {
+		t.Errorf("expected some messages to be dropped, but received all %d", received)
+	}
+	if received == 0 {
+		t.Error("expected at least some messages to be received")
+	}
+
+	t.Logf("WS_STREAMING_TEST: backpressure test - sent 50, received %d (dropped %d)", received, 50-received)
+
+	hub.unregister <- slowClient
+}
+
+func TestWSHub_GlobalWildcard(t *testing.T) {
+	hub := NewWSHub()
+	go hub.Run()
+	defer hub.Stop()
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Client subscribed to everything
+	globalClient := &WSClient{
+		id:     "global-watcher",
+		hub:    hub,
+		send:   make(chan []byte, 100),
+		topics: make(map[string]struct{}),
+	}
+	globalClient.Subscribe([]string{"*"})
+	hub.register <- globalClient
+
+	time.Sleep(20 * time.Millisecond)
+
+	// Publish to different topics
+	hub.Publish("panes:test:0", "pane.output", map[string]interface{}{})
+	hub.Publish("sessions:test", "session.started", map[string]interface{}{})
+	hub.Publish("global:events", "system.event", map[string]interface{}{})
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Global client should receive all 3
+	received := 0
+	for {
+		select {
+		case <-globalClient.send:
+			received++
+		default:
+			goto done
+		}
+	}
+done:
+
+	if received != 3 {
+		t.Errorf("global wildcard client expected 3 messages, got %d", received)
+	}
+
+	t.Logf("WS_STREAMING_TEST: global wildcard subscription received all %d events", received)
+
+	hub.unregister <- globalClient
+}
+
+func TestMatchTopic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		pattern string
+		topic   string
+		want    bool
+	}{
+		{"wildcard matches anything", "*", "sessions:foo", true},
+		{"wildcard matches empty-like", "*", "x", true},
+		{"exact match", "global", "global", true},
+		{"exact mismatch", "global", "sessions:foo", false},
+		{"prefix wildcard match", "sessions:*", "sessions:my-session", true},
+		{"prefix wildcard mismatch", "sessions:*", "panes:foo", false},
+		{"prefix wildcard exact prefix", "panes:*", "panes:test:0", true},
+		{"empty pattern no match", "", "global", false},
+		{"empty topic no match", "global", "", false},
+		{"both empty", "", "", true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := matchTopic(tc.pattern, tc.topic)
+			if got != tc.want {
+				t.Errorf("matchTopic(%q, %q) = %v, want %v", tc.pattern, tc.topic, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeRequestID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"alphanumeric", "abc123", "abc123"},
+		{"with dashes", "req-123-abc", "req-123-abc"},
+		{"with underscores", "req_123_abc", "req_123_abc"},
+		{"with dots", "req.123.abc", "req.123.abc"},
+		{"with colons", "req:123", "req:123"},
+		{"with slashes", "req/path", "req/path"},
+		{"strips special chars", "req<script>alert", "reqscriptalert"},
+		{"strips spaces", "req 123", "req123"},
+		{"truncates long input", strings.Repeat("a", 100), strings.Repeat("a", 64)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := sanitizeRequestID(tc.input)
+			if got != tc.want {
+				t.Errorf("sanitizeRequestID(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{"empty", "", true},
+		{"localhost", "localhost", true},
+		{"LOCALHOST", "LOCALHOST", true},
+		{"127.0.0.1", "127.0.0.1", true},
+		{"::1", "::1", true},
+		{"bracketed ::1", "[::1]", true},
+		{"external IP", "192.168.1.1", false},
+		{"domain", "example.com", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := isLoopbackHost(tc.host)
+			if got != tc.want {
+				t.Errorf("isLoopbackHost(%q) = %v, want %v", tc.host, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOriginAllowed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		origin    string
+		allowlist []string
+		want      bool
+	}{
+		{"empty origin always allowed", "", []string{"example.com"}, true},
+		{"empty allowlist rejects", "http://evil.com", []string{}, false},
+		{"wildcard allows all", "http://evil.com", []string{"*"}, true},
+		{"hostname match", "http://example.com", []string{"example.com"}, true},
+		{"hostname mismatch", "http://evil.com", []string{"example.com"}, false},
+		{"full URL match", "http://localhost:3000", []string{"http://localhost:3000"}, true},
+		{"port mismatch in full URL", "http://localhost:3001", []string{"http://localhost:3000"}, false},
+		{"host:port match", "http://localhost:8080", []string{"localhost:8080"}, true},
+		{"case insensitive", "http://Example.Com", []string{"example.com"}, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := originAllowed(tc.origin, tc.allowlist)
+			if got != tc.want {
+				t.Errorf("originAllowed(%q, %v) = %v, want %v", tc.origin, tc.allowlist, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatAge(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		d    time.Duration
+		want string
+	}{
+		{"seconds", 30 * time.Second, "just now"},
+		{"minutes", 5 * time.Minute, "5m ago"},
+		{"hours", 3 * time.Hour, "3h ago"},
+		{"days", 48 * time.Hour, "2d ago"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := formatAge(tc.d)
+			if got != tc.want {
+				t.Errorf("formatAge(%v) = %q, want %q", tc.d, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClaimString(t *testing.T) {
+	t.Parallel()
+
+	claims := map[string]interface{}{
+		"iss":    "https://auth.example.com",
+		"number": float64(42),
+		"empty":  "",
+	}
+
+	tests := []struct {
+		name   string
+		key    string
+		wantV  string
+		wantOK bool
+	}{
+		{"present string", "iss", "https://auth.example.com", true},
+		{"missing key", "sub", "", false},
+		{"non-string value", "number", "", false},
+		{"empty string", "empty", "", true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			v, ok := claimString(claims, tc.key)
+			if ok != tc.wantOK || v != tc.wantV {
+				t.Errorf("claimString(claims, %q) = (%q, %v), want (%q, %v)", tc.key, v, ok, tc.wantV, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestClaimInt64(t *testing.T) {
+	t.Parallel()
+
+	claims := map[string]interface{}{
+		"exp":    float64(1700000000),
+		"string": "not a number",
+		"number": json.Number("42"),
+	}
+
+	tests := []struct {
+		name   string
+		key    string
+		wantV  int64
+		wantOK bool
+	}{
+		{"float64 value", "exp", 1700000000, true},
+		{"json.Number value", "number", 42, true},
+		{"string value", "string", 0, false},
+		{"missing key", "nbf", 0, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			v, ok := claimInt64(claims, tc.key)
+			if ok != tc.wantOK || v != tc.wantV {
+				t.Errorf("claimInt64(claims, %q) = (%d, %v), want (%d, %v)", tc.key, v, ok, tc.wantV, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestClaimAudienceContains(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		claims   map[string]interface{}
+		expected string
+		want     bool
+	}{
+		{"string aud match", map[string]interface{}{"aud": "my-app"}, "my-app", true},
+		{"string aud mismatch", map[string]interface{}{"aud": "other-app"}, "my-app", false},
+		{"array aud match", map[string]interface{}{"aud": []interface{}{"app1", "my-app"}}, "my-app", true},
+		{"array aud mismatch", map[string]interface{}{"aud": []interface{}{"app1", "app2"}}, "my-app", false},
+		{"missing aud", map[string]interface{}{}, "my-app", false},
+		{"wrong type", map[string]interface{}{"aud": 42}, "my-app", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := claimAudienceContains(tc.claims, tc.expected)
+			if got != tc.want {
+				t.Errorf("claimAudienceContains(%v, %q) = %v, want %v", tc.claims, tc.expected, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExtractBearerToken(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		auth  string
+		want  string
+	}{
+		{"valid bearer", "Bearer my-token-123", "my-token-123"},
+		{"bearer lowercase", "bearer my-token", "my-token"},
+		{"BEARER uppercase", "BEARER my-token", "my-token"},
+		{"empty header", "", ""},
+		{"no bearer prefix", "Basic dXNlcjpwYXNz", ""},
+		{"just bearer", "Bearer", ""},
+		{"extra parts", "Bearer token extra", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r, _ := http.NewRequest("GET", "/", nil)
+			if tc.auth != "" {
+				r.Header.Set("Authorization", tc.auth)
+			}
+			got := extractBearerToken(r)
+			if got != tc.want {
+				t.Errorf("extractBearerToken(auth=%q) = %q, want %q", tc.auth, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExtractAPIKey(t *testing.T) {
+	t.Parallel()
+
+	t.Run("from X-API-Key header", func(t *testing.T) {
+		t.Parallel()
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.Header.Set("X-API-Key", "api-key-123")
+		got := extractAPIKey(r)
+		if got != "api-key-123" {
+			t.Errorf("extractAPIKey() = %q, want %q", got, "api-key-123")
+		}
+	})
+
+	t.Run("falls back to bearer token", func(t *testing.T) {
+		t.Parallel()
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.Header.Set("Authorization", "Bearer fallback-token")
+		got := extractAPIKey(r)
+		if got != "fallback-token" {
+			t.Errorf("extractAPIKey() = %q, want %q", got, "fallback-token")
+		}
+	})
+
+	t.Run("X-API-Key takes priority", func(t *testing.T) {
+		t.Parallel()
+		r, _ := http.NewRequest("GET", "/", nil)
+		r.Header.Set("X-API-Key", "api-key")
+		r.Header.Set("Authorization", "Bearer bearer-token")
+		got := extractAPIKey(r)
+		if got != "api-key" {
+			t.Errorf("extractAPIKey() = %q, want %q (X-API-Key should take priority)", got, "api-key")
+		}
+	})
+
+	t.Run("no key", func(t *testing.T) {
+		t.Parallel()
+		r, _ := http.NewRequest("GET", "/", nil)
+		got := extractAPIKey(r)
+		if got != "" {
+			t.Errorf("extractAPIKey() = %q, want empty", got)
+		}
+	})
+}
+
+func TestIsWebSocketUpgrade(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		upgrade    string
+		connection string
+		want       bool
+	}{
+		{"valid websocket", "websocket", "Upgrade", true},
+		{"case insensitive upgrade", "WebSocket", "upgrade", true},
+		{"missing upgrade header", "", "Upgrade", false},
+		{"wrong upgrade", "http2", "Upgrade", false},
+		{"missing connection", "websocket", "", false},
+		{"connection without upgrade", "websocket", "keep-alive", false},
+		{"connection with multiple values", "websocket", "keep-alive, Upgrade", true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r, _ := http.NewRequest("GET", "/ws", nil)
+			if tc.upgrade != "" {
+				r.Header.Set("Upgrade", tc.upgrade)
+			}
+			if tc.connection != "" {
+				r.Header.Set("Connection", tc.connection)
+			}
+			got := isWebSocketUpgrade(r)
+			if got != tc.want {
+				t.Errorf("isWebSocketUpgrade(upgrade=%q, connection=%q) = %v, want %v", tc.upgrade, tc.connection, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseJWT(t *testing.T) {
+	t.Parallel()
+
+	// Build a valid JWT: header.payload.signature (base64url encoded)
+	headerB64 := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"key-1"}`))
+	payloadB64 := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://auth.example.com","sub":"user-1"}`))
+	sigB64 := base64.RawURLEncoding.EncodeToString([]byte("fakesig"))
+	validToken := headerB64 + "." + payloadB64 + "." + sigB64
+
+	t.Run("valid JWT", func(t *testing.T) {
+		t.Parallel()
+		header, claims, sigInput, sig, err := parseJWT(validToken)
+		if err != nil {
+			t.Fatalf("parseJWT() error: %v", err)
+		}
+		if header.Alg != "RS256" {
+			t.Errorf("header.Alg = %q, want RS256", header.Alg)
+		}
+		if header.Kid != "key-1" {
+			t.Errorf("header.Kid = %q, want key-1", header.Kid)
+		}
+		if claims["iss"] != "https://auth.example.com" {
+			t.Errorf("claims[iss] = %v, want https://auth.example.com", claims["iss"])
+		}
+		if sigInput != headerB64+"."+payloadB64 {
+			t.Error("signing input mismatch")
+		}
+		if len(sig) == 0 {
+			t.Error("signature should not be empty")
+		}
+	})
+
+	t.Run("invalid format", func(t *testing.T) {
+		t.Parallel()
+		_, _, _, _, err := parseJWT("not.a.jwt.token")
+		if err == nil {
+			t.Error("expected error for invalid JWT format")
+		}
+	})
+
+	t.Run("only two parts", func(t *testing.T) {
+		t.Parallel()
+		_, _, _, _, err := parseJWT("two.parts")
+		if err == nil {
+			t.Error("expected error for two-part token")
+		}
+	})
+
+	t.Run("invalid base64 header", func(t *testing.T) {
+		t.Parallel()
+		_, _, _, _, err := parseJWT("!!!invalid." + payloadB64 + "." + sigB64)
+		if err == nil {
+			t.Error("expected error for invalid base64 header")
+		}
+	})
 }

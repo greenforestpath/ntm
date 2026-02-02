@@ -159,6 +159,12 @@ func AgentTypeToProvider(agentType string) string {
 		return "codex"
 	case "gmi":
 		return "gemini"
+	case "cursor":
+		return "cursor"
+	case "windsurf":
+		return "windsurf"
+	case "aider":
+		return "aider"
 	default:
 		return ""
 	}
@@ -173,6 +179,12 @@ func ProviderToAgentType(provider string) string {
 		return "cod"
 	case "gemini":
 		return "gmi"
+	case "cursor":
+		return "cursor"
+	case "windsurf":
+		return "windsurf"
+	case "aider":
+		return "aider"
 	default:
 		return ""
 	}
@@ -180,5 +192,5 @@ func ProviderToAgentType(provider string) string {
 
 // SupportedProviders returns the list of providers supported by NTM
 func SupportedProviders() []string {
-	return []string{"claude", "codex", "gemini"}
+	return []string{"claude", "codex", "gemini", "cursor", "windsurf", "aider"}
 }

@@ -17,8 +17,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/pt"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
-	"github.com/Dicklesworthstone/ntm/internal/tmux"
-	"github.com/Dicklesworthstone/ntm/internal/tokens"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tracker"
 	"github.com/Dicklesworthstone/ntm/internal/tui/dashboard/panels"
 )
@@ -66,63 +65,14 @@ func (m *Model) fetchAlertsCmd() tea.Cmd {
 	}
 }
 
-// fetchMetricsCmd calculates token usage
+// fetchMetricsCmd refreshes observability metrics.
 func (m *Model) fetchMetricsCmd() tea.Cmd {
 	gen := m.nextGen(refreshMetrics)
-	// Capture panes from model to avoid mutation during async fetch
-	panes := m.panes
 
 	return func() tea.Msg {
-		var totalTokens int
-		var totalCost float64
-		var agentMetrics []panels.AgentMetric
-
-		for _, p := range panes {
-			// Skip user panes
-			if p.Type == tmux.AgentUser {
-				continue
-			}
-
-			// Capture more context for better estimate
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			out, err := tmux.CapturePaneOutputContext(ctx, p.ID, 2000)
-			cancel()
-			if err != nil {
-				continue
-			}
-
-			// Estimate
-			modelName := "gpt-4" // default
-			if p.Variant != "" {
-				modelName = p.Variant
-			}
-
-			usage := tokens.GetUsageInfo(out, modelName)
-			tokensCount := usage.EstimatedTokens
-
-			totalTokens += tokensCount
-
-			// Rough cost calculation (very approximate placeholders)
-			// $10 per 1M tokens input (blended)
-			cost := float64(tokensCount) / 1_000_000.0 * 10.0
-			totalCost += cost
-
-			agentMetrics = append(agentMetrics, panels.AgentMetric{
-				Name:       p.Title,
-				Type:       string(p.Type),
-				Tokens:     tokensCount,
-				Cost:       cost,
-				ContextPct: usage.UsagePercent,
-			})
-		}
-
 		return MetricsUpdateMsg{
-			Data: panels.MetricsData{
-				TotalTokens: totalTokens,
-				TotalCost:   totalCost,
-				Agents:      agentMetrics,
-			},
-			Gen: gen,
+			Data: panels.MetricsData{},
+			Gen:  gen,
 		}
 	}
 }
@@ -174,6 +124,25 @@ func (m *Model) fetchCASSContextCmd() tea.Cmd {
 		}
 
 		return CASSContextMsg{Hits: resp.Hits, Gen: gen}
+	}
+}
+
+// fetchTimelineCmd loads persisted timeline events for the session.
+func (m *Model) fetchTimelineCmd() tea.Cmd {
+	session := m.session
+	return func() tea.Msg {
+		if session == "" {
+			return TimelineLoadMsg{Events: nil}
+		}
+		persister, err := state.GetDefaultTimelinePersister()
+		if err != nil {
+			return TimelineLoadMsg{Err: err}
+		}
+		events, err := persister.LoadTimeline(session)
+		if err != nil {
+			return TimelineLoadMsg{Err: err}
+		}
+		return TimelineLoadMsg{Events: events}
 	}
 }
 

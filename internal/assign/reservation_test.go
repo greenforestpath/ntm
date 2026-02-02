@@ -21,6 +21,13 @@ the authentication bug.`,
 			wantMin:   1,
 		},
 		{
+			name:        "file with line suffix",
+			title:       "Fix scanner issues",
+			description: `Review internal/scanner/scanner.go:42 and internal/cli/root.go:10:3`,
+			wantPaths:   []string{"internal/scanner/scanner.go", "internal/cli/root.go"},
+			wantMin:     2,
+		},
+		{
 			name:  "multiple files",
 			title: "Refactor API layer",
 			description: `Files to modify:

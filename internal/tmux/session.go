@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Dicklesworthstone/ntm/internal/agent"
 	"os"
 	"os/exec"
 	"regexp"
@@ -11,7 +12,6 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
-	"github.com/Dicklesworthstone/ntm/internal/agent"
 )
 
 // paneNameRegex matches the NTM pane naming convention:
@@ -41,7 +41,7 @@ const (
 )
 
 // FieldSeparator is used to separate fields in tmux format strings.
-const FieldSeparator = ":::"
+const FieldSeparator = "_NTM_SEP_"
 
 // Pane represents a tmux pane
 type Pane struct {
@@ -138,27 +138,30 @@ func detectAgentFromCommand(command string) AgentType {
 	cmd := strings.ToLower(command)
 
 	// Claude Code variants
-	if strings.Contains(cmd, "claude") {
+	if cmd == "claude" || strings.HasPrefix(cmd, "claude ") || strings.Contains(cmd, "/claude") ||
+		cmd == "cc" || strings.HasPrefix(cmd, "cc ") {
 		return AgentClaude
 	}
 
 	// Codex CLI
-	if cmd == "codex" || strings.HasPrefix(cmd, "codex ") || strings.Contains(cmd, "/codex") {
+	if cmd == "codex" || strings.HasPrefix(cmd, "codex ") || strings.Contains(cmd, "/codex") ||
+		cmd == "cod" || strings.HasPrefix(cmd, "cod ") {
 		return AgentCodex
 	}
 
 	// Gemini CLI
-	if cmd == "gemini" || strings.HasPrefix(cmd, "gemini ") || strings.Contains(cmd, "/gemini") {
+	if cmd == "gemini" || strings.HasPrefix(cmd, "gemini ") || strings.Contains(cmd, "/gemini") ||
+		cmd == "gmi" || strings.HasPrefix(cmd, "gmi ") {
 		return AgentGemini
 	}
 
 	// Cursor
-	if strings.Contains(cmd, "cursor") {
+	if cmd == "cursor" || strings.HasPrefix(cmd, "cursor ") || strings.Contains(cmd, "/cursor") {
 		return AgentCursor
 	}
 
 	// Windsurf
-	if strings.Contains(cmd, "windsurf") {
+	if cmd == "windsurf" || strings.HasPrefix(cmd, "windsurf ") || strings.Contains(cmd, "/windsurf") {
 		return AgentWindsurf
 	}
 
@@ -324,11 +327,23 @@ func (c *Client) GetPanesContext(ctx context.Context, session string) ([]Pane, e
 			continue
 		}
 
-		index, _ := strconv.Atoi(parts[1])
-		width, _ := strconv.Atoi(parts[4])
-		height, _ := strconv.Atoi(parts[5])
+		index, err := strconv.Atoi(parts[1])
+		if err != nil {
+			continue
+		}
+		width, err := strconv.Atoi(parts[4])
+		if err != nil {
+			continue
+		}
+		height, err := strconv.Atoi(parts[5])
+		if err != nil {
+			continue
+		}
 		active := parts[6] == "1"
-		pid, _ := strconv.Atoi(parts[7])
+		pid, err := strconv.Atoi(parts[7])
+		if err != nil {
+			continue
+		}
 
 		pane := Pane{
 			ID:      parts[0],
@@ -367,6 +382,81 @@ func GetPanes(session string) ([]Pane, error) {
 // GetPanesContext returns all panes in a session with cancellation support (default client).
 func GetPanesContext(ctx context.Context, session string) ([]Pane, error) {
 	return DefaultClient.GetPanesContext(ctx, session)
+}
+
+// GetAllPanesContext returns all panes from all sessions, grouped by session name.
+func (c *Client) GetAllPanesContext(ctx context.Context) (map[string][]Pane, error) {
+	sep := FieldSeparator
+	// Add session_name at the beginning
+	format := fmt.Sprintf("#{session_name}%[1]s#{pane_id}%[1]s#{pane_index}%[1]s#{pane_title}%[1]s#{pane_current_command}%[1]s#{pane_width}%[1]s#{pane_height}%[1]s#{pane_active}%[1]s#{pane_pid}", sep)
+	output, err := c.RunContext(ctx, "list-panes", "-a", "-F", format)
+	if err != nil {
+		return nil, err
+	}
+
+	panesBySession := make(map[string][]Pane)
+
+	for _, line := range strings.Split(output, "\n") {
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Split(line, sep)
+		if len(parts) < 9 {
+			continue
+		}
+
+		sessionName := parts[0]
+		index, err := strconv.Atoi(parts[2])
+		if err != nil {
+			continue
+		}
+		width, err := strconv.Atoi(parts[5])
+		if err != nil {
+			continue
+		}
+		height, err := strconv.Atoi(parts[6])
+		if err != nil {
+			continue
+		}
+		active := parts[7] == "1"
+		pid, err := strconv.Atoi(parts[8])
+		if err != nil {
+			continue
+		}
+
+		pane := Pane{
+			ID:      parts[1],
+			Index:   index,
+			Title:   parts[3],
+			Command: parts[4],
+			Width:   width,
+			Height:  height,
+			Active:  active,
+			PID:     pid,
+		}
+
+		// Parse pane title using regex to extract type, index, variant, and tags
+		// Format: {session}__{type}_{index} or {session}__{type}_{index}_{variant}
+		pane.Type, pane.NTMIndex, pane.Variant, pane.Tags = parseAgentFromTitle(pane.Title)
+
+		// Fallback: if title didn't match NTM format, try detecting from process command
+		// This handles cases where shell prompts or tmux hooks change the pane title
+		if pane.Type == AgentUser && pane.Command != "" {
+			if detected := detectAgentFromCommand(pane.Command); detected != AgentUser {
+				pane.Type = detected
+			}
+		}
+
+		panesBySession[sessionName] = append(panesBySession[sessionName], pane)
+	}
+
+	return panesBySession, nil
+}
+
+// GetAllPanes returns all panes from all sessions (default client)
+func GetAllPanes() (map[string][]Pane, error) {
+	return DefaultClient.GetAllPanesContext(context.Background())
 }
 
 // GetFirstWindow returns the first window index for a session
@@ -717,9 +807,19 @@ func (c *Client) PasteKeys(target, content string, enter bool) error {
 	return c.SendKeys(target, content, enter)
 }
 
+// PasteKeysWithDelay pastes content to a pane with a configurable delay before Enter.
+func (c *Client) PasteKeysWithDelay(target, content string, enter bool, enterDelay time.Duration) error {
+	return c.SendKeysWithDelay(target, content, enter, enterDelay)
+}
+
 // PasteKeys pastes content to a pane (default client)
 func PasteKeys(target, content string, enter bool) error {
 	return DefaultClient.PasteKeys(target, content, enter)
+}
+
+// PasteKeysWithDelay pastes content to a pane with a configurable delay (default client)
+func PasteKeysWithDelay(target, content string, enter bool, enterDelay time.Duration) error {
+	return DefaultClient.PasteKeysWithDelay(target, content, enter, enterDelay)
 }
 
 // SendInterrupt sends Ctrl+C to a pane
@@ -888,6 +988,9 @@ func (c *Client) CapturePaneOutput(target string, lines int) (string, error) {
 
 // CapturePaneOutputContext captures the output of a pane with cancellation support.
 func (c *Client) CapturePaneOutputContext(ctx context.Context, target string, lines int) (string, error) {
+	if lines < 0 {
+		lines = -lines
+	}
 	return c.RunContext(ctx, "capture-pane", "-t", target, "-p", "-S", fmt.Sprintf("-%d", lines))
 }
 
@@ -994,12 +1097,24 @@ func (c *Client) GetPanesWithActivityContext(ctx context.Context, session string
 			continue
 		}
 
-		index, _ := strconv.Atoi(parts[1])
-		width, _ := strconv.Atoi(parts[4])
-		height, _ := strconv.Atoi(parts[5])
+		index, err := strconv.Atoi(parts[1])
+		if err != nil {
+			continue
+		}
+		width, err := strconv.Atoi(parts[4])
+		if err != nil {
+			continue
+		}
+		height, err := strconv.Atoi(parts[5])
+		if err != nil {
+			continue
+		}
 		active := parts[6] == "1"
 		rawTimestamp := strings.TrimSpace(parts[7])
-		pid, _ := strconv.Atoi(parts[8])
+		pid, err := strconv.Atoi(parts[8])
+		if err != nil {
+			continue
+		}
 		now := time.Now()
 		lastActivity, err := parsePaneActivityTimestamp(rawTimestamp, now)
 		if err != nil {

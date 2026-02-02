@@ -65,6 +65,29 @@ ntm --robot-jfp-search="debugging"      # Deprecated
 ntm --robot-cass-search="auth error"    # Deprecated
 ```
 
+### 1.3.1 Flywheel Tool Bridges (Inventory + Wrappers)
+
+Use the tool inventory to discover what is available on the current machine:
+
+```bash
+ntm --robot-tools
+```
+
+Tool bridges are **optional**. When a tool is missing, robot commands return `DEPENDENCY_MISSING` with an actionable hint. Use `--robot-tools` and `--robot-capabilities` to confirm which wrappers are supported in your build.
+
+**Implemented today**
+- **JFP** (JeffreysPrompts): `--robot-jfp-status`, `--robot-jfp-list`, `--robot-jfp-search`, `--robot-jfp-show`, `--robot-jfp-suggest`, `--robot-jfp-installed`, `--robot-jfp-categories`, `--robot-jfp-tags`, `--robot-jfp-bundles`
+- **MS** (Meta Skill): `--robot-ms-search`, `--robot-ms-show`
+- **DCG** (Destructive Command Guard): `--robot-dcg-status`
+
+**Planned / rolling out** (names follow `--robot-<tool>-<action>`; confirm via `--robot-capabilities`)
+- **SLB** (two-person approvals): `--robot-slb-*`
+- **RU** (repo updater): `--robot-ru-*`
+- **UBS** (Ultimate Bug Scanner): `--robot-ubs-*`
+- **ACFS** (Flywheel setup/bootstrapping): `--robot-acfs-*`
+- **GIIL** (image fetch): `--robot-giil-*`
+- **XF** (archive search): `--robot-xf-*`
+
 ### 1.4 Resource Lookups
 
 Simple ID/path lookups MAY use inline values:
@@ -101,6 +124,8 @@ These flags are shared across many commands and MUST NOT be tool-prefixed:
 | `--verbose` | Detailed output | status, health commands |
 | `--dry-run` | Preview without executing | send, spawn, restart |
 | `--output=PATH` | Output file path | save, monitor |
+
+Note: `--robot-limit` and `--robot-offset` are accepted as explicit aliases for robot list outputs (status, snapshot, history). Unprefixed flags remain canonical.
 
 **Example (Correct):**
 ```bash
@@ -250,6 +275,9 @@ Commands that return lists MUST support pagination:
 - `count` - Number of items in current response
 - `has_more` - Boolean indicating more results available
 - `_agent_hints.next_offset` - Next offset value for convenience
+
+**Status/Snapshot/History Note:** These commands expose pagination under a `pagination` object:
+`{limit, offset, count, total, has_more, next_cursor}`.
 
 ---
 
@@ -594,6 +622,80 @@ Use this checklist when adding or modifying a robot command:
 
 ---
 
+## 15. JSON Schema Generation
+
+NTM provides built-in JSON Schema generation for all robot command outputs. This enables:
+
+- **Type-safe integration** - Generate client types from schemas
+- **Validation** - Validate responses against canonical schemas
+- **Documentation** - Auto-generate API docs from schemas
+
+### Usage
+
+```bash
+# Simple form (recommended)
+ntm --schema status              # Schema for status output
+ntm --schema all                 # All available schemas
+
+# Long form (equivalent)
+ntm --robot-schema=status
+ntm --robot-schema=all
+```
+
+### Available Schema Types
+
+| Type | Description | Command |
+|------|-------------|---------|
+| `status` | Full system status | `--robot-status` |
+| `snapshot` | Unified state dump | `--robot-snapshot` |
+| `version` | Version information | `--robot-version` |
+| `spawn` | Session creation | `--robot-spawn` |
+| `send` | Message delivery | `--robot-send` |
+| `interrupt` | Agent interruption | `--robot-interrupt` |
+| `tail` | Pane output capture | `--robot-tail` |
+| `ack` | Send acknowledgment | `--robot-ack` |
+| `inspect` | Pane inspection | `--robot-inspect-pane` |
+| `ensemble` | Ensemble state | `--robot-ensemble` |
+| `ensemble_spawn` | Ensemble creation | `--robot-ensemble-spawn` |
+| `beads_list` | Bead listing | `--robot-bead-list` |
+| `assign` | Work assignment | `--robot-assign` |
+| `triage` | Triage analysis | `--robot-triage` |
+| `health` | Health check | `--robot-health` |
+| `diagnose` | Diagnostic report | `--robot-diagnose` |
+| `agent_health` | Agent health | `--robot-agent-health` |
+| `is_working` | Working state | `--robot-is-working` |
+| `all` | All schemas | - |
+
+### Example Output
+
+```bash
+ntm --schema status | jq '.schema.properties | keys'
+[
+  "_meta",
+  "agent_mail",
+  "alerts",
+  "beads",
+  "error",
+  "error_code",
+  "generated_at",
+  "sessions",
+  "success",
+  "summary",
+  "system",
+  "timestamp",
+  "version"
+]
+```
+
+### Schema Versioning
+
+All schemas include:
+- `$schema`: JSON Schema draft version (draft-07)
+- `title`: Human-readable schema title
+- Schema output includes `version` field (currently `1.0.0`)
+
+---
+
 ## Quick Reference Card
 
 ```
@@ -602,6 +704,7 @@ GLOBAL COMMANDS (bool flags)
   --robot-version         Version info
   --robot-snapshot        Unified state dump
   --robot-capabilities    API discovery
+  --schema=TYPE           JSON Schema generation
 
 SESSION COMMANDS (=SESSION syntax)
   --robot-send=S          Send prompts
@@ -630,5 +733,5 @@ OUTPUT FORMAT
 
 ---
 
-*Last updated: 2026-01-23*
-*Reference: bd-3045p*
+*Last updated: 2026-01-27*
+*Reference: bd-3045p, bd-12nbo*

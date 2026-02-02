@@ -79,9 +79,10 @@ type EnsembleSummary struct {
 	AdvancedModes int `json:"advanced_modes"`
 }
 
-// PrintEnsemble outputs ensemble state for a session.
-func PrintEnsemble(session string) error {
-	output := EnsembleOutput{
+// GetEnsemble retrieves ensemble state for a session.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetEnsemble(session string) (*EnsembleOutput, error) {
+	output := &EnsembleOutput{
 		RobotResponse: NewRobotResponse(true),
 		Ensemble: EnsembleState{
 			Session:   session,
@@ -101,7 +102,7 @@ func PrintEnsemble(session string) error {
 			ErrCodeInvalidFlag,
 			"Provide a session name: ntm --robot-ensemble=myproject",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 
 	if !tmux.SessionExists(session) {
@@ -110,7 +111,7 @@ func PrintEnsemble(session string) error {
 			ErrCodeSessionNotFound,
 			"Use 'ntm list' to see available sessions",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 
 	state, err := ensemble.LoadSession(session)
@@ -121,14 +122,14 @@ func PrintEnsemble(session string) error {
 				ErrCodeEnsembleNotFound,
 				"Spawn an ensemble first: ntm ensemble <preset> <question>",
 			)
-			return outputJSON(output)
+			return output, nil
 		}
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("failed to load ensemble state: %w", err),
 			ErrCodeInternalError,
 			"Check state store availability",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 
 	output.Ensemble.Session = session
@@ -196,8 +197,17 @@ func PrintEnsemble(session string) error {
 	output.Summary.CoreModes = coreCount
 	output.Summary.AdvancedModes = advancedCount
 
-	output.AgentHints = buildEnsembleHints(output)
+	output.AgentHints = buildEnsembleHints(*output)
 
+	return output, nil
+}
+
+// PrintEnsemble outputs ensemble state for a session.
+func PrintEnsemble(session string) error {
+	output, err := GetEnsemble(session)
+	if err != nil {
+		return err
+	}
 	return outputJSON(output)
 }
 

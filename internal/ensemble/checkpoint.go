@@ -19,32 +19,44 @@ const (
 	checkpointDirName = "ensemble-checkpoints"
 	// checkpointMetaFile is the metadata filename within a checkpoint.
 	checkpointMetaFile = "_meta.json"
+	// checkpointSynthesisFile stores streaming synthesis resume state.
+	checkpointSynthesisFile = "synthesis.json"
 )
 
 // CheckpointMetadata holds metadata about a checkpoint.
 type CheckpointMetadata struct {
-	SessionName  string          `json:"session_name"`
-	Question     string          `json:"question"`
-	RunID        string          `json:"run_id"`
-	Status       EnsembleStatus  `json:"status"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
-	ContextHash  string          `json:"context_hash,omitempty"`
-	CompletedIDs []string        `json:"completed_ids"`
-	PendingIDs   []string        `json:"pending_ids"`
-	ErrorIDs     []string        `json:"error_ids,omitempty"`
-	TotalModes   int             `json:"total_modes"`
+	SessionName  string         `json:"session_name"`
+	Question     string         `json:"question"`
+	RunID        string         `json:"run_id"`
+	Status       EnsembleStatus `json:"status"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+	ContextHash  string         `json:"context_hash,omitempty"`
+	CompletedIDs []string       `json:"completed_ids"`
+	PendingIDs   []string       `json:"pending_ids"`
+	ErrorIDs     []string       `json:"error_ids,omitempty"`
+	TotalModes   int            `json:"total_modes"`
+}
+
+// SynthesisCheckpoint tracks streaming synthesis progress for resume.
+type SynthesisCheckpoint struct {
+	RunID       string    `json:"run_id"`
+	SessionName string    `json:"session_name,omitempty"`
+	LastIndex   int       `json:"last_index"`
+	Error       string    `json:"error,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // ModeCheckpoint stores a single mode's output for recovery.
 type ModeCheckpoint struct {
-	ModeID       string      `json:"mode_id"`
-	Output       *ModeOutput `json:"output,omitempty"`
-	Status       string      `json:"status"`
-	CapturedAt   time.Time   `json:"captured_at"`
-	ContextHash  string      `json:"context_hash,omitempty"`
-	TokensUsed   int         `json:"tokens_used,omitempty"`
-	Error        string      `json:"error,omitempty"`
+	ModeID      string      `json:"mode_id"`
+	Output      *ModeOutput `json:"output,omitempty"`
+	Status      string      `json:"status"`
+	CapturedAt  time.Time   `json:"captured_at"`
+	ContextHash string      `json:"context_hash,omitempty"`
+	TokensUsed  int         `json:"tokens_used,omitempty"`
+	Error       string      `json:"error,omitempty"`
 }
 
 // CheckpointStore manages checkpoint persistence.
@@ -163,6 +175,70 @@ func (s *CheckpointStore) SaveMetadata(meta CheckpointMetadata) error {
 	return nil
 }
 
+// SaveSynthesisCheckpoint saves streaming synthesis resume state.
+func (s *CheckpointStore) SaveSynthesisCheckpoint(runID string, checkpoint SynthesisCheckpoint) error {
+	if s == nil {
+		return errors.New("checkpoint store is nil")
+	}
+	if runID == "" {
+		return errors.New("run ID is required")
+	}
+
+	runDir := filepath.Join(s.baseDir, runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return fmt.Errorf("create run directory: %w", err)
+	}
+
+	if checkpoint.CreatedAt.IsZero() {
+		checkpoint.CreatedAt = time.Now().UTC()
+	}
+	checkpoint.UpdatedAt = time.Now().UTC()
+	checkpoint.RunID = runID
+
+	filename := filepath.Join(runDir, checkpointSynthesisFile)
+	data, err := json.MarshalIndent(checkpoint, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal synthesis checkpoint: %w", err)
+	}
+
+	if err := os.WriteFile(filename, data, 0o644); err != nil {
+		return fmt.Errorf("write synthesis checkpoint: %w", err)
+	}
+
+	s.logger.Info("synthesis checkpoint saved",
+		"run_id", runID,
+		"last_index", checkpoint.LastIndex,
+	)
+
+	return nil
+}
+
+// LoadSynthesisCheckpoint loads streaming synthesis resume state.
+func (s *CheckpointStore) LoadSynthesisCheckpoint(runID string) (*SynthesisCheckpoint, error) {
+	if s == nil {
+		return nil, errors.New("checkpoint store is nil")
+	}
+	if runID == "" {
+		return nil, errors.New("run ID is required")
+	}
+
+	filename := filepath.Join(s.baseDir, runID, checkpointSynthesisFile)
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, os.ErrNotExist
+		}
+		return nil, fmt.Errorf("read synthesis checkpoint: %w", err)
+	}
+
+	var checkpoint SynthesisCheckpoint
+	if err := json.Unmarshal(data, &checkpoint); err != nil {
+		return nil, fmt.Errorf("unmarshal synthesis checkpoint: %w", err)
+	}
+
+	return &checkpoint, nil
+}
+
 // LoadCheckpoint loads a specific mode's checkpoint.
 func (s *CheckpointStore) LoadCheckpoint(runID, modeID string) (*ModeCheckpoint, error) {
 	if s == nil {
@@ -238,7 +314,8 @@ func (s *CheckpointStore) LoadAllCheckpoints(runID string) ([]ModeCheckpoint, er
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		if entry.Name() == checkpointMetaFile {
+		// Skip metadata and synthesis checkpoint files
+		if entry.Name() == checkpointMetaFile || entry.Name() == checkpointSynthesisFile {
 			continue
 		}
 

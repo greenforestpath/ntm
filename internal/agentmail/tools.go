@@ -243,28 +243,53 @@ func (c *Client) AcknowledgeMessage(ctx context.Context, projectKey, agentName s
 	return err
 }
 
+// ContactRequestResult contains the result of a contact request.
+type ContactRequestResult struct {
+	Status    string       `json:"status"` // "pending", "approved", etc.
+	Link      *ContactLink `json:"link,omitempty"`
+	ExpiresTS *string      `json:"expires_ts,omitempty"`
+}
+
 // RequestContact requests contact approval from another agent.
-func (c *Client) RequestContact(ctx context.Context, projectKey, fromAgent, toAgent, reason string) error {
+func (c *Client) RequestContact(ctx context.Context, opts RequestContactOptions) (*ContactRequestResult, error) {
 	args := map[string]interface{}{
-		"project_key": projectKey,
-		"from_agent":  fromAgent,
-		"to_agent":    toAgent,
+		"project_key": opts.ProjectKey,
+		"from_agent":  opts.FromAgent,
+		"to_agent":    opts.ToAgent,
 	}
-	if reason != "" {
-		args["reason"] = reason
+	if opts.ToProject != "" {
+		args["to_project"] = opts.ToProject
+	}
+	if opts.Reason != "" {
+		args["reason"] = opts.Reason
+	}
+	if opts.TTLSeconds > 0 {
+		args["ttl_seconds"] = opts.TTLSeconds
 	}
 
-	_, err := c.callTool(ctx, "request_contact", args)
-	return err
+	result, err := c.callTool(ctx, "request_contact", args)
+	if err != nil {
+		return nil, err
+	}
+
+	var contactResult ContactRequestResult
+	if err := json.Unmarshal(result, &contactResult); err != nil {
+		return nil, NewAPIError("request_contact", 0, err)
+	}
+
+	return &contactResult, nil
 }
 
 // RespondContact approves or denies a contact request.
-func (c *Client) RespondContact(ctx context.Context, projectKey, toAgent, fromAgent string, accept bool) error {
+func (c *Client) RespondContact(ctx context.Context, opts RespondContactOptions) error {
 	args := map[string]interface{}{
-		"project_key": projectKey,
-		"to_agent":    toAgent,
-		"from_agent":  fromAgent,
-		"accept":      accept,
+		"project_key": opts.ProjectKey,
+		"to_agent":    opts.ToAgent,
+		"from_agent":  opts.FromAgent,
+		"accept":      opts.Accept,
+	}
+	if opts.TTLSeconds > 0 {
+		args["ttl_seconds"] = opts.TTLSeconds
 	}
 
 	_, err := c.callTool(ctx, "respond_contact", args)
@@ -314,12 +339,18 @@ func (c *Client) SearchMessages(ctx context.Context, opts SearchOptions) ([]Sear
 	return results, nil
 }
 
-// SummarizeThread summarizes a message thread.
-func (c *Client) SummarizeThread(ctx context.Context, projectKey, threadID string, includeExamples bool) (*ThreadSummary, error) {
+// SummarizeThread summarizes a message thread using options struct.
+func (c *Client) SummarizeThread(ctx context.Context, opts SummarizeThreadOptions) (*ThreadSummary, error) {
 	args := map[string]interface{}{
-		"project_key":      projectKey,
-		"thread_id":        threadID,
-		"include_examples": includeExamples,
+		"project_key":      opts.ProjectKey,
+		"thread_id":        opts.ThreadID,
+		"include_examples": opts.IncludeExamples,
+	}
+	if opts.LLMMode {
+		args["llm_mode"] = opts.LLMMode
+	}
+	if opts.LLMModel != "" {
+		args["llm_model"] = opts.LLMModel
 	}
 
 	result, err := c.callToolWithTimeout(ctx, "summarize_thread", args, LongTimeout)
@@ -387,16 +418,31 @@ func (c *Client) ReleaseReservations(ctx context.Context, projectKey, agentName 
 	return err
 }
 
-// RenewReservations extends the TTL of existing reservations.
-func (c *Client) RenewReservations(ctx context.Context, projectKey, agentName string, extendSeconds int) error {
+// RenewReservations extends the TTL of existing reservations using options struct.
+func (c *Client) RenewReservations(ctx context.Context, opts RenewReservationsOptions) (*RenewReservationsResult, error) {
 	args := map[string]interface{}{
-		"project_key":    projectKey,
-		"agent_name":     agentName,
-		"extend_seconds": extendSeconds,
+		"project_key":    opts.ProjectKey,
+		"agent_name":     opts.AgentName,
+		"extend_seconds": opts.ExtendSeconds,
+	}
+	if len(opts.ReservationIDs) > 0 {
+		args["file_reservation_ids"] = opts.ReservationIDs
+	}
+	if len(opts.Paths) > 0 {
+		args["paths"] = opts.Paths
 	}
 
-	_, err := c.callTool(ctx, "renew_file_reservations", args)
-	return err
+	result, err := c.callTool(ctx, "renew_file_reservations", args)
+	if err != nil {
+		return nil, err
+	}
+
+	var renewResult RenewReservationsResult
+	if err := json.Unmarshal(result, &renewResult); err != nil {
+		return nil, NewAPIError("renew_file_reservations", 0, err)
+	}
+
+	return &renewResult, nil
 }
 
 // ListReservations lists active file reservations for a project (optionally filtered by agent).
@@ -694,6 +740,86 @@ func (c *Client) UninstallPrecommitGuard(ctx context.Context, repoPath string) e
 
 	_, err := c.callTool(ctx, "uninstall_precommit_guard", args)
 	return err
+}
+
+// GetMessage retrieves a specific message by ID.
+func (c *Client) GetMessage(ctx context.Context, projectKey string, messageID int) (*Message, error) {
+	args := map[string]interface{}{
+		"project_key": projectKey,
+		"message_id":  messageID,
+	}
+
+	result, err := c.callTool(ctx, "get_message", args)
+	if err != nil {
+		return nil, err
+	}
+
+	var msg Message
+	if err := json.Unmarshal(result, &msg); err != nil {
+		return nil, NewAPIError("get_message", 0, err)
+	}
+
+	return &msg, nil
+}
+
+// SetContactPolicy sets the contact policy for an agent.
+func (c *Client) SetContactPolicy(ctx context.Context, projectKey, agentName, policy string) error {
+	args := map[string]interface{}{
+		"project_key": projectKey,
+		"agent_name":  agentName,
+		"policy":      policy,
+	}
+
+	_, err := c.callTool(ctx, "set_contact_policy", args)
+	return err
+}
+
+// CheckConflicts checks for file reservation conflicts on the given paths.
+func (c *Client) CheckConflicts(ctx context.Context, projectKey string, paths []string) ([]ReservationConflict, error) {
+	args := map[string]interface{}{
+		"project_key": projectKey,
+		"paths":       paths,
+	}
+
+	result, err := c.callTool(ctx, "file_reservation_paths", args)
+	if err != nil {
+		return nil, err
+	}
+
+	var reservationResult ReservationResult
+	if err := json.Unmarshal(result, &reservationResult); err != nil {
+		return nil, NewAPIError("file_reservation_paths", 0, err)
+	}
+
+	return reservationResult.Conflicts, nil
+}
+
+// GetReservation retrieves a specific file reservation by ID.
+func (c *Client) GetReservation(ctx context.Context, projectKey string, reservationID int) (*FileReservation, error) {
+	// The MCP server doesn't have a direct get_reservation tool,
+	// so we list all and filter. This is a limitation we can improve later.
+	reservations, err := c.ListReservations(ctx, projectKey, "", true)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range reservations {
+		if reservations[i].ID == reservationID {
+			return &reservations[i], nil
+		}
+	}
+
+	return nil, fmt.Errorf("reservation %d not found", reservationID)
+}
+
+// RenewReservationsWithOptions is an alias for RenewReservations for backward compatibility.
+func (c *Client) RenewReservationsWithOptions(ctx context.Context, opts RenewReservationsOptions) (*RenewReservationsResult, error) {
+	return c.RenewReservations(ctx, opts)
+}
+
+// ListAgents is an alias for ListProjectAgents for convenience.
+func (c *Client) ListAgents(ctx context.Context, projectKey string) ([]Agent, error) {
+	return c.ListProjectAgents(ctx, projectKey)
 }
 
 // ForceReleaseReservation forcibly releases a stale reservation held by another agent.

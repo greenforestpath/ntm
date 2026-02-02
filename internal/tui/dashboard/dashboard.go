@@ -30,6 +30,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/integrations/pt"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
+	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tokens"
@@ -157,6 +158,12 @@ type CASSContextMsg struct {
 	Hits []cass.SearchHit
 	Err  error
 	Gen  uint64
+}
+
+// TimelineLoadMsg is sent when persisted timeline data is loaded.
+type TimelineLoadMsg struct {
+	Events []state.AgentEvent
+	Err    error
 }
 
 // HealthUpdateMsg is sent when agent health check completes
@@ -432,6 +439,7 @@ type Model struct {
 	historyPanel         *panels.HistoryPanel
 	cassPanel            *panels.CASSPanel
 	filesPanel           *panels.FilesPanel
+	timelinePanel        *panels.TimelinePanel
 	tickerPanel          *panels.TickerPanel
 	spawnPanel           *panels.SpawnPanel
 	conflictsPanel       *panels.ConflictsPanel
@@ -441,8 +449,6 @@ type Model struct {
 	beadsSummary  bv.BeadsSummary
 	beadsReady    []bv.BeadPreview
 	activeAlerts  []alerts.Alert
-	metricsTokens int
-	metricsCost   float64
 	metricsData   panels.MetricsData // Cached full metrics data for panel
 	cmdHistory    []history.HistoryEntry
 	fileChanges   []tracker.RecordedFileChange
@@ -684,6 +690,7 @@ func New(session, projectDir string) Model {
 		historyPanel:         panels.NewHistoryPanel(),
 		cassPanel:            panels.NewCASSPanel(),
 		filesPanel:           panels.NewFilesPanel(),
+		timelinePanel:        panels.NewTimelinePanel(),
 		tickerPanel:          panels.NewTickerPanel(),
 		spawnPanel:           panels.NewSpawnPanel(),
 		conflictsPanel:       panels.NewConflictsPanel(),
@@ -765,6 +772,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.tick(),
 		m.fetchSessionDataWithOutputs(),
+		m.fetchTimelineCmd(),
 		m.fetchHealthStatus(),
 		m.fetchStatuses(),
 		m.fetchHealthCmd(), // Agent health check
@@ -859,12 +867,13 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 		contentHeight := contentHeightFor(m.height)
 		log.Printf("[dashboard] resize width=%d height=%d contentHeight=%d tier=%s",
 			m.width, m.height, contentHeight, tierLabel(m.tier))
-		log.Printf("[dashboard] panels %s %s %s %s %s %s %s",
+		log.Printf("[dashboard] panels %s %s %s %s %s %s %s %s",
 			logPanelSize("beads", m.beadsPanel),
 			logPanelSize("alerts", m.alertsPanel),
 			logPanelSize("metrics", m.metricsPanel),
 			logPanelSize("history", m.historyPanel),
 			logPanelSize("files", m.filesPanel),
+			logPanelSize("timeline", m.timelinePanel),
 			logPanelSize("cass", m.cassPanel),
 			logPanelSize("spawn", m.spawnPanel),
 		)
@@ -2002,8 +2011,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.metricsError = msg.Err
 		if msg.Err == nil {
-			m.metricsTokens = msg.Data.TotalTokens
-			m.metricsCost = msg.Data.TotalCost
 			m.metricsData = msg.Data
 			m.markUpdated(refreshMetrics, time.Now())
 		}
@@ -2059,6 +2066,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case TimelineLoadMsg:
+		if msg.Err != nil {
+			if m.timelinePanel != nil {
+				m.timelinePanel.SetData(panels.TimelineData{}, msg.Err)
+			}
+			return m, nil
+		}
+		if len(msg.Events) == 0 || m.session == "" {
+			return m, nil
+		}
+		tracker := state.GetGlobalTimelineTracker()
+		if len(tracker.GetEventsForSession(m.session, time.Time{})) == 0 {
+			for _, event := range msg.Events {
+				tracker.RecordEvent(event)
+			}
+		}
+		m.refreshTimelinePanel()
+		return m, nil
+
 	case RoutingUpdateMsg:
 		if !m.acceptUpdate(refreshRouting, msg.Gen) {
 			return m, nil
@@ -2067,9 +2093,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.routingError = msg.Err
 		if msg.Err == nil && msg.Scores != nil {
 			m.routingScores = msg.Scores
-			// Merge routing data into metrics data
-			m.metricsData = m.mergeRoutingIntoMetrics(m.metricsData, msg.Scores)
-			m.metricsPanel.SetData(m.metricsData, m.metricsError)
 			m.markUpdated(refreshRouting, time.Now())
 		}
 		return m, nil
@@ -2247,6 +2270,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Process compaction checks, context tracking, AND live status updates
+			timelineUpdated := false
 			for _, data := range msg.Outputs {
 				if data.PaneID != "" {
 					m.paneOutputCache[data.PaneID] = data.Output
@@ -2311,6 +2335,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				ps.State = state
 				ps.TokenVelocity = tokenVelocityFromStatus(st)
 				m.agentStatuses[st.PaneID] = st
+				if m.recordTimelineStatus(currentPane, st) {
+					timelineUpdated = true
+				}
 
 				// Calculate context usage
 				if data.Output != "" && modelName != "" {
@@ -2333,6 +2360,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				m.paneStatus[data.PaneIndex] = ps
 			}
+			if timelineUpdated {
+				m.refreshTimelinePanel()
+			}
 		}
 		return m, followUp
 
@@ -2345,10 +2375,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusFetchErr = msg.Err
 		// Build index lookup for current panes
 		paneIndexByID := make(map[string]int)
+		paneByID := make(map[string]tmux.Pane)
 		for _, p := range m.panes {
 			paneIndexByID[p.ID] = p.Index
+			paneByID[p.ID] = p
 		}
 
+		timelineUpdated := false
 		for _, st := range msg.Statuses {
 			idx, ok := paneIndexByID[st.PaneID]
 			if !ok {
@@ -2371,6 +2404,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ps.TokenVelocity = tokenVelocityFromStatus(st)
 			m.paneStatus[idx] = ps
 			m.agentStatuses[st.PaneID] = st
+			if m.recordTimelineStatus(paneByID[st.PaneID], st) {
+				timelineUpdated = true
+			}
 
 			// Cache expensive markdown rendering
 			if st.LastOutput != "" && m.renderer != nil {
@@ -2382,6 +2418,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.renderedOutputCache[st.PaneID] = rendered
 				}
 			}
+		}
+		if timelineUpdated {
+			m.refreshTimelinePanel()
 		}
 		if msg.Err == nil {
 			m.markUpdated(refreshStatus, msg.Time)
@@ -2749,7 +2788,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case PanelSidebar:
 			// For sidebar, forward to the focused sub-panel
-			if m.historyPanel != nil && m.historyPanel.IsFocused() {
+			if m.timelinePanel != nil && m.timelinePanel.IsFocused() {
+				var cmd tea.Cmd
+				_, cmd = m.timelinePanel.Update(keyMsg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			} else if m.historyPanel != nil && m.historyPanel.IsFocused() {
 				var cmd tea.Cmd
 				_, cmd = m.historyPanel.Update(keyMsg)
 				if cmd != nil {
@@ -3783,7 +3828,9 @@ func (m Model) getFocusedPanelHints() []components.KeyHint {
 		}
 	case PanelSidebar:
 		// Sidebar contains multiple sub-panels; could extend to show focused sub-panel
-		if m.filesPanel != nil && m.filesPanel.IsFocused() {
+		if m.timelinePanel != nil && m.timelinePanel.IsFocused() {
+			keybindings = m.timelinePanel.Keybindings()
+		} else if m.filesPanel != nil && m.filesPanel.IsFocused() {
 			keybindings = m.filesPanel.Keybindings()
 		} else if m.cassPanel != nil && m.cassPanel.IsFocused() {
 			keybindings = m.cassPanel.Keybindings()
@@ -4378,6 +4425,9 @@ func (m *Model) resizeSidebarPanels(width, height int) {
 	if m.filesPanel != nil {
 		m.filesPanel.SetSize(width, height)
 	}
+	if m.timelinePanel != nil {
+		m.timelinePanel.SetSize(width, height)
+	}
 	if m.cassPanel != nil {
 		m.cassPanel.SetSize(width, height)
 	}
@@ -4437,6 +4487,138 @@ func refreshDue(last time.Time, interval time.Duration) bool {
 		return true
 	}
 	return time.Since(last) >= interval
+}
+
+func (m *Model) recordTimelineStatus(pane tmux.Pane, st status.AgentStatus) bool {
+	if m.timelinePanel == nil || m.session == "" {
+		return false
+	}
+
+	agentType := timelineAgentType(pane, st.AgentType)
+	if agentType == tmux.AgentUnknown || agentType == tmux.AgentUser {
+		return false
+	}
+
+	agentID := timelineAgentID(pane, st.AgentType, st.PaneID)
+	if agentID == "" {
+		return false
+	}
+
+	nextState := timelineStateFromStatus(st)
+	tracker := state.GetGlobalTimelineTracker()
+	currentState := tracker.GetCurrentState(agentID)
+	if currentState == nextState {
+		return false
+	}
+
+	event := state.AgentEvent{
+		AgentID:   agentID,
+		AgentType: state.AgentType(agentType),
+		SessionID: m.session,
+		State:     nextState,
+		Timestamp: st.UpdatedAt,
+	}
+	recorded := tracker.RecordEvent(event)
+
+	if currentState == "" {
+		tracker.AddMarker(state.TimelineMarker{
+			AgentID:   agentID,
+			SessionID: m.session,
+			Type:      state.MarkerStart,
+			Timestamp: recorded.Timestamp,
+		})
+	}
+
+	if currentState == state.TimelineWorking && nextState == state.TimelineIdle {
+		tracker.AddMarker(state.TimelineMarker{
+			AgentID:   agentID,
+			SessionID: m.session,
+			Type:      state.MarkerCompletion,
+			Timestamp: recorded.Timestamp,
+		})
+	}
+
+	if nextState == state.TimelineError {
+		errMsg := ""
+		if st.ErrorType != "" {
+			errMsg = st.ErrorType.String()
+		}
+		tracker.AddMarker(state.TimelineMarker{
+			AgentID:   agentID,
+			SessionID: m.session,
+			Type:      state.MarkerError,
+			Timestamp: recorded.Timestamp,
+			Message:   errMsg,
+		})
+	}
+
+	return true
+}
+
+func (m *Model) refreshTimelinePanel() {
+	if m.timelinePanel == nil || m.session == "" {
+		return
+	}
+
+	tracker := state.GetGlobalTimelineTracker()
+	events := tracker.GetEventsForSession(m.session, time.Time{})
+	markers := tracker.GetMarkersForSession(m.session, time.Time{}, time.Time{})
+	data := panels.TimelineData{
+		Events:  events,
+		Markers: markers,
+		Stats:   tracker.Stats(),
+	}
+	m.timelinePanel.SetData(data, nil)
+}
+
+func timelineStateFromStatus(st status.AgentStatus) state.TimelineState {
+	switch st.State {
+	case status.StateWorking:
+		return state.TimelineWorking
+	case status.StateError:
+		return state.TimelineError
+	case status.StateIdle:
+		return state.TimelineIdle
+	default:
+		return state.TimelineIdle
+	}
+}
+
+func timelineAgentID(pane tmux.Pane, fallbackType, fallbackID string) string {
+	if pane.NTMIndex > 0 && pane.Type != tmux.AgentUnknown && pane.Type != tmux.AgentUser {
+		return fmt.Sprintf("%s_%d", pane.Type, pane.NTMIndex)
+	}
+
+	if pane.Title != "" {
+		if parts := strings.SplitN(pane.Title, "__", 2); len(parts) == 2 && parts[1] != "" {
+			return parts[1]
+		}
+		return pane.Title
+	}
+
+	if fallbackType != "" {
+		suffix := strings.TrimPrefix(fallbackID, "%")
+		if suffix == "" {
+			suffix = "0"
+		}
+		return fmt.Sprintf("%s_%s", fallbackType, suffix)
+	}
+
+	return fallbackID
+}
+
+func timelineAgentType(pane tmux.Pane, fallbackType string) tmux.AgentType {
+	if pane.Type != tmux.AgentUnknown && pane.Type != tmux.AgentUser && pane.Type != "" {
+		return pane.Type
+	}
+	if fallbackType == "" {
+		return tmux.AgentUnknown
+	}
+	t := tmux.AgentType(fallbackType)
+	if t.IsValid() && t != tmux.AgentUser {
+		return t
+	}
+	return tmux.AgentUnknown
 }
 
 func (m *Model) scheduleRefreshes(now time.Time) []tea.Cmd {
@@ -4694,7 +4876,7 @@ func (m Model) renderSidebar(width, height int) string {
 	}
 
 	// Metrics (best-effort, height-gated)
-	if m.metricsPanel != nil && height > 0 && (m.metricsError != nil || m.metricsData.TotalTokens > 0 || len(m.metricsData.Agents) > 0) {
+	if m.metricsPanel != nil && height > 0 && (m.metricsError != nil || hasMetricsData(m.metricsData)) {
 		used := lipgloss.Height(strings.Join(lines, "\n"))
 		spacer := 1
 		panelHeight := height - used - spacer
@@ -4770,6 +4952,26 @@ func (m Model) renderSidebar(width, height int) string {
 			}
 			m.cassPanel.SetSize(width, panelHeight)
 			lines = append(lines, "", m.cassPanel.View())
+		}
+	}
+
+	// Timeline panel (best-effort, height-gated; appended last to avoid crowding)
+	if m.timelinePanel != nil && height > 0 {
+		used := lipgloss.Height(strings.Join(lines, "\n"))
+		spacer := 1
+		panelHeight := height - used - spacer
+		if panelHeight >= m.timelinePanel.Config().MinHeight {
+			if panelHeight > 16 {
+				panelHeight = 16
+			}
+
+			if m.focusedPanel == PanelSidebar {
+				m.timelinePanel.Focus()
+			} else {
+				m.timelinePanel.Blur()
+			}
+			m.timelinePanel.SetSize(width, panelHeight)
+			lines = append(lines, "", m.timelinePanel.View())
 		}
 	}
 
@@ -4910,6 +5112,10 @@ func (m Model) renderMetricsPanel(width, height int) string {
 		m.metricsPanel.Blur()
 	}
 	return m.metricsPanel.View()
+}
+
+func hasMetricsData(data panels.MetricsData) bool {
+	return data.Coverage != nil || data.Redundancy != nil || data.Velocity != nil || data.Conflicts != nil
 }
 
 func (m Model) renderHistoryPanel(width, height int) string {
@@ -5265,35 +5471,6 @@ func activitySummaryLine(rows []PaneTableRow, t theme.Theme) string {
 
 	label := lipgloss.NewStyle().Foreground(t.Subtext).Bold(true)
 	return label.Render("Activity:") + " " + strings.Join(compactBadges, " ")
-}
-
-// mergeRoutingIntoMetrics updates metrics data with routing scores.
-// It matches agents by pane ID (mapped from pane title/name).
-func (m Model) mergeRoutingIntoMetrics(data panels.MetricsData, scores map[string]RoutingScore) panels.MetricsData {
-	// Build a lookup from pane name to pane ID
-	paneNameToID := make(map[string]string)
-	for _, p := range m.panes {
-		paneNameToID[p.Title] = p.ID
-	}
-
-	// Update each agent with routing info
-	for i := range data.Agents {
-		agent := &data.Agents[i]
-		// Look up pane ID by agent name
-		paneID, ok := paneNameToID[agent.Name]
-		if !ok {
-			continue
-		}
-
-		// Look up routing score by pane ID
-		if score, found := scores[paneID]; found {
-			agent.RoutingScore = score.Score
-			agent.IsRecommended = score.IsRecommended
-			agent.State = score.State
-		}
-	}
-
-	return data
 }
 
 // handleConflictAction handles user actions on file reservation conflicts.

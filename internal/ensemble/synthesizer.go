@@ -1,6 +1,7 @@
 package ensemble
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -21,6 +22,28 @@ type Synthesizer struct {
 	MergeConfig MergeConfig
 }
 
+// SynthesisChunkType identifies the type of streamed synthesis output.
+type SynthesisChunkType string
+
+const (
+	ChunkStatus         SynthesisChunkType = "status"
+	ChunkFinding        SynthesisChunkType = "finding"
+	ChunkRisk           SynthesisChunkType = "risk"
+	ChunkRecommendation SynthesisChunkType = "recommendation"
+	ChunkQuestion       SynthesisChunkType = "question"
+	ChunkExplanation    SynthesisChunkType = "explanation"
+	ChunkComplete       SynthesisChunkType = "complete"
+)
+
+// SynthesisChunk is a single streamed synthesis event.
+type SynthesisChunk struct {
+	Type      SynthesisChunkType `json:"type"`
+	Content   string             `json:"content"`
+	ModeID    string             `json:"mode_id,omitempty"`
+	Index     int                `json:"index"`
+	Timestamp time.Time          `json:"timestamp"`
+}
+
 // NewSynthesizer creates a synthesizer with the given config.
 func NewSynthesizer(cfg SynthesisConfig) (*Synthesizer, error) {
 	strategyName := string(cfg.Strategy)
@@ -38,6 +61,113 @@ func NewSynthesizer(cfg SynthesisConfig) (*Synthesizer, error) {
 		Strategy:    strategy,
 		MergeConfig: DefaultMergeConfig(),
 	}, nil
+}
+
+// StreamSynthesize emits synthesis output in ordered chunks.
+func (s *Synthesizer) StreamSynthesize(ctx context.Context, input *SynthesisInput) (<-chan SynthesisChunk, <-chan error) {
+	chunks := make(chan SynthesisChunk, 4)
+	errs := make(chan error, 1)
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	go func() {
+		defer close(chunks)
+		defer close(errs)
+
+		// Check for pre-canceled context before doing any work.
+		if ctx.Err() != nil {
+			errs <- ctx.Err()
+			return
+		}
+
+		if s == nil {
+			errs <- fmt.Errorf("synthesizer is nil")
+			return
+		}
+		if input == nil {
+			errs <- fmt.Errorf("input is nil")
+			return
+		}
+		if len(input.Outputs) == 0 {
+			errs <- fmt.Errorf("no outputs to synthesize")
+			return
+		}
+
+		index := 0
+		emit := func(chunk SynthesisChunk) bool {
+			index++
+			chunk.Index = index
+			if chunk.Timestamp.IsZero() {
+				chunk.Timestamp = time.Now().UTC()
+			}
+			select {
+			case <-ctx.Done():
+				return false
+			case chunks <- chunk:
+				return true
+			}
+		}
+
+		if !emit(SynthesisChunk{Type: ChunkStatus, Content: "synthesis started"}) {
+			errs <- ctx.Err()
+			return
+		}
+
+		result, err := s.Synthesize(input)
+		if err != nil {
+			if ctx.Err() != nil {
+				errs <- ctx.Err()
+				return
+			}
+			errs <- err
+			return
+		}
+
+		if !emit(SynthesisChunk{Type: ChunkStatus, Content: "synthesis merged"}) {
+			errs <- ctx.Err()
+			return
+		}
+
+		for _, finding := range result.Findings {
+			if !emit(SynthesisChunk{Type: ChunkFinding, Content: finding.Finding}) {
+				errs <- ctx.Err()
+				return
+			}
+		}
+		for _, risk := range result.Risks {
+			if !emit(SynthesisChunk{Type: ChunkRisk, Content: risk.Risk}) {
+				errs <- ctx.Err()
+				return
+			}
+		}
+		for _, rec := range result.Recommendations {
+			if !emit(SynthesisChunk{Type: ChunkRecommendation, Content: rec.Recommendation}) {
+				errs <- ctx.Err()
+				return
+			}
+		}
+		for _, question := range result.QuestionsForUser {
+			if !emit(SynthesisChunk{Type: ChunkQuestion, Content: question.Question}) {
+				errs <- ctx.Err()
+				return
+			}
+		}
+		if result.Explanation != nil {
+			if !emit(SynthesisChunk{Type: ChunkExplanation, Content: FormatExplanation(result.Explanation)}) {
+				errs <- ctx.Err()
+				return
+			}
+		}
+
+		if !emit(SynthesisChunk{Type: ChunkComplete, Content: result.Summary}) {
+			errs <- ctx.Err()
+			return
+		}
+	}()
+
+	return chunks, errs
 }
 
 // Synthesize combines mode outputs into a synthesis result.
@@ -208,11 +338,11 @@ func formatModeOutputs(outputs []ModeOutput) string {
 
 	// Include only essential fields to reduce prompt size
 	type compactOutput struct {
-		ModeID       string         `json:"mode_id"`
-		Thesis       string         `json:"thesis"`
-		TopFindings  []Finding      `json:"top_findings"`
-		Risks        []Risk         `json:"risks,omitempty"`
-		Confidence   Confidence     `json:"confidence"`
+		ModeID      string     `json:"mode_id"`
+		Thesis      string     `json:"thesis"`
+		TopFindings []Finding  `json:"top_findings"`
+		Risks       []Risk     `json:"risks,omitempty"`
+		Confidence  Confidence `json:"confidence"`
 	}
 
 	compact := make([]compactOutput, 0, len(outputs))

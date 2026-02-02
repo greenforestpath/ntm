@@ -537,12 +537,33 @@ func (n *Notifier) sendFileBox(event Event) error {
 		return fmt.Errorf("failed to create inbox directory: %w", err)
 	}
 
-	// Create filename with timestamp and event type
-	filename := fmt.Sprintf("%s_%s.md",
+	// Create filename with timestamp and event type (ensure unique file per event).
+	baseName := fmt.Sprintf("%s_%s",
 		event.Timestamp.Format("2006-01-02_15-04-05"),
 		util.SanitizeFilename(string(event.Type)),
 	)
-	filePath := filepath.Join(path, filename)
+	filePath := filepath.Join(path, baseName+".md")
+	var file *os.File
+	for i := 0; i < 1000; i++ {
+		target := filePath
+		if i > 0 {
+			target = filepath.Join(path, fmt.Sprintf("%s_%d.md", baseName, i))
+		}
+		f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return fmt.Errorf("failed to create inbox file: %w", err)
+		}
+		file = f
+		filePath = target
+		break
+	}
+	if file == nil {
+		return fmt.Errorf("failed to allocate unique inbox file for event %s", event.Type)
+	}
+	defer file.Close()
 
 	// Format as markdown
 	var content strings.Builder
@@ -574,7 +595,7 @@ func (n *Notifier) sendFileBox(event Event) error {
 	content.WriteString("*This notification was saved for offline review.*\n")
 
 	// Write to file
-	if err := os.WriteFile(filePath, []byte(content.String()), 0644); err != nil {
+	if _, err := file.WriteString(content.String()); err != nil {
 		return fmt.Errorf("failed to write inbox file: %w", err)
 	}
 

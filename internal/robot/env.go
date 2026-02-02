@@ -9,8 +9,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // =============================================================================
@@ -132,7 +135,8 @@ func findTmuxBinaryPath() string {
 	return "/usr/bin/tmux"
 }
 
-// getTmuxVersion returns the tmux version string
+// getTmuxVersion returns the tmux version string (e.g., "3.5a").
+// It strips the "tmux " prefix from the output of tmux -V.
 func getTmuxVersion(binaryPath string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -141,7 +145,10 @@ func getTmuxVersion(binaryPath string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	version := strings.TrimSpace(string(out))
+	// tmux -V outputs "tmux 3.5a" or "tmux next-3.5"; strip the prefix
+	version = strings.TrimPrefix(version, "tmux ")
+	return version
 }
 
 // detectTmuxAlias checks if tmux is aliased or wrapped in the shell
@@ -268,17 +275,43 @@ func GetEnv(session string) (*EnvOutput, error) {
 		PromptSubmitDelayMs: 1000, // 1s before submitting prompts
 	}
 
-	// If session specified, add session-specific info
-	if session != "" {
+	// If session specified (and not "global"), add session-specific info
+	if session != "" && session != "global" {
+		if !tmux.SessionExists(session) {
+			output.RobotResponse = NewErrorResponse(
+				fmt.Errorf("session '%s' not found", session),
+				ErrCodeSessionNotFound,
+				"Use --robot-status to list available sessions",
+			)
+			return output, nil
+		}
+
 		structure, err := detectSessionStructure(session)
 		if err == nil {
 			output.SessionStructure = structure
 		}
 
+		windowIndex := 1
+		controlPane := 1
+		agentPane := 2
+		if structure != nil {
+			if structure.WindowIndex > 0 {
+				windowIndex = structure.WindowIndex
+			}
+			if structure.ControlPane >= 0 {
+				controlPane = structure.ControlPane
+			}
+			if structure.AgentPaneStart > 0 {
+				agentPane = structure.AgentPaneStart
+			} else {
+				agentPane = controlPane
+			}
+		}
+
 		output.Targeting = &TargetingInfo{
 			PaneFormat:         "session:window.pane",
-			ExampleAgentPane:   fmt.Sprintf("%s:1.2", session),
-			ExampleControlPane: fmt.Sprintf("%s:1.1", session),
+			ExampleAgentPane:   fmt.Sprintf("%s:%d.%d", session, windowIndex, agentPane),
+			ExampleControlPane: fmt.Sprintf("%s:%d.%d", session, windowIndex, controlPane),
 		}
 	}
 
@@ -300,37 +333,100 @@ func PrintEnv(session string) error {
 
 // detectSessionStructure detects session window/pane structure
 func detectSessionStructure(session string) (*SessionStructureInfo, error) {
-	// Get pane count using tmux
-	out, err := exec.Command("/usr/bin/tmux", "list-panes", "-t", session, "-F", "#{pane_index}").Output()
+	tmuxPath := tmux.BinaryPath()
+
+	// Determine primary window (prefer window 1 if present)
+	windowOut, err := exec.Command(tmuxPath, "list-windows", "-t", session, "-F", "#{window_index}").Output()
+	if err != nil {
+		return nil, err
+	}
+	windowLines := strings.Split(strings.TrimSpace(string(windowOut)), "\n")
+	if len(windowLines) == 0 || (len(windowLines) == 1 && strings.TrimSpace(windowLines[0]) == "") {
+		return nil, fmt.Errorf("no windows found")
+	}
+	windowIDs := make([]int, 0, len(windowLines))
+	for _, line := range windowLines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		idx, err := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil {
+			continue
+		}
+		windowIDs = append(windowIDs, idx)
+	}
+	if len(windowIDs) == 0 {
+		return nil, fmt.Errorf("no windows found")
+	}
+	primaryWindow := (&SessionStructure{WindowIDs: windowIDs}).findPrimaryWindow()
+
+	target := fmt.Sprintf("%s:%d", session, primaryWindow)
+
+	// Get pane indices from primary window
+	out, err := exec.Command(tmuxPath, "list-panes", "-t", target, "-F", "#{pane_index}").Output()
 	if err != nil {
 		return nil, err
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) == 0 {
+	if len(lines) == 0 || (len(lines) == 1 && strings.TrimSpace(lines[0]) == "") {
 		return nil, fmt.Errorf("no panes found")
 	}
 
 	// Parse pane indices
-	minPane := 0
-	maxPane := 0
-	for i, line := range lines {
-		var idx int
-		fmt.Sscanf(line, "%d", &idx)
-		if i == 0 || idx < minPane {
+	minPane := -1
+	maxPane := -1
+	paneIndices := make([]int, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		idx, err := strconv.Atoi(line)
+		if err != nil {
+			continue
+		}
+		paneIndices = append(paneIndices, idx)
+		if minPane == -1 || idx < minPane {
 			minPane = idx
 		}
 		if idx > maxPane {
 			maxPane = idx
 		}
 	}
+	if len(paneIndices) == 0 || minPane == -1 {
+		return nil, fmt.Errorf("no panes found")
+	}
+
+	controlPane := minPane
+	totalAgentPanes := 0
+	minAgent := -1
+	maxAgent := -1
+	for _, idx := range paneIndices {
+		if idx != controlPane {
+			totalAgentPanes++
+			if minAgent == -1 || idx < minAgent {
+				minAgent = idx
+			}
+			if idx > maxAgent {
+				maxAgent = idx
+			}
+		}
+	}
+
+	agentPaneStart := 0
+	agentPaneEnd := 0
+	if totalAgentPanes > 0 {
+		agentPaneStart = minAgent
+		agentPaneEnd = maxAgent
+	}
 
 	return &SessionStructureInfo{
-		WindowIndex:     1, // NTM typically uses window 1
-		ControlPane:     1, // Pane 1 is control shell
-		AgentPaneStart:  2, // Agents start at pane 2
-		AgentPaneEnd:    maxPane,
-		TotalAgentPanes: len(lines) - 1, // Subtract control pane
+		WindowIndex:     primaryWindow,
+		ControlPane:     controlPane,
+		AgentPaneStart:  agentPaneStart,
+		AgentPaneEnd:    agentPaneEnd,
+		TotalAgentPanes: totalAgentPanes,
 	}, nil
 }
 

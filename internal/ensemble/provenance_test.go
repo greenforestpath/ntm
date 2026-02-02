@@ -110,3 +110,122 @@ func containsStringProvenance(values []string, target string) bool {
 	}
 	return false
 }
+
+func TestProvenanceChain_IsActive(t *testing.T) {
+	t.Parallel()
+
+	active := &ProvenanceChain{FindingID: "f1", MergedInto: ""}
+	if !active.IsActive() {
+		t.Error("chain with empty MergedInto should be active")
+	}
+
+	merged := &ProvenanceChain{FindingID: "f2", MergedInto: "f1"}
+	if merged.IsActive() {
+		t.Error("chain with non-empty MergedInto should not be active")
+	}
+}
+
+func TestProvenanceTracker_ContextHash(t *testing.T) {
+	t.Parallel()
+
+	tracker := NewProvenanceTracker("test question", []string{"mode-a", "mode-b"})
+	hash := tracker.ContextHash()
+	if hash == "" {
+		t.Error("ContextHash() should not be empty")
+	}
+	if len(hash) != 16 {
+		t.Errorf("ContextHash() length = %d, want 16", len(hash))
+	}
+
+	// Same input should produce same hash
+	tracker2 := NewProvenanceTracker("test question", []string{"mode-a", "mode-b"})
+	if tracker.ContextHash() != tracker2.ContextHash() {
+		t.Error("same inputs should produce same context hash")
+	}
+
+	// Different input should produce different hash
+	tracker3 := NewProvenanceTracker("different question", []string{"mode-a"})
+	if tracker.ContextHash() == tracker3.ContextHash() {
+		t.Error("different inputs should produce different context hash")
+	}
+}
+
+func TestProvenanceTracker_CountAndActiveCount(t *testing.T) {
+	t.Parallel()
+
+	tracker := NewProvenanceTracker("q", []string{"m1", "m2"})
+
+	// Empty tracker
+	if tracker.Count() != 0 {
+		t.Errorf("Count() = %d, want 0", tracker.Count())
+	}
+	if tracker.ActiveCount() != 0 {
+		t.Errorf("ActiveCount() = %d, want 0", tracker.ActiveCount())
+	}
+
+	// Add some chains via RecordDiscovery
+	tracker.RecordDiscovery("m1", Finding{Finding: "Finding A", Impact: ImpactHigh, Confidence: 0.9})
+	tracker.RecordDiscovery("m2", Finding{Finding: "Finding B", Impact: ImpactMedium, Confidence: 0.8})
+	if tracker.Count() != 2 {
+		t.Errorf("Count() = %d, want 2", tracker.Count())
+	}
+	if tracker.ActiveCount() != 2 {
+		t.Errorf("ActiveCount() = %d, want 2", tracker.ActiveCount())
+	}
+}
+
+func TestProvenanceTracker_Stats(t *testing.T) {
+	t.Parallel()
+
+	tracker := NewProvenanceTracker("q", []string{"m1", "m2"})
+
+	tracker.RecordDiscovery("m1", Finding{Finding: "Finding A", Impact: ImpactHigh, Confidence: 0.9})
+	tracker.RecordDiscovery("m2", Finding{Finding: "Finding B", Impact: ImpactMedium, Confidence: 0.8})
+
+	stats := tracker.Stats()
+	if stats.TotalFindings != 2 {
+		t.Errorf("TotalFindings = %d, want 2", stats.TotalFindings)
+	}
+	if stats.ActiveFindings != 2 {
+		t.Errorf("ActiveFindings = %d, want 2", stats.ActiveFindings)
+	}
+	if stats.MergedFindings != 0 {
+		t.Errorf("MergedFindings = %d, want 0", stats.MergedFindings)
+	}
+	if stats.ModeBreakdown["m1"] != 1 {
+		t.Errorf("ModeBreakdown[m1] = %d, want 1", stats.ModeBreakdown["m1"])
+	}
+	if stats.ModeBreakdown["m2"] != 1 {
+		t.Errorf("ModeBreakdown[m2] = %d, want 1", stats.ModeBreakdown["m2"])
+	}
+}
+
+func TestProvenanceTracker_Export(t *testing.T) {
+	t.Parallel()
+
+	tracker := NewProvenanceTracker("q", []string{"m1"})
+	tracker.RecordDiscovery("m1", Finding{Finding: "Finding", Impact: ImpactHigh, Confidence: 0.9})
+
+	data, err := tracker.Export()
+	if err != nil {
+		t.Fatalf("Export() error: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("Export() should not return empty data")
+	}
+	// Verify it's valid JSON containing expected keys
+	json := string(data)
+	if !containsStringProvenance([]string{json}, "context_hash") {
+		// Use a simpler check
+		found := false
+		for i := 0; i <= len(json)-12; i++ {
+			if json[i:i+12] == "context_hash" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("exported JSON should contain context_hash")
+		}
+	}
+}

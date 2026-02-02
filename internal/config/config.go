@@ -83,6 +83,7 @@ type Config struct {
 	Assign             AssignConfig          `toml:"assign"`           // Assignment strategy configuration
 	Ensemble           EnsembleConfig        `toml:"ensemble"`         // Reasoning ensemble defaults
 	Swarm              SwarmConfig           `toml:"swarm"`            // Weighted multi-project agent swarm
+	SpawnPacing        SpawnPacingConfig     `toml:"spawn_pacing"`     // Spawn scheduler pacing configuration
 
 	// Runtime-only fields (populated by project config merging)
 	ProjectDefaults map[string]int `toml:"-"`
@@ -460,6 +461,9 @@ type AgentConfig struct {
 	Claude       string            `toml:"claude"`
 	Codex        string            `toml:"codex"`
 	Gemini       string            `toml:"gemini"`
+	Cursor       string            `toml:"cursor"`
+	Windsurf     string            `toml:"windsurf"`
+	Aider        string            `toml:"aider"`
 	Plugins      map[string]string `toml:"plugins"` // Custom agent commands keyed by type
 	DefaultCount int               `toml:"default_count"`
 }
@@ -803,8 +807,38 @@ type PaletteState struct {
 
 // TmuxConfig holds tmux-specific settings
 type TmuxConfig struct {
-	DefaultPanes int    `toml:"default_panes"`
-	PaletteKey   string `toml:"palette_key"`
+	DefaultPanes    int    `toml:"default_panes"`
+	PaletteKey      string `toml:"palette_key"`
+	PaneInitDelayMs int    `toml:"pane_init_delay_ms"` // Delay before sending keys to new panes
+	// ActivityIndicators control pane border activity coloring.
+	ActivityIndicators ActivityIndicatorConfig `toml:"activity_indicators"`
+}
+
+// ActivityIndicatorConfig controls tmux pane border color thresholds.
+type ActivityIndicatorConfig struct {
+	Enabled        bool `toml:"enabled"`         // Master toggle for activity indicators
+	ActiveSeconds  int  `toml:"active_seconds"`  // Seconds since activity to be considered active
+	StalledSeconds int  `toml:"stalled_seconds"` // Seconds since activity to be considered stalled
+}
+
+// DefaultActivityIndicatorConfig returns sensible defaults for pane activity indicators.
+func DefaultActivityIndicatorConfig() ActivityIndicatorConfig {
+	return ActivityIndicatorConfig{
+		Enabled:        true,
+		ActiveSeconds:  30,
+		StalledSeconds: 120,
+	}
+}
+
+// ValidateActivityIndicatorConfig validates activity indicator thresholds.
+func ValidateActivityIndicatorConfig(cfg *ActivityIndicatorConfig) error {
+	if cfg.ActiveSeconds < 1 {
+		return fmt.Errorf("active_seconds must be at least 1, got %d", cfg.ActiveSeconds)
+	}
+	if cfg.StalledSeconds <= cfg.ActiveSeconds {
+		return fmt.Errorf("stalled_seconds (%d) must be greater than active_seconds (%d)", cfg.StalledSeconds, cfg.ActiveSeconds)
+	}
+	return nil
 }
 
 // AgentMailConfig holds Agent Mail server settings
@@ -1422,8 +1456,10 @@ func Default() *Config {
 		SuggestionsEnabled: true,
 		Agents:             DefaultAgentTemplates(),
 		Tmux: TmuxConfig{
-			DefaultPanes: 10,
-			PaletteKey:   "F6",
+			DefaultPanes:       10,
+			PaletteKey:         "F6",
+			PaneInitDelayMs:    1000,
+			ActivityIndicators: DefaultActivityIndicatorConfig(),
 		},
 		Robot: DefaultRobotConfig(),
 		AgentMail: AgentMailConfig{
@@ -1899,12 +1935,22 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "claude = %q\n", cfg.Agents.Claude)
 	fmt.Fprintf(w, "codex = %q\n", cfg.Agents.Codex)
 	fmt.Fprintf(w, "gemini = %q\n", cfg.Agents.Gemini)
+	if cfg.Agents.Cursor != "" {
+		fmt.Fprintf(w, "cursor = %q\n", cfg.Agents.Cursor)
+	}
+	if cfg.Agents.Windsurf != "" {
+		fmt.Fprintf(w, "windsurf = %q\n", cfg.Agents.Windsurf)
+	}
+	if cfg.Agents.Aider != "" {
+		fmt.Fprintf(w, "aider = %q\n", cfg.Agents.Aider)
+	}
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[tmux]")
 	fmt.Fprintln(w, "# Tmux-specific settings")
 	fmt.Fprintf(w, "default_panes = %d\n", cfg.Tmux.DefaultPanes)
 	fmt.Fprintf(w, "palette_key = %q\n", cfg.Tmux.PaletteKey)
+	fmt.Fprintf(w, "pane_init_delay_ms = %d  # Delay before send-keys to new panes\n", cfg.Tmux.PaneInitDelayMs)
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "[robot]")
@@ -2487,6 +2533,8 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 			return cfg.Tmux.DefaultPanes, nil
 		case "palette_key":
 			return cfg.Tmux.PaletteKey, nil
+		case "pane_init_delay_ms":
+			return cfg.Tmux.PaneInitDelayMs, nil
 		}
 	case "agent_mail":
 		if len(parts) < 2 {
@@ -2764,6 +2812,7 @@ func Diff(cfg *Config) []ConfigDiff {
 	// Tmux
 	addDiff("tmux.default_panes", defaults.Tmux.DefaultPanes, cfg.Tmux.DefaultPanes)
 	addDiff("tmux.palette_key", defaults.Tmux.PaletteKey, cfg.Tmux.PaletteKey)
+	addDiff("tmux.pane_init_delay_ms", defaults.Tmux.PaneInitDelayMs, cfg.Tmux.PaneInitDelayMs)
 
 	// Agent Mail
 	addDiff("agent_mail.enabled", defaults.AgentMail.Enabled, cfg.AgentMail.Enabled)
@@ -2946,6 +2995,9 @@ func Validate(cfg *Config) []error {
 	// Validate tmux settings
 	if cfg.Tmux.DefaultPanes < 1 {
 		errs = append(errs, fmt.Errorf("tmux.default_panes: must be at least 1, got %d", cfg.Tmux.DefaultPanes))
+	}
+	if cfg.Tmux.PaneInitDelayMs < 0 {
+		errs = append(errs, fmt.Errorf("tmux.pane_init_delay_ms: must be non-negative, got %d", cfg.Tmux.PaneInitDelayMs))
 	}
 
 	return errs

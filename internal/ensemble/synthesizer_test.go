@@ -1,6 +1,8 @@
 package ensemble
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +105,104 @@ func TestSynthesizer_Synthesize_ManualStrategy(t *testing.T) {
 	}
 	if result.GeneratedAt.IsZero() {
 		t.Error("GeneratedAt is zero")
+	}
+}
+
+func TestSynthesizer_StreamSynthesize_EmitsChunks(t *testing.T) {
+	cfg := SynthesisConfig{Strategy: StrategyManual}
+	synth, err := NewSynthesizer(cfg)
+	if err != nil {
+		t.Fatalf("NewSynthesizer error: %v", err)
+	}
+
+	input := &SynthesisInput{
+		OriginalQuestion: "What is the architecture?",
+		Outputs: []ModeOutput{
+			{
+				ModeID:     "mode-a",
+				Thesis:     "The architecture is microservices-based",
+				Confidence: 0.8,
+				TopFindings: []Finding{
+					{Finding: "Uses REST APIs", Impact: ImpactMedium, Confidence: 0.9},
+				},
+				Risks: []Risk{
+					{Risk: "Scaling concerns", Impact: ImpactHigh, Likelihood: 0.6},
+				},
+				Recommendations: []Recommendation{
+					{Recommendation: "Add caching", Priority: ImpactHigh},
+				},
+				QuestionsForUser: []Question{
+					{Question: "Which services are highest priority?"},
+				},
+			},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	chunks, errs := synth.StreamSynthesize(ctx, input)
+	var collected []SynthesisChunk
+	for chunk := range chunks {
+		collected = append(collected, chunk)
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("StreamSynthesize error: %v", err)
+	}
+
+	if len(collected) == 0 {
+		t.Fatal("expected streamed chunks, got none")
+	}
+	for i, chunk := range collected {
+		if chunk.Index != i+1 {
+			t.Fatalf("chunk index %d = %d, want %d", i, chunk.Index, i+1)
+		}
+		if chunk.Timestamp.IsZero() {
+			t.Fatalf("chunk %d has zero timestamp", i)
+		}
+	}
+	if collected[0].Type != ChunkStatus {
+		t.Fatalf("first chunk type = %s, want %s", collected[0].Type, ChunkStatus)
+	}
+	last := collected[len(collected)-1]
+	if last.Type != ChunkComplete {
+		t.Fatalf("last chunk type = %s, want %s", last.Type, ChunkComplete)
+	}
+	if strings.TrimSpace(last.Content) == "" {
+		t.Fatalf("last chunk content is empty")
+	}
+}
+
+func TestSynthesizer_StreamSynthesize_Canceled(t *testing.T) {
+	cfg := SynthesisConfig{Strategy: StrategyManual}
+	synth, err := NewSynthesizer(cfg)
+	if err != nil {
+		t.Fatalf("NewSynthesizer error: %v", err)
+	}
+
+	input := &SynthesisInput{
+		OriginalQuestion: "What is the architecture?",
+		Outputs: []ModeOutput{
+			{
+				ModeID:     "mode-a",
+				Thesis:     "The architecture is microservices-based",
+				Confidence: 0.8,
+			},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	chunks, errs := synth.StreamSynthesize(ctx, input)
+	for range chunks {
+		t.Fatalf("expected no chunks on canceled context")
+	}
+
+	if err, ok := <-errs; !ok || err == nil {
+		t.Fatalf("expected cancellation error")
+	} else if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled error, got %v", err)
 	}
 }
 

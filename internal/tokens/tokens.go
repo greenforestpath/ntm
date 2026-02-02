@@ -262,7 +262,7 @@ func DetectContentType(text string) ContentType {
 	}
 
 	// High ratio of code characters suggests code
-	if alphaChars > 0 && float64(codeChars)/float64(alphaChars) > 0.1 {
+	if alphaChars > 0 && float64(codeChars)/float64(alphaChars) > 0.2 {
 		return ContentCode
 	}
 

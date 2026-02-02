@@ -35,6 +35,7 @@ type RobotParameter struct {
 // categoryOrder defines the canonical order for categories
 var categoryOrder = []string{
 	"state",
+	"ensemble",
 	"control",
 	"spawn",
 	"beads",
@@ -93,8 +94,11 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Flag:        "--robot-status",
 			Category:    "state",
 			Description: "Get tmux sessions, panes, and agent states. The primary entry point for understanding current system state.",
-			Parameters:  []RobotParameter{},
-			Examples:    []string{"ntm --robot-status"},
+			Parameters: []RobotParameter{
+				{Name: "robot-limit", Flag: "--robot-limit", Type: "int", Required: false, Default: "0", Description: "Max sessions to return (alias: --limit)"},
+				{Name: "robot-offset", Flag: "--robot-offset", Type: "int", Required: false, Default: "0", Description: "Pagination offset for sessions (alias: --offset)"},
+			},
+			Examples: []string{"ntm --robot-status"},
 		},
 		{
 			Name:        "context",
@@ -109,12 +113,56 @@ func buildCommandRegistry() []RobotCommandInfo {
 		{
 			Name:        "ensemble",
 			Flag:        "--robot-ensemble",
-			Category:    "state",
+			Category:    "ensemble",
 			Description: "Get ensemble state for a session including modes, status, and synthesis readiness.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-ensemble", Type: "string", Required: true, Description: "Session name to inspect"},
 			},
 			Examples: []string{"ntm --robot-ensemble=myproject"},
+		},
+		{
+			Name:        "ensemble-modes",
+			Flag:        "--robot-ensemble-modes",
+			Category:    "ensemble",
+			Description: "List available reasoning modes with filtering by category and tier.",
+			Parameters: []RobotParameter{
+				{Name: "category", Flag: "--category", Type: "string", Required: false, Description: "Filter by category code (A-L) or name (Formal, Heuristic, etc.)"},
+				{Name: "tier", Flag: "--tier", Type: "string", Required: false, Default: "core", Description: "Filter by tier: core, advanced, experimental, all"},
+				{Name: "limit", Flag: "--limit", Type: "int", Required: false, Default: "50", Description: "Max modes to return"},
+				{Name: "offset", Flag: "--offset", Type: "int", Required: false, Default: "0", Description: "Pagination offset"},
+			},
+			Examples: []string{
+				"ntm --robot-ensemble-modes",
+				"ntm --robot-ensemble-modes --tier=all",
+				"ntm --robot-ensemble-modes --category=Formal --tier=all",
+				"ntm --robot-ensemble-modes --limit=10 --offset=20",
+			},
+		},
+		{
+			Name:        "ensemble-presets",
+			Flag:        "--robot-ensemble-presets",
+			Category:    "ensemble",
+			Description: "List available ensemble presets with their mode configurations and budgets.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-ensemble-presets"},
+		},
+		{
+			Name:        "ensemble-synthesize",
+			Flag:        "--robot-ensemble-synthesize",
+			Category:    "ensemble",
+			Description: "Trigger synthesis for an ensemble session, combining mode outputs into a unified report.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-ensemble-synthesize", Type: "string", Required: true, Description: "Session name with ensemble to synthesize"},
+				{Name: "strategy", Flag: "--strategy", Type: "string", Required: false, Default: "manual", Description: "Synthesis strategy: manual, adversarial, consensus, creative, analytical, deliberative, prioritized, dialectical, meta-reasoning, voting, argumentation-graph"},
+				{Name: "format", Flag: "--format", Type: "string", Required: false, Default: "markdown", Description: "Output format: markdown, json, yaml"},
+				{Name: "output", Flag: "--output", Type: "string", Required: false, Description: "Path to write the synthesis report"},
+				{Name: "force", Flag: "--force", Type: "bool", Required: false, Description: "Synthesize even if some outputs are incomplete"},
+			},
+			Examples: []string{
+				"ntm --robot-ensemble-synthesize=myproject",
+				"ntm --robot-ensemble-synthesize=myproject --strategy=adversarial --format=json",
+				"ntm --robot-ensemble-synthesize=myproject --output=/tmp/report.md --force",
+			},
 		},
 		{
 			Name:        "snapshot",
@@ -124,6 +172,8 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Parameters: []RobotParameter{
 				{Name: "since", Flag: "--since", Type: "string", Required: false, Description: "RFC3339 timestamp for delta snapshot"},
 				{Name: "bead-limit", Flag: "--bead-limit", Type: "int", Required: false, Default: "5", Description: "Max beads per category"},
+				{Name: "robot-limit", Flag: "--robot-limit", Type: "int", Required: false, Default: "0", Description: "Max sessions to return (alias: --limit)"},
+				{Name: "robot-offset", Flag: "--robot-offset", Type: "int", Required: false, Default: "0", Description: "Pagination offset for sessions (alias: --offset)"},
 			},
 			Examples: []string{
 				"ntm --robot-snapshot",
@@ -243,6 +293,23 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "diagnose-pane", Flag: "--diagnose-pane", Type: "int", Required: false, Description: "Diagnose specific pane only"},
 			},
 			Examples: []string{"ntm --robot-diagnose=myproject --diagnose-fix"},
+		},
+		{
+			Name:        "probe",
+			Flag:        "--robot-probe",
+			Category:    "state",
+			Description: "Active pane responsiveness probe using keystroke or interrupt methods.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-probe", Type: "string", Required: true, Description: "Session name"},
+				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated pane indices to probe"},
+				{Name: "probe-method", Flag: "--probe-method", Type: "string", Required: false, Default: "keystroke_echo", Description: "Probe method: keystroke_echo, interrupt_test"},
+				{Name: "probe-timeout", Flag: "--probe-timeout", Type: "int", Required: false, Default: "5000", Description: "Probe timeout in milliseconds"},
+				{Name: "probe-aggressive", Flag: "--probe-aggressive", Type: "bool", Required: false, Description: "Fallback to interrupt_test if keystroke_echo fails"},
+			},
+			Examples: []string{
+				"ntm --robot-probe=myproject",
+				"ntm --robot-probe=myproject --panes=2 --probe-method=interrupt_test",
+			},
 		},
 		{
 			Name:        "diff",
@@ -404,8 +471,8 @@ func buildCommandRegistry() []RobotCommandInfo {
 		{
 			Name:        "ensemble_spawn",
 			Flag:        "--robot-ensemble-spawn",
-			Category:    "spawn",
-			Description: "Spawn a reasoning ensemble session (experimental build tag required).",
+			Category:    "ensemble",
+			Description: "Spawn a reasoning ensemble session with mode assignments.",
 			Parameters: []RobotParameter{
 				{Name: "session", Flag: "--robot-ensemble-spawn", Type: "string", Required: true, Description: "Session name to create"},
 				{Name: "preset", Flag: "--preset", Type: "string", Required: false, Description: "Ensemble preset name (required unless --modes is set)"},
@@ -524,6 +591,104 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Parameters:  []RobotParameter{},
 			Examples:    []string{"ntm --robot-graph"},
 		},
+		{
+			Name:        "forecast",
+			Flag:        "--robot-forecast",
+			Category:    "bv",
+			Description: "Get ETA predictions from bv.",
+			Parameters: []RobotParameter{
+				{Name: "target", Flag: "--robot-forecast", Type: "string", Required: true, Description: "Issue ID or 'all'"},
+			},
+			Examples: []string{"ntm --robot-forecast=bd-123", "ntm --robot-forecast=all"},
+		},
+		{
+			Name:        "suggest",
+			Flag:        "--robot-suggest",
+			Category:    "bv",
+			Description: "Get hygiene suggestions from bv.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-suggest"},
+		},
+		{
+			Name:        "impact",
+			Flag:        "--robot-impact",
+			Category:    "bv",
+			Description: "Get file impact analysis from bv.",
+			Parameters: []RobotParameter{
+				{Name: "file", Flag: "--robot-impact", Type: "string", Required: true, Description: "File path to analyze"},
+			},
+			Examples: []string{"ntm --robot-impact=internal/cli/root.go"},
+		},
+		{
+			Name:        "search",
+			Flag:        "--robot-search",
+			Category:    "bv",
+			Description: "Run semantic search against beads via bv.",
+			Parameters: []RobotParameter{
+				{Name: "query", Flag: "--robot-search", Type: "string", Required: true, Description: "Search query"},
+				{Name: "limit", Flag: "--limit", Type: "int", Required: false, Default: "20", Description: "Max results"},
+			},
+			Examples: []string{"ntm --robot-search='auth error' --limit=10"},
+		},
+		{
+			Name:        "label-attention",
+			Flag:        "--robot-label-attention",
+			Category:    "bv",
+			Description: "Get attention-ranked labels from bv.",
+			Parameters: []RobotParameter{
+				{Name: "limit", Flag: "--limit", Type: "int", Required: false, Default: "10", Description: "Max labels to return"},
+			},
+			Examples: []string{"ntm --robot-label-attention --limit=20"},
+		},
+		{
+			Name:        "label-flow",
+			Flag:        "--robot-label-flow",
+			Category:    "bv",
+			Description: "Get cross-label dependency flow from bv.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-label-flow"},
+		},
+		{
+			Name:        "label-health",
+			Flag:        "--robot-label-health",
+			Category:    "bv",
+			Description: "Get per-label health metrics from bv.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-label-health"},
+		},
+		{
+			Name:        "file-beads",
+			Flag:        "--robot-file-beads",
+			Category:    "bv",
+			Description: "Get bead mappings for a file from bv.",
+			Parameters: []RobotParameter{
+				{Name: "file", Flag: "--robot-file-beads", Type: "string", Required: true, Description: "File path to analyze"},
+				{Name: "limit", Flag: "--limit", Type: "int", Required: false, Default: "10", Description: "Max bead mappings"},
+			},
+			Examples: []string{"ntm --robot-file-beads=internal/cli/root.go --limit=10"},
+		},
+		{
+			Name:        "file-hotspots",
+			Flag:        "--robot-file-hotspots",
+			Category:    "bv",
+			Description: "Get file hotspot analysis from bv.",
+			Parameters: []RobotParameter{
+				{Name: "limit", Flag: "--limit", Type: "int", Required: false, Default: "10", Description: "Max hotspots"},
+			},
+			Examples: []string{"ntm --robot-file-hotspots --limit=10"},
+		},
+		{
+			Name:        "file-relations",
+			Flag:        "--robot-file-relations",
+			Category:    "bv",
+			Description: "Get file co-change relations from bv.",
+			Parameters: []RobotParameter{
+				{Name: "file", Flag: "--robot-file-relations", Type: "string", Required: true, Description: "File path to analyze"},
+				{Name: "limit", Flag: "--limit", Type: "int", Required: false, Default: "10", Description: "Max relations"},
+				{Name: "threshold", Flag: "--threshold", Type: "float", Required: false, Default: "0.0", Description: "Minimum relation weight"},
+			},
+			Examples: []string{"ntm --robot-file-relations=internal/cli/root.go --limit=10"},
+		},
 
 		// === CASS INTEGRATION ===
 		{
@@ -625,12 +790,175 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Examples:    []string{"ntm --robot-capabilities"},
 		},
 		{
+			Name:        "docs",
+			Flag:        "--robot-docs",
+			Category:    "utility",
+			Description: "Get documentation for a topic in JSON format. Topics: quickstart, commands, examples, exit-codes.",
+			Parameters: []RobotParameter{
+				{Name: "topic", Flag: "--robot-docs", Type: "string", Required: false, Default: "", Description: "Documentation topic. Empty returns topic index."},
+			},
+			Examples: []string{
+				"ntm --robot-docs=\"\"",
+				"ntm --robot-docs=quickstart",
+				"ntm --robot-docs=exit-codes",
+			},
+		},
+		{
 			Name:        "tools",
 			Flag:        "--robot-tools",
 			Category:    "utility",
 			Description: "Get tool inventory and health status.",
 			Parameters:  []RobotParameter{},
 			Examples:    []string{"ntm --robot-tools"},
+		},
+		{
+			Name:        "jfp-status",
+			Flag:        "--robot-jfp-status",
+			Category:    "utility",
+			Description: "Get JeffreysPrompts (JFP) health status.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-jfp-status"},
+		},
+		{
+			Name:        "jfp-list",
+			Flag:        "--robot-jfp-list",
+			Category:    "utility",
+			Description: "List JFP prompts (optionally filtered by category/tag).",
+			Parameters: []RobotParameter{
+				{Name: "category", Flag: "--category", Type: "string", Required: false, Description: "Filter by category"},
+				{Name: "tag", Flag: "--tag", Type: "string", Required: false, Description: "Filter by tag"},
+			},
+			Examples: []string{"ntm --robot-jfp-list", "ntm --robot-jfp-list --category=debugging"},
+		},
+		{
+			Name:        "jfp-search",
+			Flag:        "--robot-jfp-search",
+			Category:    "utility",
+			Description: "Search JFP prompts by query.",
+			Parameters: []RobotParameter{
+				{Name: "query", Flag: "--robot-jfp-search", Type: "string", Required: true, Description: "Search query"},
+			},
+			Examples: []string{"ntm --robot-jfp-search='debugging'"},
+		},
+		{
+			Name:        "jfp-show",
+			Flag:        "--robot-jfp-show",
+			Category:    "utility",
+			Description: "Show a JFP prompt by ID.",
+			Parameters: []RobotParameter{
+				{Name: "id", Flag: "--robot-jfp-show", Type: "string", Required: true, Description: "Prompt ID"},
+			},
+			Examples: []string{"ntm --robot-jfp-show=prompt-123"},
+		},
+		{
+			Name:        "jfp-suggest",
+			Flag:        "--robot-jfp-suggest",
+			Category:    "utility",
+			Description: "Get JFP prompt suggestions for a task.",
+			Parameters: []RobotParameter{
+				{Name: "task", Flag: "--robot-jfp-suggest", Type: "string", Required: true, Description: "Task description"},
+			},
+			Examples: []string{"ntm --robot-jfp-suggest='build a REST API'"},
+		},
+		{
+			Name:        "jfp-installed",
+			Flag:        "--robot-jfp-installed",
+			Category:    "utility",
+			Description: "List installed Claude Code skills from JFP.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-jfp-installed"},
+		},
+		{
+			Name:        "jfp-categories",
+			Flag:        "--robot-jfp-categories",
+			Category:    "utility",
+			Description: "List JFP categories with counts.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-jfp-categories"},
+		},
+		{
+			Name:        "jfp-tags",
+			Flag:        "--robot-jfp-tags",
+			Category:    "utility",
+			Description: "List JFP tags with counts.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-jfp-tags"},
+		},
+		{
+			Name:        "jfp-bundles",
+			Flag:        "--robot-jfp-bundles",
+			Category:    "utility",
+			Description: "List JFP bundles.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-jfp-bundles"},
+		},
+		{
+			Name:        "ms-search",
+			Flag:        "--robot-ms-search",
+			Category:    "utility",
+			Description: "Search Meta Skill catalog.",
+			Parameters: []RobotParameter{
+				{Name: "query", Flag: "--robot-ms-search", Type: "string", Required: true, Description: "Search query"},
+			},
+			Examples: []string{"ntm --robot-ms-search='commit workflow'"},
+		},
+		{
+			Name:        "ms-show",
+			Flag:        "--robot-ms-show",
+			Category:    "utility",
+			Description: "Show Meta Skill details by ID.",
+			Parameters: []RobotParameter{
+				{Name: "id", Flag: "--robot-ms-show", Type: "string", Required: true, Description: "Skill ID"},
+			},
+			Examples: []string{"ntm --robot-ms-show=commit-and-release"},
+		},
+		{
+			Name:        "ru-sync",
+			Flag:        "--robot-ru-sync",
+			Category:    "utility",
+			Description: "Run ru sync and return JSON summary.",
+			Parameters: []RobotParameter{
+				{Name: "dry-run", Flag: "--dry-run", Type: "bool", Required: false, Description: "Preview without executing"},
+			},
+			Examples: []string{
+				"ntm --robot-ru-sync",
+				"ntm --robot-ru-sync --dry-run",
+			},
+		},
+		{
+			Name:        "rano-stats",
+			Flag:        "--robot-rano-stats",
+			Category:    "utility",
+			Description: "Get per-agent network stats via rano.",
+			Parameters: []RobotParameter{
+				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated pane indices to filter (applies across sessions)"},
+				{Name: "rano-window", Flag: "--rano-window", Type: "duration", Required: false, Default: "5m", Description: "Time window for stats (e.g., 5m, 1h)"},
+			},
+			Examples: []string{
+				"ntm --robot-rano-stats",
+				"ntm --robot-rano-stats --panes=2,3 --rano-window=10m",
+			},
+		},
+		{
+			Name:        "rch-status",
+			Flag:        "--robot-rch-status",
+			Category:    "utility",
+			Description: "Get RCH status summary including worker counts.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-rch-status"},
+		},
+		{
+			Name:        "rch-workers",
+			Flag:        "--robot-rch-workers",
+			Category:    "utility",
+			Description: "List RCH workers with status details.",
+			Parameters: []RobotParameter{
+				{Name: "worker", Flag: "--worker", Type: "string", Required: false, Description: "Filter to a specific worker name"},
+			},
+			Examples: []string{
+				"ntm --robot-rch-workers",
+				"ntm --robot-rch-workers --worker=builder-1",
+			},
 		},
 		{
 			Name:        "alerts",
@@ -680,6 +1008,8 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "history-last", Flag: "--history-last", Type: "int", Required: false, Description: "Show last N entries"},
 				{Name: "history-since", Flag: "--history-since", Type: "string", Required: false, Description: "Show entries since time"},
 				{Name: "history-stats", Flag: "--history-stats", Type: "bool", Required: false, Description: "Show statistics instead of entries"},
+				{Name: "robot-limit", Flag: "--robot-limit", Type: "int", Required: false, Default: "0", Description: "Max history entries to return (alias: --limit)"},
+				{Name: "robot-offset", Flag: "--robot-offset", Type: "int", Required: false, Default: "0", Description: "Pagination offset for history entries (alias: --offset)"},
 			},
 			Examples: []string{"ntm --robot-history=myproject --history-last=10"},
 		},

@@ -32,15 +32,16 @@ type DashboardOutput struct {
 	AgentMail    *SnapshotAgentMail `json:"agent_mail,omitempty"`
 }
 
-// PrintDashboard outputs a dashboard-oriented view for AI orchestrators.
-func PrintDashboard(jsonMode bool) error {
+// GetDashboard retrieves a dashboard-oriented view for AI orchestrators.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetDashboard() (*DashboardOutput, error) {
 	wd, _ := os.Getwd()
 	fleet := "ntm"
 	if wd != "" {
 		fleet = filepath.Base(wd)
 	}
 
-	output := DashboardOutput{
+	output := &DashboardOutput{
 		RobotResponse: NewRobotResponse(true),
 		GeneratedAt:   time.Now().UTC(),
 		Fleet:         fleet,
@@ -144,11 +145,21 @@ func PrintDashboard(jsonMode bool) error {
 	// Agent Mail summary (best-effort)
 	output.AgentMail = buildSnapshotAgentMail()
 
+	return output, nil
+}
+
+// PrintDashboard outputs a dashboard-oriented view for AI orchestrators.
+func PrintDashboard(jsonMode bool) error {
+	output, err := GetDashboard()
+	if err != nil {
+		return err
+	}
+
 	if jsonMode {
 		return encodeJSON(output)
 	}
 
-	return printDashboardMarkdown(output)
+	return printDashboardMarkdown(*output)
 }
 
 func printDashboardMarkdown(output DashboardOutput) error {

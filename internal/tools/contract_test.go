@@ -757,6 +757,156 @@ func TestBVAdapterRobotTriage(t *testing.T) {
 	}
 }
 
+func TestBVAdapterRobotModes(t *testing.T) {
+	cleanup := withFakeTools(t)
+	defer cleanup()
+
+	adapter := NewBVAdapter()
+	ctx := context.Background()
+	projectRoot := filepath.Dir(filepath.Dir(fakeToolsPath(t)))
+
+	type modeTest struct {
+		name string
+		key  string
+		call func() (json.RawMessage, error)
+	}
+
+	tests := []modeTest{
+		{
+			name: "triage_by_label",
+			key:  "triage_by_label",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetGroupedTriage(ctx, projectRoot, BVGroupedTriageOptions{ByLabel: true})
+			},
+		},
+		{
+			name: "triage_by_track",
+			key:  "triage_by_track",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetGroupedTriage(ctx, projectRoot, BVGroupedTriageOptions{ByTrack: true})
+			},
+		},
+		{
+			name: "alerts",
+			key:  "alerts",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetAlerts(ctx, projectRoot, BVAlertOptions{Severity: "warning"})
+			},
+		},
+		{
+			name: "graph",
+			key:  "graph",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetGraph(ctx, projectRoot, BVGraphOptions{Format: "json"})
+			},
+		},
+		{
+			name: "history",
+			key:  "stats",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetHistory(ctx, projectRoot)
+			},
+		},
+		{
+			name: "burndown",
+			key:  "progress",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetBurndown(ctx, projectRoot, "s1")
+			},
+		},
+		{
+			name: "forecast",
+			key:  "forecasts",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetForecast(ctx, projectRoot, "all")
+			},
+		},
+		{
+			name: "suggest",
+			key:  "suggestions",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetSuggestions(ctx, projectRoot)
+			},
+		},
+		{
+			name: "impact",
+			key:  "impact_score",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetImpact(ctx, projectRoot, "internal/foo.go")
+			},
+		},
+		{
+			name: "search",
+			key:  "results",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetSearch(ctx, projectRoot, "test query")
+			},
+		},
+		{
+			name: "label_attention",
+			key:  "labels",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetLabelAttention(ctx, projectRoot, 5)
+			},
+		},
+		{
+			name: "label_flow",
+			key:  "flow_matrix",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetLabelFlow(ctx, projectRoot)
+			},
+		},
+		{
+			name: "label_health",
+			key:  "results",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetLabelHealth(ctx, projectRoot)
+			},
+		},
+		{
+			name: "file_beads",
+			key:  "files",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetFileBeads(ctx, projectRoot, "internal/foo.go", 5)
+			},
+		},
+		{
+			name: "file_hotspots",
+			key:  "hotspots",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetFileHotspots(ctx, projectRoot, 5)
+			},
+		},
+		{
+			name: "file_relations",
+			key:  "relations",
+			call: func() (json.RawMessage, error) {
+				return adapter.GetFileRelations(ctx, projectRoot, "internal/foo.go", 5, 0.4)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := tt.call()
+			if err != nil {
+				t.Fatalf("%s error: %v", tt.name, err)
+			}
+			if !json.Valid(raw) {
+				t.Fatalf("%s returned invalid JSON", tt.name)
+			}
+
+			var payload map[string]any
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				t.Fatalf("%s unmarshal error: %v", tt.name, err)
+			}
+			if _, ok := payload[tt.key]; !ok {
+				t.Errorf("%s missing key %q", tt.name, tt.key)
+			}
+		})
+	}
+}
+
 // TestAdapterTimeout tests that adapters respect context timeout
 func TestAdapterTimeout(t *testing.T) {
 	if testing.Short() {

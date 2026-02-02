@@ -38,14 +38,14 @@ type EnsembleSuggestAgentHints struct {
 	SpawnCommand     string        `json:"spawn_command,omitempty"`
 }
 
-// PrintEnsembleSuggest outputs ensemble preset suggestions for a question.
-func PrintEnsembleSuggest(question string, idOnly bool) error {
+// GetEnsembleSuggest retrieves ensemble preset suggestions for a question.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetEnsembleSuggest(question string) (*EnsembleSuggestOutput, error) {
 	slog.Debug("[robot] ensemble-suggest",
 		"question_len", len(question),
-		"id_only", idOnly,
 	)
 
-	output := EnsembleSuggestOutput{
+	output := &EnsembleSuggestOutput{
 		RobotResponse: NewRobotResponse(true),
 		Question:      question,
 		Suggestions:   []EnsembleSuggestion{},
@@ -58,7 +58,7 @@ func PrintEnsembleSuggest(question string, idOnly bool) error {
 			ErrCodeInvalidFlag,
 			"Provide a question: ntm --robot-ensemble-suggest=\"What security issues exist?\"",
 		)
-		return outputJSON(output)
+		return output, nil
 	}
 
 	engine := ensemble.GlobalSuggestionEngine()
@@ -94,7 +94,7 @@ func PrintEnsembleSuggest(question string, idOnly bool) error {
 				},
 			},
 		}
-		return outputJSON(output)
+		return output, nil
 	}
 
 	// Convert suggestions to output format
@@ -136,11 +136,21 @@ func PrintEnsembleSuggest(question string, idOnly bool) error {
 	}
 
 	// Build agent hints
-	output.AgentHints = buildEnsembleSuggestHints(output)
+	output.AgentHints = buildEnsembleSuggestHints(*output)
+
+	return output, nil
+}
+
+// PrintEnsembleSuggest outputs ensemble preset suggestions for a question.
+func PrintEnsembleSuggest(question string, idOnly bool) error {
+	output, err := GetEnsembleSuggest(question)
+	if err != nil {
+		return err
+	}
 
 	// If idOnly, simplify output
 	if idOnly {
-		return outputIDOnly(output)
+		return outputIDOnly(*output)
 	}
 
 	return outputJSON(output)

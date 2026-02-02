@@ -159,7 +159,7 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 	firstPaneID := panes[0].ID
 	if len(spec.Panes) > 0 {
 		title := o.formatPaneTitle(spec.Name, spec.Panes[0])
-		if err := client.SetPaneTitle(firstPaneID, title); err != nil {
+		if err := o.setPaneTitleWithRetry(client, firstPaneID, title); err != nil {
 			// Non-fatal, continue
 		}
 		result.PaneIDs = append(result.PaneIDs, firstPaneID)
@@ -189,7 +189,7 @@ func (o *SessionOrchestrator) createSession(client *tmux.Client, spec SessionSpe
 
 		// Set pane title
 		title := o.formatPaneTitle(spec.Name, paneSpec)
-		if err := client.SetPaneTitle(paneID, title); err != nil {
+		if err := o.setPaneTitleWithRetry(client, paneID, title); err != nil {
 			// Non-fatal, continue
 		}
 
@@ -504,4 +504,15 @@ func (o *SessionOrchestrator) GetRemoteConnectionInfo() *RemoteConnectionInfo {
 	}
 
 	return info
+}
+
+func (o *SessionOrchestrator) setPaneTitleWithRetry(client *tmux.Client, paneID, title string) error {
+	var err error
+	for i := 0; i < 3; i++ {
+		if err = client.SetPaneTitle(paneID, title); err == nil {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return err
 }

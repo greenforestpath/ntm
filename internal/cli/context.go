@@ -48,7 +48,7 @@ func newContextBuildCmd() *cobra.Command {
 - S2P file context
 
 The context is rendered in agent-appropriate format:
-- Claude (cc): XML format
+- Claude (cc), Cursor, Windsurf, Aider: XML format
 - Codex (cod), Gemini (gmi): Markdown format`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir, _ := os.Getwd()
@@ -122,7 +122,7 @@ The context is rendered in agent-appropriate format:
 	}
 
 	cmd.Flags().StringVar(&beadID, "bead", "", "Bead ID for context")
-	cmd.Flags().StringVar(&agentType, "agent", "cc", "Agent type (cc, cod, gmi)")
+	cmd.Flags().StringVar(&agentType, "agent", "cc", "Agent type (cc, cod, gmi, cursor, windsurf, aider)")
 	cmd.Flags().StringVar(&task, "task", "", "Task description for CM context")
 	cmd.Flags().StringSliceVar(&files, "files", nil, "Files to include in S2P context")
 	cmd.Flags().Bool("verbose", false, "Show full rendered prompt")

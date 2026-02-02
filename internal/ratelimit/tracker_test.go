@@ -433,3 +433,71 @@ func TestAdaptiveLearning_MultipleRateLimits(t *testing.T) {
 		t.Errorf("CurrentDelay = %v, want %v after 3 rate limits", state.CurrentDelay, expectedDelay)
 	}
 }
+
+func TestParseWaitSeconds(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   int
+	}{
+		{"retry_after", "Retry-After: 15", 15},
+		{"try_again_seconds", "try again in 3s", 3},
+		{"wait_seconds", "wait 5 seconds", 5},
+		{"retry_minutes", "retry in 2m", 120},
+		{"cooldown_seconds", "10 seconds cooldown", 10},
+		{"no_wait", "rate limit exceeded", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseWaitSeconds(tt.output); got != tt.want {
+				t.Errorf("ParseWaitSeconds(%q) = %d, want %d", tt.output, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDetectRateLimit(t *testing.T) {
+	tests := []struct {
+		name            string
+		output          string
+		wantRateLimited bool
+		wantSource      string
+		wantWait        int
+	}{
+		{
+			name:            "exit_code_429",
+			output:          "process exited with code 429",
+			wantRateLimited: true,
+			wantSource:      detectionSourceExitCode,
+		},
+		{
+			name:            "rate_limit_text",
+			output:          "Error: rate limit exceeded. Retry-After: 12",
+			wantRateLimited: true,
+			wantSource:      detectionSourceOutput,
+			wantWait:        12,
+		},
+		{
+			name:            "no_rate_limit",
+			output:          "all good",
+			wantRateLimited: false,
+			wantSource:      "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			detection := DetectRateLimit(tt.output)
+			if detection.RateLimited != tt.wantRateLimited {
+				t.Fatalf("DetectRateLimit(%q) RateLimited=%v, want %v", tt.output, detection.RateLimited, tt.wantRateLimited)
+			}
+			if detection.Source != tt.wantSource {
+				t.Fatalf("DetectRateLimit(%q) Source=%q, want %q", tt.output, detection.Source, tt.wantSource)
+			}
+			if detection.WaitSeconds != tt.wantWait {
+				t.Fatalf("DetectRateLimit(%q) WaitSeconds=%d, want %d", tt.output, detection.WaitSeconds, tt.wantWait)
+			}
+		})
+	}
+}

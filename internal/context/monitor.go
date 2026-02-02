@@ -729,8 +729,8 @@ func (m *ContextMonitor) UpdateFromTranscript(agentID string) (int64, error) {
 		return 0, err
 	}
 
-	// Estimate tokens from file size (~4 bytes per token, conservative)
-	estimatedTokens := int64(float64(info.Size()) / 4.0)
+	// Estimate tokens from file size (~3.5 bytes per token, conservative)
+	estimatedTokens := int64(float64(info.Size()) / 3.5)
 
 	// Update the state with this estimate
 	m.mu.Lock()

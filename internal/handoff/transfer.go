@@ -20,7 +20,7 @@ const (
 type ReservationTransferClient interface {
 	ReservePaths(ctx context.Context, opts agentmail.FileReservationOptions) (*agentmail.ReservationResult, error)
 	ReleaseReservations(ctx context.Context, projectKey, agentName string, paths []string, ids []int) error
-	RenewReservations(ctx context.Context, projectKey, agentName string, extendSeconds int) error
+	RenewReservations(ctx context.Context, opts agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error)
 }
 
 // TransferReservationsOptions configures a reservation transfer.
@@ -109,7 +109,12 @@ func TransferReservations(ctx context.Context, client ReservationTransferClient,
 
 	// If transferring to the same agent, just refresh TTL.
 	if opts.FromAgent == opts.ToAgent {
-		if err := client.RenewReservations(ctx, opts.ProjectKey, opts.ToAgent, ttlSeconds); err != nil {
+		_, err := client.RenewReservations(ctx, agentmail.RenewReservationsOptions{
+			ProjectKey:    opts.ProjectKey,
+			AgentName:     opts.ToAgent,
+			ExtendSeconds: ttlSeconds,
+		})
+		if err != nil {
 			result.Error = err.Error()
 			logger.Warn("reservation refresh failed", "error", err)
 			return result, err

@@ -401,23 +401,23 @@ type JFPStatusOutput struct {
 // JFPListOutput represents the output for --robot-jfp-list
 type JFPListOutput struct {
 	RobotResponse
-	Count     int             `json:"count"`
-	Prompts   json.RawMessage `json:"prompts"`
+	Count   int             `json:"count"`
+	Prompts json.RawMessage `json:"prompts"`
 }
 
 // JFPSearchOutput represents the output for --robot-jfp-search
 type JFPSearchOutput struct {
 	RobotResponse
-	Query     string          `json:"query"`
-	Count     int             `json:"count"`
-	Results   json.RawMessage `json:"results"`
+	Query   string          `json:"query"`
+	Count   int             `json:"count"`
+	Results json.RawMessage `json:"results"`
 }
 
 // JFPShowOutput represents the output for --robot-jfp-show
 type JFPShowOutput struct {
 	RobotResponse
-	ID        string          `json:"id"`
-	Prompt    json.RawMessage `json:"prompt,omitempty"`
+	ID     string          `json:"id"`
+	Prompt json.RawMessage `json:"prompt,omitempty"`
 }
 
 // JFPSuggestOutput represents the output for --robot-jfp-suggest
@@ -430,8 +430,8 @@ type JFPSuggestOutput struct {
 // JFPInstalledOutput represents the output for --robot-jfp-installed
 type JFPInstalledOutput struct {
 	RobotResponse
-	Count     int             `json:"count"`
-	Skills    json.RawMessage `json:"skills"`
+	Count  int             `json:"count"`
+	Skills json.RawMessage `json:"skills"`
 }
 
 // JFPCategoriesOutput represents the output for --robot-jfp-categories
@@ -444,15 +444,15 @@ type JFPCategoriesOutput struct {
 // JFPTagsOutput represents the output for --robot-jfp-tags
 type JFPTagsOutput struct {
 	RobotResponse
-	Count     int             `json:"count"`
-	Tags      json.RawMessage `json:"tags"`
+	Count int             `json:"count"`
+	Tags  json.RawMessage `json:"tags"`
 }
 
 // JFPBundlesOutput represents the output for --robot-jfp-bundles
 type JFPBundlesOutput struct {
 	RobotResponse
-	Count     int             `json:"count"`
-	Bundles   json.RawMessage `json:"bundles"`
+	Count   int             `json:"count"`
+	Bundles json.RawMessage `json:"bundles"`
 }
 
 // GetJFPStatus returns JFP health and status.
@@ -462,8 +462,8 @@ func GetJFPStatus() (*JFPStatusOutput, error) {
 
 	output := &JFPStatusOutput{
 		RobotResponse: NewRobotResponse(true),
-		JFPAvailable: false,
-		Healthy:      false,
+		JFPAvailable:  false,
+		Healthy:       false,
 	}
 
 	// Check if jfp is installed
@@ -596,7 +596,7 @@ func GetJFPSearch(query string) (*JFPSearchOutput, error) {
 
 	output := &JFPSearchOutput{
 		RobotResponse: NewRobotResponse(true),
-		Query:     query,
+		Query:         query,
 	}
 
 	// Check if jfp is installed
@@ -659,7 +659,7 @@ func GetJFPShow(id string) (*JFPShowOutput, error) {
 
 	output := &JFPShowOutput{
 		RobotResponse: NewRobotResponse(true),
-		ID:        id,
+		ID:            id,
 	}
 
 	// Check if jfp is installed
@@ -719,7 +719,7 @@ func GetJFPSuggest(task string) (*JFPSuggestOutput, error) {
 
 	output := &JFPSuggestOutput{
 		RobotResponse: NewRobotResponse(true),
-		Task:      task,
+		Task:          task,
 	}
 
 	// Check if jfp is installed
@@ -980,6 +980,150 @@ func PrintJFPBundles() error {
 	return encodeJSON(output)
 }
 
+// ===========================================================================
+// MS (Meta Skill) Robot Wrappers
+// ===========================================================================
+
+// MSSearchOutput represents the output for --robot-ms-search
+type MSSearchOutput struct {
+	RobotResponse
+	Query  string          `json:"query"`
+	Count  int             `json:"count"`
+	Skills json.RawMessage `json:"skills"`
+	Source string          `json:"source,omitempty"`
+}
+
+// MSShowOutput represents the output for --robot-ms-show
+type MSShowOutput struct {
+	RobotResponse
+	ID     string          `json:"id"`
+	Skill  json.RawMessage `json:"skill,omitempty"`
+	Source string          `json:"source,omitempty"`
+}
+
+// GetMSSearch returns skill matches for a query.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetMSSearch(query string) (*MSSearchOutput, error) {
+	adapter := tools.NewMSAdapter()
+
+	output := &MSSearchOutput{
+		RobotResponse: NewRobotResponse(true),
+		Query:         query,
+		Source:        "ms",
+	}
+
+	// Check if ms is installed
+	_, installed := adapter.Detect()
+	if !installed {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("ms not installed"),
+			ErrCodeDependencyMissing,
+			"Install Meta Skill (ms) and ensure it is on PATH",
+		)
+		return output, nil
+	}
+
+	if strings.TrimSpace(query) == "" {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("query is required"),
+			ErrCodeInvalidFlag,
+			"Provide a query, e.g., --robot-ms-search='commit workflow'",
+		)
+		return output, nil
+	}
+
+	ctx := context.Background()
+	data, err := adapter.Search(ctx, query)
+	if err != nil {
+		output.RobotResponse = NewErrorResponse(
+			err,
+			"MS_SEARCH_FAILED",
+			"Try a different query or check ms health",
+		)
+		return output, nil
+	}
+
+	output.Skills = data
+
+	// Try to count items
+	var items []interface{}
+	if json.Unmarshal(data, &items) == nil {
+		output.Count = len(items)
+	}
+
+	return output, nil
+}
+
+// PrintMSSearch outputs skill matches as JSON.
+// This is a thin wrapper around GetMSSearch() for CLI output.
+func PrintMSSearch(query string) error {
+	output, err := GetMSSearch(query)
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
+// GetMSShow returns a specific skill by ID.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetMSShow(id string) (*MSShowOutput, error) {
+	adapter := tools.NewMSAdapter()
+
+	output := &MSShowOutput{
+		RobotResponse: NewRobotResponse(true),
+		ID:            id,
+		Source:        "ms",
+	}
+
+	// Check if ms is installed
+	_, installed := adapter.Detect()
+	if !installed {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("ms not installed"),
+			ErrCodeDependencyMissing,
+			"Install Meta Skill (ms) and ensure it is on PATH",
+		)
+		return output, nil
+	}
+
+	if strings.TrimSpace(id) == "" {
+		output.RobotResponse = NewErrorResponse(
+			fmt.Errorf("skill ID is required"),
+			ErrCodeInvalidFlag,
+			"Provide a skill ID, e.g., --robot-ms-show='commit-and-release'",
+		)
+		return output, nil
+	}
+
+	ctx := context.Background()
+	data, err := adapter.Show(ctx, id)
+	if err != nil {
+		code := "MS_SHOW_FAILED"
+		if strings.Contains(err.Error(), "not found") {
+			code = "NOT_FOUND"
+		}
+		output.RobotResponse = NewErrorResponse(
+			err,
+			code,
+			"Use --robot-ms-search to find available skills",
+		)
+		return output, nil
+	}
+
+	output.Skill = data
+	return output, nil
+}
+
+// PrintMSShow outputs a specific skill as JSON.
+// This is a thin wrapper around GetMSShow() for CLI output.
+func PrintMSShow(id string) error {
+	output, err := GetMSShow(id)
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
 // Build info - these will be set by the caller from cli package
 var (
 	Version = "dev"
@@ -1047,17 +1191,20 @@ type SystemInfo struct {
 // StatusOutput is the structured output for robot-status
 type StatusOutput struct {
 	RobotResponse
-	GeneratedAt  time.Time          `json:"generated_at"`
-	System       SystemInfo         `json:"system"`
-	Sessions     []SessionInfo      `json:"sessions"`
-	Summary      StatusSummary      `json:"summary"`
-	Beads        *bv.BeadsSummary   `json:"beads,omitempty"`
-	GraphMetrics *GraphMetrics      `json:"graph_metrics,omitempty"`
-	AgentMail    *AgentMailSummary  `json:"agent_mail,omitempty"`
-	Handoff      *HandoffSummary    `json:"handoff,omitempty"`
-	Alerts       []StatusAlert      `json:"alerts,omitempty"`
-	FileChanges  []FileChangeInfo   `json:"file_changes,omitempty"`
-	Conflicts    []tracker.Conflict `json:"conflicts,omitempty"`
+	GeneratedAt    time.Time              `json:"generated_at"`
+	System         SystemInfo             `json:"system"`
+	Sessions       []SessionInfo          `json:"sessions"`
+	Pagination     *PaginationInfo        `json:"pagination,omitempty"`
+	AgentHints     *AgentHints            `json:"_agent_hints,omitempty"`
+	Summary        StatusSummary          `json:"summary"`
+	Beads          *bv.BeadsSummary       `json:"beads,omitempty"`
+	GraphMetrics   *GraphMetrics          `json:"graph_metrics,omitempty"`
+	AgentMail      *AgentMailSummary      `json:"agent_mail,omitempty"`
+	Handoff        *HandoffSummary        `json:"handoff,omitempty"`
+	Alerts         []StatusAlert          `json:"alerts,omitempty"`
+	FileChanges    []FileChangeInfo       `json:"file_changes,omitempty"`
+	Conflicts      []tracker.Conflict     `json:"conflicts,omitempty"`
+	SchedulerStats *SchedulerStatsSummary `json:"scheduler_stats,omitempty"`
 }
 
 // AgentMailSummary provides a lightweight Agent Mail state for --robot-status.
@@ -1079,6 +1226,63 @@ type HandoffSummary struct {
 	Path       string `json:"path,omitempty"`
 	AgeSeconds int64  `json:"age_seconds,omitempty"`
 	Status     string `json:"status,omitempty"`
+}
+
+// SchedulerStatsSummary provides spawn scheduler statistics for robot-status.
+// This surfaces queue depth, backoff state, headroom, and rate limit status
+// to help agents understand spawn pacing.
+type SchedulerStatsSummary struct {
+	// Enabled indicates if spawn pacing is active.
+	Enabled bool `json:"enabled"`
+
+	// QueueDepth is the current number of jobs waiting in queue.
+	QueueDepth int `json:"queue_depth"`
+
+	// RunningCount is the number of currently executing spawn jobs.
+	RunningCount int `json:"running_count"`
+
+	// TotalSubmitted is the total jobs submitted since scheduler start.
+	TotalSubmitted int64 `json:"total_submitted"`
+
+	// TotalCompleted is the total jobs completed successfully.
+	TotalCompleted int64 `json:"total_completed"`
+
+	// TotalFailed is the total jobs that failed after all retries.
+	TotalFailed int64 `json:"total_failed"`
+
+	// IsPaused indicates if the scheduler is paused.
+	IsPaused bool `json:"is_paused"`
+
+	// InBackoff indicates if global backoff is currently active.
+	InBackoff bool `json:"in_backoff"`
+
+	// BackoffRemainingMs is the remaining backoff time in milliseconds.
+	BackoffRemainingMs int64 `json:"backoff_remaining_ms,omitempty"`
+
+	// HeadroomOK indicates if resource headroom is sufficient.
+	HeadroomOK bool `json:"headroom_ok"`
+
+	// HeadroomReason describes why headroom is blocked (if any).
+	HeadroomReason string `json:"headroom_reason,omitempty"`
+
+	// RateLimitTokens is the current available rate limit tokens.
+	RateLimitTokens float64 `json:"rate_limit_tokens"`
+
+	// AgentCaps shows per-agent concurrency status.
+	AgentCaps *AgentCapsStatus `json:"agent_caps,omitempty"`
+
+	// UptimeSeconds is how long the scheduler has been running.
+	UptimeSeconds int64 `json:"uptime_seconds,omitempty"`
+}
+
+// AgentCapsStatus shows per-agent-type concurrency cap status.
+type AgentCapsStatus struct {
+	ClaudeCurrent int `json:"claude_current"`
+	ClaudeMax     int `json:"claude_max"`
+	CodexCurrent  int `json:"codex_current"`
+	CodexMax      int `json:"codex_max"`
+	GeminiCurrent int `json:"gemini_current"`
+	GeminiMax     int `json:"gemini_max"`
 }
 
 // StatusAlert represents a warning or alert emitted by robot status.
@@ -1189,7 +1393,7 @@ API Design Principles (see docs/robot-api-design.md):
 -----------------------------------------------------
 1. Global commands: bool flags (--robot-status, --robot-plan)
 2. Session-scoped: =SESSION syntax (--robot-send=myproj, --robot-tail=myproj)
-3. Modifiers: unprefixed global flags (--limit, --since, --type)
+3. Modifiers: unprefixed global flags (--limit, --offset, --since, --type)
 4. Output: JSON by default, TOON for token-efficient (--robot-format=toon)
 
 Core Commands:
@@ -1230,6 +1434,8 @@ Tool Bridges:
 -------------
 --robot-cass-search=QUERY    Search past conversations (--limit=20, --since=7d)
 --robot-jfp-search=QUERY     Search prompts library
+--robot-ms-search=QUERY      Search Meta Skill catalog
+--robot-ms-show=ID           Show Meta Skill details
 --robot-tokens               Token usage stats (--days=30, --group-by=agent)
 --robot-history=SESSION      Command history (--last=10)
 
@@ -1250,6 +1456,9 @@ Output Formats:
 Common Modifiers:
 -----------------
 --limit=N       Max results (works with search, list commands)
+--offset=N      Pagination offset for list commands
+--robot-limit=N  Explicit pagination alias for robot list outputs
+--robot-offset=N Explicit pagination alias for robot list outputs
 --since=DURATION  Time filter (1d, 7d, 30d, ISO8601, or duration like 1h)
 --type=TYPE     Agent type filter (claude, codex, gemini)
 --panes=X,Y     Pane filter (comma-separated indices)
@@ -1284,6 +1493,11 @@ For machine-readable schema:    ntm --robot-capabilities
 // GetStatus collects machine-readable status.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetStatus() (*StatusOutput, error) {
+	return GetStatusWithOptions(PaginationOptions{})
+}
+
+// GetStatusWithOptions collects status and applies pagination to sessions.
+func GetStatusWithOptions(opts PaginationOptions) (*StatusOutput, error) {
 	wd := mustGetwd()
 	cfg, err := config.LoadMerged(wd, config.DefaultPath())
 	if err != nil {
@@ -1427,6 +1641,17 @@ func GetStatus() (*StatusOutput, error) {
 	appendFileChanges(output)
 	appendConflicts(output)
 
+	if paged, page := ApplyPagination(output.Sessions, opts); page != nil {
+		output.Sessions = paged
+		output.Pagination = page
+		if next, pages := paginationHintOffsets(page); next != nil {
+			output.AgentHints = &AgentHints{
+				NextOffset:     next,
+				PagesRemaining: pages,
+			}
+		}
+	}
+
 	return output, nil
 }
 
@@ -1434,6 +1659,15 @@ func GetStatus() (*StatusOutput, error) {
 // This is a thin wrapper around GetStatus() for CLI output.
 func PrintStatus() error {
 	output, err := GetStatus()
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
+// PrintStatusWithOptions outputs status with pagination options.
+func PrintStatusWithOptions(opts PaginationOptions) error {
+	output, err := GetStatusWithOptions(opts)
 	if err != nil {
 		return err
 	}
@@ -1529,11 +1763,11 @@ func GetMail(opts MailOptions) (*MailOutput, error) {
 
 	output := &MailOutput{
 		RobotResponse: NewRobotResponse(true),
-		GeneratedAt: time.Now().UTC(),
-		Session:     opts.Session,
-		ProjectKey:  projectKey,
-		Available:   false,
-		ServerURL:   serverURL,
+		GeneratedAt:   time.Now().UTC(),
+		Session:       opts.Session,
+		ProjectKey:    projectKey,
+		Available:     false,
+		ServerURL:     serverURL,
 	}
 
 	if !client.IsAvailable() {
@@ -2798,6 +3032,8 @@ type SnapshotOutput struct {
 	RobotResponse
 	Timestamp      string             `json:"ts"`
 	Sessions       []SnapshotSession  `json:"sessions"`
+	Pagination     *PaginationInfo    `json:"pagination,omitempty"`
+	AgentHints     *AgentHints        `json:"_agent_hints,omitempty"`
 	BeadsSummary   *bv.BeadsSummary   `json:"beads_summary,omitempty"`
 	AgentMail      *SnapshotAgentMail `json:"agent_mail,omitempty"`
 	MailUnread     int                `json:"mail_unread,omitempty"`
@@ -2870,12 +3106,18 @@ type SnapshotAgentMailStats struct {
 // BeadLimit controls how many ready/in-progress beads to include in snapshot
 var BeadLimit = 5
 
-// PrintSnapshot outputs complete system state for AI orchestration
-func PrintSnapshot(cfg *config.Config) error {
+// GetSnapshot retrieves complete system state for AI orchestration.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetSnapshot(cfg *config.Config) (*SnapshotOutput, error) {
+	return GetSnapshotWithOptions(cfg, PaginationOptions{})
+}
+
+// GetSnapshotWithOptions retrieves complete system state with pagination applied to sessions.
+func GetSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) (*SnapshotOutput, error) {
 	if cfg == nil {
 		cfg = config.Default()
 	}
-	output := SnapshotOutput{
+	output := &SnapshotOutput{
 		RobotResponse: NewRobotResponse(true),
 		Timestamp:     time.Now().UTC().Format(time.RFC3339),
 		Sessions:      []SnapshotSession{},
@@ -2890,7 +3132,7 @@ func PrintSnapshot(cfg *config.Config) error {
 			"Install tmux to enable snapshot",
 		)
 		output.Alerts = append(output.Alerts, "tmux is not installed")
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Fetch Agent Mail data early
@@ -2918,7 +3160,7 @@ func PrintSnapshot(cfg *config.Config) error {
 	sessions, err := tmux.ListSessions()
 	if err != nil {
 		// No sessions is not an error for snapshot
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	for _, sess := range sessions {
@@ -3062,6 +3304,35 @@ func PrintSnapshot(cfg *config.Config) error {
 		}
 	}
 
+	if paged, page := ApplyPagination(output.Sessions, opts); page != nil {
+		output.Sessions = paged
+		output.Pagination = page
+		if next, pages := paginationHintOffsets(page); next != nil {
+			output.AgentHints = &AgentHints{
+				NextOffset:     next,
+				PagesRemaining: pages,
+			}
+		}
+	}
+
+	return output, nil
+}
+
+// PrintSnapshot outputs complete system state for AI orchestration
+func PrintSnapshot(cfg *config.Config) error {
+	output, err := GetSnapshot(cfg)
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
+// PrintSnapshotWithOptions outputs snapshot with pagination options.
+func PrintSnapshotWithOptions(cfg *config.Config, opts PaginationOptions) error {
+	output, err := GetSnapshotWithOptions(cfg, opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -3500,10 +3771,11 @@ type Change struct {
 	Data    map[string]interface{} `json:"data,omitempty"`
 }
 
-// PrintSnapshotDelta outputs changes since the given timestamp.
+// GetSnapshotDelta retrieves state changes since the given timestamp.
 // Uses the internal state tracker ring buffer to return delta changes.
-func PrintSnapshotDelta(since time.Time) error {
-	output := SnapshotDeltaOutput{
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetSnapshotDelta(since time.Time) (*SnapshotDeltaOutput, error) {
+	output := &SnapshotDeltaOutput{
 		RobotResponse: NewRobotResponse(true),
 		Timestamp:     time.Now().UTC().Format(time.RFC3339),
 		Since:         since.Format(time.RFC3339),
@@ -3524,6 +3796,15 @@ func PrintSnapshotDelta(since time.Time) error {
 		output.Changes = append(output.Changes, change)
 	}
 
+	return output, nil
+}
+
+// PrintSnapshotDelta outputs changes since the given timestamp.
+func PrintSnapshotDelta(since time.Time) error {
+	output, err := GetSnapshotDelta(since)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -3829,7 +4110,11 @@ func buildCorrelationGraph() *GraphCorrelation {
 			if i >= maxSummaries {
 				break
 			}
-			summary, err := agentMailClient.SummarizeThread(ctx, wd, tid, false)
+			summary, err := agentMailClient.SummarizeThread(ctx, agentmail.SummarizeThreadOptions{
+				ProjectKey:      wd,
+				ThreadID:        tid,
+				IncludeExamples: false,
+			})
 			if err != nil {
 				corr.Errors = append(corr.Errors, fmt.Sprintf("summarize_thread %s: %v", tid, err))
 				continue
@@ -4228,6 +4513,139 @@ func (t TerseState) String() string {
 		alertStr)
 }
 
+// TerseOutput wraps terse state for robot API output.
+type TerseOutput struct {
+	RobotResponse
+	States     []TerseState `json:"states"`
+	TerseLines []string     `json:"terse_lines"` // Pre-formatted terse strings
+}
+
+// GetTerse retrieves ultra-compact single-line state for token-constrained scenarios.
+func GetTerse(cfg *config.Config) (*TerseOutput, error) {
+	output := &TerseOutput{
+		RobotResponse: RobotResponse{
+			Success:   true,
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		},
+		States:     []TerseState{},
+		TerseLines: []string{},
+	}
+
+	// Get alert breakdown (critical vs warning)
+	var criticalAlerts, warningAlerts int
+	if cfg != nil {
+		alertCfg := alerts.ToConfigAlerts(
+			cfg.Alerts.Enabled,
+			cfg.Alerts.AgentStuckMinutes,
+			cfg.Alerts.DiskLowThresholdGB,
+			cfg.Alerts.MailBacklogThreshold,
+			cfg.Alerts.BeadStaleHours,
+			cfg.Alerts.ResolvedPruneMinutes,
+			cfg.ProjectsBase,
+		)
+		activeAlerts := alerts.GetActiveAlerts(alertCfg)
+		for _, a := range activeAlerts {
+			switch a.Severity {
+			case alerts.SeverityCritical:
+				criticalAlerts++
+			case alerts.SeverityWarning:
+				warningAlerts++
+			}
+		}
+	}
+
+	// Get beads summary (same for all sessions in same project)
+	var beadsSummary *bv.BeadsSummary
+	if bv.IsInstalled() {
+		beadsSummary = bv.GetBeadsSummary("", 0)
+	}
+
+	// Get mail count (best-effort)
+	mailCount := getTerseMailCount()
+
+	// Get all sessions
+	sessions, err := tmux.ListSessions()
+	if err != nil {
+		// No sessions - output minimal state with just beads info
+		state := TerseState{
+			Session:        "-",
+			CriticalAlerts: criticalAlerts,
+			WarningAlerts:  warningAlerts,
+			UnreadMail:     mailCount,
+		}
+		if beadsSummary != nil {
+			state.ReadyBeads = beadsSummary.Ready
+			state.BlockedBeads = beadsSummary.Blocked
+			state.InProgressBead = beadsSummary.InProgress
+		}
+
+		output.States = append(output.States, state)
+		output.TerseLines = append(output.TerseLines, state.String())
+		return output, nil
+	}
+
+	for _, sess := range sessions {
+		state := TerseState{
+			Session:        sess.Name,
+			CriticalAlerts: criticalAlerts,
+			WarningAlerts:  warningAlerts,
+			UnreadMail:     mailCount,
+		}
+
+		// Get panes for this session
+		panes, err := tmux.GetPanes(sess.Name)
+		if err == nil {
+			state.TotalAgents = len(panes)
+			// Count agents by state: working (active), idle, error
+			for _, pane := range panes {
+				agentType := agentTypeString(pane.Type)
+				if agentType != "user" && agentType != "unknown" {
+					// Capture output to detect state
+					captured, captureErr := tmux.CapturePaneOutput(pane.ID, 20)
+					if captureErr == nil {
+						_ = splitLines(status.StripANSI(captured)) // Just for consistency, unused here
+						paneState := determineState(captured, agentType)
+						switch paneState {
+						case "active":
+							state.WorkingAgents++
+							state.ActiveAgents++
+						case "idle":
+							state.IdleAgents++
+							state.ActiveAgents++
+						case "error":
+							state.ErrorAgents++
+							state.ActiveAgents++
+						default:
+							// Unknown state counts as active
+							state.ActiveAgents++
+						}
+					} else {
+						// Assume active/working if we can't capture
+						state.WorkingAgents++
+						state.ActiveAgents++
+					}
+				}
+			}
+		}
+
+		// Add beads summary (same for all sessions in same project)
+		if beadsSummary != nil {
+			state.ReadyBeads = beadsSummary.Ready
+			state.BlockedBeads = beadsSummary.Blocked
+			state.InProgressBead = beadsSummary.InProgress
+		}
+
+		// Context percentage is not available at session level yet
+		// Would require aggregating from individual agent outputs
+		state.ContextPct = 0
+
+		output.States = append(output.States, state)
+		output.TerseLines = append(output.TerseLines, state.String())
+	}
+
+	return output, nil
+}
+
 // ParseTerse parses the ultra-compact terse string into a TerseState.
 // Format: S:session|A:active/total|W:working|I:idle|E:errors|C:ctx%|B:Rn/In/Bn|M:mail|!:
 func ParseTerse(s string) (*TerseState, error) {
@@ -4307,120 +4725,13 @@ func ParseTerse(s string) (*TerseState, error) {
 // Output format: S:session|A:active/total|W:working|I:idle|E:errors|C:ctx%|B:Rn/In/Bn|M:mail|!:
 // Multiple sessions are separated by semicolons.
 func PrintTerse(cfg *config.Config) error {
-	var results []string
-
-	// Get alert breakdown (critical vs warning)
-	var criticalAlerts, warningAlerts int
-	if cfg != nil {
-		alertCfg := alerts.ToConfigAlerts(
-			cfg.Alerts.Enabled,
-			cfg.Alerts.AgentStuckMinutes,
-			cfg.Alerts.DiskLowThresholdGB,
-			cfg.Alerts.MailBacklogThreshold,
-			cfg.Alerts.BeadStaleHours,
-			cfg.Alerts.ResolvedPruneMinutes,
-			cfg.ProjectsBase,
-		)
-		activeAlerts := alerts.GetActiveAlerts(alertCfg)
-		for _, a := range activeAlerts {
-			switch a.Severity {
-			case alerts.SeverityCritical:
-				criticalAlerts++
-			case alerts.SeverityWarning:
-				warningAlerts++
-			}
-		}
-	}
-
-	// Get beads summary (same for all sessions in same project)
-	var beadsSummary *bv.BeadsSummary
-	if bv.IsInstalled() {
-		beadsSummary = bv.GetBeadsSummary("", 0)
-	}
-
-	// Get mail count (best-effort)
-	mailCount := getTerseMailCount()
-
-	// Get all sessions
-	sessions, err := tmux.ListSessions()
+	output, err := GetTerse(cfg)
 	if err != nil {
-		// No sessions - output minimal state with just beads info
-		state := TerseState{
-			Session:        "-",
-			CriticalAlerts: criticalAlerts,
-			WarningAlerts:  warningAlerts,
-			UnreadMail:     mailCount,
-		}
-		if beadsSummary != nil {
-			state.ReadyBeads = beadsSummary.Ready
-			state.BlockedBeads = beadsSummary.Blocked
-			state.InProgressBead = beadsSummary.InProgress
-		}
-
-		fmt.Println(state.String())
-		return nil
+		return err
 	}
 
-	for _, sess := range sessions {
-		state := TerseState{
-			Session:        sess.Name,
-			CriticalAlerts: criticalAlerts,
-			WarningAlerts:  warningAlerts,
-			UnreadMail:     mailCount,
-		}
-
-		// Get panes for this session
-		panes, err := tmux.GetPanes(sess.Name)
-		if err == nil {
-			state.TotalAgents = len(panes)
-			// Count agents by state: working (active), idle, error
-			for _, pane := range panes {
-				agentType := agentTypeString(pane.Type)
-				if agentType != "user" && agentType != "unknown" {
-					// Capture output to detect state
-					captured, captureErr := tmux.CapturePaneOutput(pane.ID, 20)
-					if captureErr == nil {
-						_ = splitLines(status.StripANSI(captured)) // Just for consistency, unused here
-						paneState := determineState(captured, agentType)
-						switch paneState {
-						case "active":
-							state.WorkingAgents++
-							state.ActiveAgents++
-						case "idle":
-							state.IdleAgents++
-							state.ActiveAgents++
-						case "error":
-							state.ErrorAgents++
-							state.ActiveAgents++
-						default:
-							// Unknown state counts as active
-							state.ActiveAgents++
-						}
-					} else {
-						// Assume active/working if we can't capture
-						state.WorkingAgents++
-						state.ActiveAgents++
-					}
-				}
-			}
-		}
-
-		// Add beads summary (same for all sessions in same project)
-		if beadsSummary != nil {
-			state.ReadyBeads = beadsSummary.Ready
-			state.BlockedBeads = beadsSummary.Blocked
-			state.InProgressBead = beadsSummary.InProgress
-		}
-
-		// Context percentage is not available at session level yet
-		// Would require aggregating from individual agent outputs
-		state.ContextPct = 0
-
-		results = append(results, state.String())
-	}
-
-	// Output all sessions separated by semicolons
-	fmt.Println(strings.Join(results, ";"))
+	// Output all sessions separated by semicolons (preserving original format)
+	fmt.Println(strings.Join(output.TerseLines, ";"))
 	return nil
 }
 
@@ -4646,10 +4957,11 @@ func generateContextHints(lowUsage, highUsage []string, highCount, total int) *C
 	return hints
 }
 
-// PrintContext outputs context window usage information for all agents in a session.
-func PrintContext(session string, lines int) error {
+// GetContext retrieves context window usage information for all agents in a session.
+// This function returns the data struct directly, enabling CLI/REST parity.
+func GetContext(session string, lines int) (*ContextOutput, error) {
 	if !tmux.SessionExists(session) {
-		return encodeJSON(ContextOutput{
+		return &ContextOutput{
 			RobotResponse: NewErrorResponse(
 				fmt.Errorf("session '%s' not found", session),
 				ErrCodeSessionNotFound,
@@ -4657,19 +4969,19 @@ func PrintContext(session string, lines int) error {
 			),
 			Session:    session,
 			CapturedAt: time.Now().UTC(),
-		})
+		}, nil
 	}
 
 	panes, err := tmux.GetPanes(session)
 	if err != nil {
-		return encodeJSON(ContextOutput{
+		return &ContextOutput{
 			RobotResponse: NewErrorResponse(err, ErrCodeInternalError, "Failed to get panes"),
 			Session:       session,
 			CapturedAt:    time.Now().UTC(),
-		})
+		}, nil
 	}
 
-	output := ContextOutput{
+	output := &ContextOutput{
 		RobotResponse: NewRobotResponse(true),
 		Session:       session,
 		CapturedAt:    time.Now().UTC(),
@@ -4750,6 +5062,15 @@ func PrintContext(session string, lines int) error {
 
 	output.AgentHints = generateContextHints(lowUsage, highUsage, len(highUsage), len(output.Agents))
 
+	return output, nil
+}
+
+// PrintContext outputs context window usage information for all agents in a session.
+func PrintContext(session string, lines int) error {
+	output, err := GetContext(session, lines)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -5246,13 +5567,13 @@ type TriageCacheInfo struct {
 	TTLMs  int64 `json:"ttl_ms"`
 }
 
-// PrintTriage outputs bv triage analysis for AI consumption
-func PrintTriage(opts TriageOptions) error {
+// GetTriage returns bv triage analysis data.
+func GetTriage(opts TriageOptions) (*TriageOutput, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 10
 	}
 
-	output := TriageOutput{
+	output := &TriageOutput{
 		RobotResponse: NewRobotResponse(true),
 		GeneratedAt:   time.Now().UTC(),
 		Available:     bv.IsInstalled(),
@@ -5265,7 +5586,7 @@ func PrintTriage(opts TriageOptions) error {
 			ErrCodeDependencyMissing,
 			"Install bv to enable triage",
 		)
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
@@ -5279,7 +5600,7 @@ func PrintTriage(opts TriageOptions) error {
 			ErrCodeInternalError,
 			"Check bv triage cache and repository state",
 		)
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	if triage == nil {
@@ -5289,7 +5610,7 @@ func PrintTriage(opts TriageOptions) error {
 			ErrCodeInternalError,
 			"Rebuild bv cache or retry triage",
 		)
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	// Copy data with limits applied
@@ -5314,6 +5635,15 @@ func PrintTriage(opts TriageOptions) error {
 		TTLMs:  bv.TriageCacheTTL.Milliseconds(),
 	}
 
+	return output, nil
+}
+
+// PrintTriage outputs bv triage analysis for AI consumption
+func PrintTriage(opts TriageOptions) error {
+	output, err := GetTriage(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }
 
@@ -5342,332 +5672,542 @@ type FileRelationsOptions struct {
 	Threshold float64
 }
 
-// PrintForecast outputs BV forecast analysis for ETA predictions
-func PrintForecast(target string) error {
-	output := struct {
-		RobotResponse
-		Target    string               `json:"target"`
-		Available bool                 `json:"available"`
-		Forecast  *bv.ForecastResponse `json:"forecast,omitempty"`
-		Error     string               `json:"error,omitempty"`
-	}{
+// ForecastOutput is the JSON output for --robot-forecast
+type ForecastOutput struct {
+	RobotResponse
+	Target    string               `json:"target"`
+	Available bool                 `json:"available"`
+	Forecast  *bv.ForecastResponse `json:"forecast,omitempty"`
+	Error     string               `json:"error,omitempty"`
+}
+
+// GetForecast returns BV forecast analysis data.
+func GetForecast(target string) (*ForecastOutput, error) {
+	adapter := tools.NewBVAdapter()
+	_, installed := adapter.Detect()
+
+	output := &ForecastOutput{
 		RobotResponse: NewRobotResponse(true),
 		Target:        target,
-		Available:     bv.IsInstalled(),
+		Available:     installed,
 	}
 
-	if !bv.IsInstalled() {
+	if !installed {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
-	forecast, err := bv.GetForecast(wd, target)
+	raw, err := adapter.GetForecast(context.Background(), wd, target)
 	if err != nil {
 		output.Error = fmt.Sprintf("failed to get forecast: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
-	output.Forecast = forecast
+	var forecast bv.ForecastResponse
+	if err := json.Unmarshal(raw, &forecast); err != nil {
+		output.Error = fmt.Sprintf("failed to parse forecast: %v", err)
+		output.Success = false
+		return output, nil
+	}
+	output.Forecast = &forecast
 
+	return output, nil
+}
+
+// PrintForecast outputs BV forecast analysis for ETA predictions
+func PrintForecast(target string) error {
+	output, err := GetForecast(target)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
+}
+
+// SuggestOutput is the JSON output for --robot-suggest
+type SuggestOutput struct {
+	RobotResponse
+	Available   bool                    `json:"available"`
+	Suggestions *bv.SuggestionsResponse `json:"suggestions,omitempty"`
+	Error       string                  `json:"error,omitempty"`
+}
+
+// GetSuggest returns BV hygiene suggestions data.
+func GetSuggest() (*SuggestOutput, error) {
+	adapter := tools.NewBVAdapter()
+	_, installed := adapter.Detect()
+
+	output := &SuggestOutput{
+		RobotResponse: NewRobotResponse(true),
+		Available:     installed,
+	}
+
+	if !installed {
+		output.Error = "bv (beads_viewer) is not installed"
+		output.Success = false
+		return output, nil
+	}
+
+	wd := mustGetwd()
+	raw, err := adapter.GetSuggestions(context.Background(), wd)
+	if err != nil {
+		output.Error = fmt.Sprintf("failed to get suggestions: %v", err)
+		output.Success = false
+		return output, nil
+	}
+
+	var suggestions bv.SuggestionsResponse
+	if err := json.Unmarshal(raw, &suggestions); err != nil {
+		output.Error = fmt.Sprintf("failed to parse suggestions: %v", err)
+		output.Success = false
+		return output, nil
+	}
+	output.Suggestions = &suggestions
+
+	return output, nil
 }
 
 // PrintSuggest outputs BV hygiene suggestions for code quality improvements
 func PrintSuggest() error {
-	output := struct {
-		RobotResponse
-		Available   bool                    `json:"available"`
-		Suggestions *bv.SuggestionsResponse `json:"suggestions,omitempty"`
-		Error       string                  `json:"error,omitempty"`
-	}{
+	output, err := GetSuggest()
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
+// ImpactOutput is the JSON output for --robot-impact
+type ImpactOutput struct {
+	RobotResponse
+	FilePath  string             `json:"file_path"`
+	Available bool               `json:"available"`
+	Impact    *bv.ImpactResponse `json:"impact,omitempty"`
+	Error     string             `json:"error,omitempty"`
+}
+
+// GetImpact returns BV impact analysis data.
+func GetImpact(filePath string) (*ImpactOutput, error) {
+	adapter := tools.NewBVAdapter()
+	_, installed := adapter.Detect()
+
+	output := &ImpactOutput{
 		RobotResponse: NewRobotResponse(true),
-		Available:     bv.IsInstalled(),
+		FilePath:      filePath,
+		Available:     installed,
 	}
 
-	if !bv.IsInstalled() {
+	if !installed {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
-	suggestions, err := bv.GetSuggestions(wd)
+	raw, err := adapter.GetImpact(context.Background(), wd, filePath)
 	if err != nil {
-		output.Error = fmt.Sprintf("failed to get suggestions: %v", err)
+		output.Error = fmt.Sprintf("failed to get impact analysis: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
-	output.Suggestions = suggestions
+	var impact bv.ImpactResponse
+	if err := json.Unmarshal(raw, &impact); err != nil {
+		output.Error = fmt.Sprintf("failed to parse impact analysis: %v", err)
+		output.Success = false
+		return output, nil
+	}
+	output.Impact = &impact
 
-	return encodeJSON(output)
+	return output, nil
 }
 
 // PrintImpact outputs BV impact analysis for file changes
 func PrintImpact(filePath string) error {
-	output := struct {
-		RobotResponse
-		FilePath  string             `json:"file_path"`
-		Available bool               `json:"available"`
-		Impact    *bv.ImpactResponse `json:"impact,omitempty"`
-		Error     string             `json:"error,omitempty"`
-	}{
+	output, err := GetImpact(filePath)
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
+// SearchOutput is the JSON output for --robot-search
+type SearchOutput struct {
+	RobotResponse
+	Query     string             `json:"query"`
+	Available bool               `json:"available"`
+	Results   *bv.SearchResponse `json:"results,omitempty"`
+	Error     string             `json:"error,omitempty"`
+}
+
+// GetSearch returns BV semantic vector search results.
+func GetSearch(query string) (*SearchOutput, error) {
+	adapter := tools.NewBVAdapter()
+	_, installed := adapter.Detect()
+
+	output := &SearchOutput{
 		RobotResponse: NewRobotResponse(true),
-		FilePath:      filePath,
-		Available:     bv.IsInstalled(),
+		Query:         query,
+		Available:     installed,
 	}
 
-	if !bv.IsInstalled() {
+	if !installed {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
-	impact, err := bv.GetImpact(wd, filePath)
+	raw, err := adapter.GetSearch(context.Background(), wd, query)
 	if err != nil {
-		output.Error = fmt.Sprintf("failed to get impact analysis: %v", err)
+		output.Error = fmt.Sprintf("failed to perform search: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
-	output.Impact = impact
+	var results bv.SearchResponse
+	if err := json.Unmarshal(raw, &results); err != nil {
+		output.Error = fmt.Sprintf("failed to parse search results: %v", err)
+		output.Success = false
+		return output, nil
+	}
+	output.Results = &results
 
-	return encodeJSON(output)
+	return output, nil
 }
 
 // PrintSearch outputs BV semantic vector search results
 func PrintSearch(query string) error {
-	output := struct {
-		RobotResponse
-		Query     string             `json:"query"`
-		Available bool               `json:"available"`
-		Results   *bv.SearchResponse `json:"results,omitempty"`
-		Error     string             `json:"error,omitempty"`
-	}{
+	output, err := GetSearch(query)
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
+// LabelAttentionOutput is the JSON output for --robot-label-attention
+type LabelAttentionOutput struct {
+	RobotResponse
+	Available bool                       `json:"available"`
+	Labels    *bv.LabelAttentionResponse `json:"labels,omitempty"`
+	Limit     int                        `json:"limit"`
+	Error     string                     `json:"error,omitempty"`
+}
+
+// GetLabelAttention returns BV label attention ranking data.
+func GetLabelAttention(opts LabelAttentionOptions) (*LabelAttentionOutput, error) {
+	adapter := tools.NewBVAdapter()
+	_, installed := adapter.Detect()
+
+	output := &LabelAttentionOutput{
 		RobotResponse: NewRobotResponse(true),
-		Query:         query,
-		Available:     bv.IsInstalled(),
+		Available:     installed,
+		Limit:         opts.Limit,
 	}
 
-	if !bv.IsInstalled() {
+	if !installed {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
-	results, err := bv.GetSearch(wd, query)
+	raw, err := adapter.GetLabelAttention(context.Background(), wd, opts.Limit)
 	if err != nil {
-		output.Error = fmt.Sprintf("failed to perform search: %v", err)
+		output.Error = fmt.Sprintf("failed to get label attention: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
-	output.Results = results
+	var labels bv.LabelAttentionResponse
+	if err := json.Unmarshal(raw, &labels); err != nil {
+		output.Error = fmt.Sprintf("failed to parse label attention: %v", err)
+		output.Success = false
+		return output, nil
+	}
+	output.Labels = &labels
 
-	return encodeJSON(output)
+	return output, nil
 }
 
 // PrintLabelAttention outputs BV label attention ranking
 func PrintLabelAttention(opts LabelAttentionOptions) error {
-	output := struct {
-		RobotResponse
-		Available bool                       `json:"available"`
-		Labels    *bv.LabelAttentionResponse `json:"labels,omitempty"`
-		Limit     int                        `json:"limit"`
-		Error     string                     `json:"error,omitempty"`
-	}{
+	output, err := GetLabelAttention(opts)
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
+// LabelFlowOutput is the JSON output for --robot-label-flow
+type LabelFlowOutput struct {
+	RobotResponse
+	Available bool                  `json:"available"`
+	Flow      *bv.LabelFlowResponse `json:"flow,omitempty"`
+	Error     string                `json:"error,omitempty"`
+}
+
+// GetLabelFlow returns BV cross-label dependency flow data.
+func GetLabelFlow() (*LabelFlowOutput, error) {
+	adapter := tools.NewBVAdapter()
+	_, installed := adapter.Detect()
+
+	output := &LabelFlowOutput{
 		RobotResponse: NewRobotResponse(true),
-		Available:     bv.IsInstalled(),
-		Limit:         opts.Limit,
+		Available:     installed,
 	}
 
-	if !bv.IsInstalled() {
+	if !installed {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
-	labels, err := bv.GetLabelAttention(wd, opts.Limit)
+	raw, err := adapter.GetLabelFlow(context.Background(), wd)
 	if err != nil {
-		output.Error = fmt.Sprintf("failed to get label attention: %v", err)
+		output.Error = fmt.Sprintf("failed to get label flow: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
-	output.Labels = labels
+	var flow bv.LabelFlowResponse
+	if err := json.Unmarshal(raw, &flow); err != nil {
+		output.Error = fmt.Sprintf("failed to parse label flow: %v", err)
+		output.Success = false
+		return output, nil
+	}
+	output.Flow = &flow
 
-	return encodeJSON(output)
+	return output, nil
 }
 
 // PrintLabelFlow outputs BV cross-label dependency flow analysis
 func PrintLabelFlow() error {
-	output := struct {
-		RobotResponse
-		Available bool                  `json:"available"`
-		Flow      *bv.LabelFlowResponse `json:"flow,omitempty"`
-		Error     string                `json:"error,omitempty"`
-	}{
+	output, err := GetLabelFlow()
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
+// LabelHealthOutput is the JSON output for --robot-label-health
+type LabelHealthOutput struct {
+	RobotResponse
+	Available bool                    `json:"available"`
+	Health    *bv.LabelHealthResponse `json:"health,omitempty"`
+	Error     string                  `json:"error,omitempty"`
+}
+
+// GetLabelHealth returns BV per-label health data.
+func GetLabelHealth() (*LabelHealthOutput, error) {
+	adapter := tools.NewBVAdapter()
+	_, installed := adapter.Detect()
+
+	output := &LabelHealthOutput{
 		RobotResponse: NewRobotResponse(true),
-		Available:     bv.IsInstalled(),
+		Available:     installed,
 	}
 
-	if !bv.IsInstalled() {
+	if !installed {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
-	flow, err := bv.GetLabelFlow(wd)
+	raw, err := adapter.GetLabelHealth(context.Background(), wd)
 	if err != nil {
-		output.Error = fmt.Sprintf("failed to get label flow: %v", err)
+		output.Error = fmt.Sprintf("failed to get label health: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
-	output.Flow = flow
+	var health bv.LabelHealthResponse
+	if err := json.Unmarshal(raw, &health); err != nil {
+		output.Error = fmt.Sprintf("failed to parse label health: %v", err)
+		output.Success = false
+		return output, nil
+	}
+	output.Health = &health
 
-	return encodeJSON(output)
+	return output, nil
 }
 
 // PrintLabelHealth outputs BV per-label health analysis
 func PrintLabelHealth() error {
-	output := struct {
-		RobotResponse
-		Available bool                    `json:"available"`
-		Health    *bv.LabelHealthResponse `json:"health,omitempty"`
-		Error     string                  `json:"error,omitempty"`
-	}{
+	output, err := GetLabelHealth()
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
+// FileBeadsOutput is the JSON output for --robot-file-beads
+type FileBeadsOutput struct {
+	RobotResponse
+	FilePath  string                `json:"file_path"`
+	Available bool                  `json:"available"`
+	Beads     *bv.FileBeadsResponse `json:"beads,omitempty"`
+	Limit     int                   `json:"limit"`
+	Error     string                `json:"error,omitempty"`
+}
+
+// GetFileBeads returns BV file-to-beads mapping data.
+func GetFileBeads(opts FileBeadsOptions) (*FileBeadsOutput, error) {
+	adapter := tools.NewBVAdapter()
+	_, installed := adapter.Detect()
+
+	output := &FileBeadsOutput{
 		RobotResponse: NewRobotResponse(true),
-		Available:     bv.IsInstalled(),
+		FilePath:      opts.FilePath,
+		Available:     installed,
+		Limit:         opts.Limit,
 	}
 
-	if !bv.IsInstalled() {
+	if !installed {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
-	health, err := bv.GetLabelHealth(wd)
+	raw, err := adapter.GetFileBeads(context.Background(), wd, opts.FilePath, opts.Limit)
 	if err != nil {
-		output.Error = fmt.Sprintf("failed to get label health: %v", err)
+		output.Error = fmt.Sprintf("failed to get file beads: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
-	output.Health = health
+	var beads bv.FileBeadsResponse
+	if err := json.Unmarshal(raw, &beads); err != nil {
+		output.Error = fmt.Sprintf("failed to parse file beads: %v", err)
+		output.Success = false
+		return output, nil
+	}
+	output.Beads = &beads
 
-	return encodeJSON(output)
+	return output, nil
 }
 
 // PrintFileBeads outputs BV file-to-beads mapping
 func PrintFileBeads(opts FileBeadsOptions) error {
-	output := struct {
-		RobotResponse
-		FilePath  string                `json:"file_path"`
-		Available bool                  `json:"available"`
-		Beads     *bv.FileBeadsResponse `json:"beads,omitempty"`
-		Limit     int                   `json:"limit"`
-		Error     string                `json:"error,omitempty"`
-	}{
+	output, err := GetFileBeads(opts)
+	if err != nil {
+		return err
+	}
+	return encodeJSON(output)
+}
+
+// FileHotspotsOutput is the JSON output for --robot-file-hotspots
+type FileHotspotsOutput struct {
+	RobotResponse
+	Available bool                     `json:"available"`
+	Hotspots  *bv.FileHotspotsResponse `json:"hotspots,omitempty"`
+	Limit     int                      `json:"limit"`
+	Error     string                   `json:"error,omitempty"`
+}
+
+// GetFileHotspots returns BV file quality hotspots data.
+func GetFileHotspots(opts FileHotspotsOptions) (*FileHotspotsOutput, error) {
+	adapter := tools.NewBVAdapter()
+	_, installed := adapter.Detect()
+
+	output := &FileHotspotsOutput{
 		RobotResponse: NewRobotResponse(true),
-		FilePath:      opts.FilePath,
-		Available:     bv.IsInstalled(),
+		Available:     installed,
 		Limit:         opts.Limit,
 	}
 
-	if !bv.IsInstalled() {
+	if !installed {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
-	beads, err := bv.GetFileBeads(wd, opts.FilePath, opts.Limit)
+	raw, err := adapter.GetFileHotspots(context.Background(), wd, opts.Limit)
 	if err != nil {
-		output.Error = fmt.Sprintf("failed to get file beads: %v", err)
+		output.Error = fmt.Sprintf("failed to get file hotspots: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
-	output.Beads = beads
+	var hotspots bv.FileHotspotsResponse
+	if err := json.Unmarshal(raw, &hotspots); err != nil {
+		output.Error = fmt.Sprintf("failed to parse file hotspots: %v", err)
+		output.Success = false
+		return output, nil
+	}
+	output.Hotspots = &hotspots
 
-	return encodeJSON(output)
+	return output, nil
 }
 
 // PrintFileHotspots outputs BV file quality hotspots
 func PrintFileHotspots(opts FileHotspotsOptions) error {
-	output := struct {
-		RobotResponse
-		Available bool                     `json:"available"`
-		Hotspots  *bv.FileHotspotsResponse `json:"hotspots,omitempty"`
-		Limit     int                      `json:"limit"`
-		Error     string                   `json:"error,omitempty"`
-	}{
-		RobotResponse: NewRobotResponse(true),
-		Available:     bv.IsInstalled(),
-		Limit:         opts.Limit,
-	}
-
-	if !bv.IsInstalled() {
-		output.Error = "bv (beads_viewer) is not installed"
-		output.Success = false
-		return encodeJSON(output)
-	}
-
-	wd := mustGetwd()
-	hotspots, err := bv.GetFileHotspots(wd, opts.Limit)
+	output, err := GetFileHotspots(opts)
 	if err != nil {
-		output.Error = fmt.Sprintf("failed to get file hotspots: %v", err)
-		output.Success = false
-		return encodeJSON(output)
+		return err
 	}
-
-	output.Hotspots = hotspots
-
 	return encodeJSON(output)
 }
 
-// PrintFileRelations outputs BV file co-change relations
-func PrintFileRelations(opts FileRelationsOptions) error {
-	output := struct {
-		RobotResponse
-		FilePath  string                    `json:"file_path"`
-		Available bool                      `json:"available"`
-		Relations *bv.FileRelationsResponse `json:"relations,omitempty"`
-		Limit     int                       `json:"limit"`
-		Threshold float64                   `json:"threshold"`
-		Error     string                    `json:"error,omitempty"`
-	}{
+// FileRelationsOutput is the JSON output for --robot-file-relations
+type FileRelationsOutput struct {
+	RobotResponse
+	FilePath  string                    `json:"file_path"`
+	Available bool                      `json:"available"`
+	Relations *bv.FileRelationsResponse `json:"relations,omitempty"`
+	Limit     int                       `json:"limit"`
+	Threshold float64                   `json:"threshold"`
+	Error     string                    `json:"error,omitempty"`
+}
+
+// GetFileRelations returns BV file co-change relations data.
+func GetFileRelations(opts FileRelationsOptions) (*FileRelationsOutput, error) {
+	adapter := tools.NewBVAdapter()
+	_, installed := adapter.Detect()
+
+	output := &FileRelationsOutput{
 		RobotResponse: NewRobotResponse(true),
 		FilePath:      opts.FilePath,
-		Available:     bv.IsInstalled(),
+		Available:     installed,
 		Limit:         opts.Limit,
 		Threshold:     opts.Threshold,
 	}
 
-	if !bv.IsInstalled() {
+	if !installed {
 		output.Error = "bv (beads_viewer) is not installed"
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
 	wd := mustGetwd()
-	relations, err := bv.GetFileRelations(wd, opts.FilePath, opts.Limit, opts.Threshold)
+	raw, err := adapter.GetFileRelations(context.Background(), wd, opts.FilePath, opts.Limit, opts.Threshold)
 	if err != nil {
 		output.Error = fmt.Sprintf("failed to get file relations: %v", err)
 		output.Success = false
-		return encodeJSON(output)
+		return output, nil
 	}
 
-	output.Relations = relations
+	var relations bv.FileRelationsResponse
+	if err := json.Unmarshal(raw, &relations); err != nil {
+		output.Error = fmt.Sprintf("failed to parse file relations: %v", err)
+		output.Success = false
+		return output, nil
+	}
+	output.Relations = &relations
 
+	return output, nil
+}
+
+// PrintFileRelations outputs BV file co-change relations
+func PrintFileRelations(opts FileRelationsOptions) error {
+	output, err := GetFileRelations(opts)
+	if err != nil {
+		return err
+	}
 	return encodeJSON(output)
 }

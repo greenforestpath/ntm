@@ -18,6 +18,8 @@ type HistoryOptions struct {
 	Last      int    // last N entries
 	Since     string // time-based filter (e.g., "1h", "30m", "2025-12-15")
 	Stats     bool   // show statistics instead of entries
+	Limit     int    // pagination limit
+	Offset    int    // pagination offset
 }
 
 // HistoryOutput is the structured output for --robot-history
@@ -29,6 +31,7 @@ type HistoryOutput struct {
 	Stats       *history.Stats         `json:"stats,omitempty"`
 	Total       int                    `json:"total"`
 	Filtered    int                    `json:"filtered"`
+	Pagination  *PaginationInfo        `json:"pagination,omitempty"`
 	AgentHints  *HistoryAgentHints     `json:"_agent_hints,omitempty"`
 }
 
@@ -37,6 +40,8 @@ type HistoryAgentHints struct {
 	Summary           string   `json:"summary,omitempty"`
 	SuggestedCommands []string `json:"suggested_commands,omitempty"`
 	Warnings          []string `json:"warnings,omitempty"`
+	NextOffset        *int     `json:"next_offset,omitempty"`
+	PagesRemaining    *int     `json:"pages_remaining,omitempty"`
 }
 
 // GetHistory returns command history as structured output.
@@ -172,8 +177,13 @@ func GetHistory(opts HistoryOptions) (*HistoryOutput, error) {
 		filtered = filtered[len(filtered)-opts.Last:]
 	}
 
-	output.Entries = filtered
 	output.Filtered = len(filtered)
+	if paged, page := ApplyPagination(filtered, PaginationOptions{Limit: opts.Limit, Offset: opts.Offset}); page != nil {
+		output.Entries = paged
+		output.Pagination = page
+	} else {
+		output.Entries = filtered
+	}
 	output.AgentHints = generateHistoryHints(*output, opts)
 
 	return output, nil
@@ -240,6 +250,11 @@ func generateHistoryHints(output HistoryOutput, opts HistoryOptions) *HistoryAge
 		fmt.Sprintf("ntm --robot-history=%s --stats", opts.Session),
 		fmt.Sprintf("ntm --robot-history=%s --last=10", opts.Session),
 		fmt.Sprintf("ntm --robot-history=%s --since=1h", opts.Session),
+	}
+
+	if next, pages := paginationHintOffsets(output.Pagination); next != nil {
+		hints.NextOffset = next
+		hints.PagesRemaining = pages
 	}
 
 	if output.Total > 1000 {

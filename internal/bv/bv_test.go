@@ -694,3 +694,58 @@ func containsStr(s, substr string) bool {
 	}
 	return false
 }
+
+func TestIsNoBeadsDBError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		stderr string
+		want   bool
+	}{
+		{"no beads database found", "Error: no beads database found in current directory", true},
+		{"use br --no-db", "Use 'br --no-db' to run without a database", true},
+		{"uppercase variant", "NO BEADS DATABASE FOUND", true},
+		{"mixed case", "No Beads Database Found", true},
+		{"unrelated error", "connection timeout", false},
+		{"empty string", "", false},
+		{"partial match", "no beads", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isNoBeadsDBError(tc.stderr); got != tc.want {
+				t.Errorf("isNoBeadsDBError(%q) = %v, want %v", tc.stderr, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestContainsString(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		list  []string
+		value string
+		want  bool
+	}{
+		{"found in list", []string{"a", "b", "c"}, "b", true},
+		{"not found", []string{"a", "b", "c"}, "d", false},
+		{"empty list", []string{}, "a", false},
+		{"nil list", nil, "a", false},
+		{"empty value in list", []string{"", "a"}, "", true},
+		{"single element match", []string{"x"}, "x", true},
+		{"single element no match", []string{"x"}, "y", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := containsString(tc.list, tc.value); got != tc.want {
+				t.Errorf("containsString(%v, %q) = %v, want %v", tc.list, tc.value, got, tc.want)
+			}
+		})
+	}
+}

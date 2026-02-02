@@ -457,7 +457,11 @@ func (w *FileReservationWatcher) RenewReservations(ctx context.Context) error {
 	extendSeconds := int(w.reservationTTL.Seconds())
 	for _, reservation := range w.activeReservations {
 		if len(reservation.ReservationID) > 0 {
-			err := w.client.RenewReservations(ctx, w.projectDir, reservation.AgentName, extendSeconds)
+			_, err := w.client.RenewReservations(ctx, agentmail.RenewReservationsOptions{
+				ProjectKey:    w.projectDir,
+				AgentName:     reservation.AgentName,
+				ExtendSeconds: extendSeconds,
+			})
 			if err != nil && w.debug {
 				log.Printf("[FileReservationWatcher] Error renewing reservations for pane %s: %v",
 					reservation.PaneID, err)

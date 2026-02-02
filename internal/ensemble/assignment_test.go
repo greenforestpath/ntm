@@ -580,3 +580,374 @@ func assignmentKeys(assignments []ModeAssignment) []string {
 	}
 	return keys
 }
+
+func TestPaneLess_AllBranches(t *testing.T) {
+	// Test NTMIndex comparison
+	paneA := tmux.Pane{Title: "a", Index: 1, NTMIndex: 1, Type: tmux.AgentClaude}
+	paneB := tmux.Pane{Title: "b", Index: 2, NTMIndex: 2, Type: tmux.AgentClaude}
+	if !paneLess(paneA, paneB) {
+		t.Error("expected paneA < paneB by NTMIndex")
+	}
+
+	// Test Index comparison when NTMIndex is equal
+	paneC := tmux.Pane{Title: "c", Index: 1, NTMIndex: 0, Type: tmux.AgentClaude}
+	paneD := tmux.Pane{Title: "d", Index: 2, NTMIndex: 0, Type: tmux.AgentClaude}
+	if !paneLess(paneC, paneD) {
+		t.Error("expected paneC < paneD by Index")
+	}
+
+	// Test Title comparison when Index is equal
+	paneE := tmux.Pane{Title: "aaa", Index: 1, NTMIndex: 0, Type: tmux.AgentClaude}
+	paneF := tmux.Pane{Title: "bbb", Index: 1, NTMIndex: 0, Type: tmux.AgentClaude}
+	if !paneLess(paneE, paneF) {
+		t.Error("expected paneE < paneF by Title")
+	}
+
+	// Test equal panes
+	paneG := tmux.Pane{Title: "same", Index: 1, NTMIndex: 1, Type: tmux.AgentClaude}
+	paneH := tmux.Pane{Title: "same", Index: 1, NTMIndex: 1, Type: tmux.AgentClaude}
+	if paneLess(paneG, paneH) || paneLess(paneH, paneG) {
+		t.Error("equal panes should not be less than each other")
+	}
+}
+
+func TestPaneIndex_Branches(t *testing.T) {
+	// NTMIndex > 0 should be returned
+	pane1 := tmux.Pane{Index: 5, NTMIndex: 3}
+	if paneIndex(pane1) != 3 {
+		t.Errorf("expected paneIndex to return NTMIndex 3, got %d", paneIndex(pane1))
+	}
+
+	// NTMIndex = 0 should fall back to Index
+	pane2 := tmux.Pane{Index: 5, NTMIndex: 0}
+	if paneIndex(pane2) != 5 {
+		t.Errorf("expected paneIndex to return Index 5, got %d", paneIndex(pane2))
+	}
+
+	// NTMIndex < 0 should fall back to Index
+	pane3 := tmux.Pane{Index: 5, NTMIndex: -1}
+	if paneIndex(pane3) != 5 {
+		t.Errorf("expected paneIndex to return Index 5, got %d", paneIndex(pane3))
+	}
+}
+
+func TestAssignByCategory_NilCatalog(t *testing.T) {
+	panes := []tmux.Pane{
+		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
+	}
+	assignments := AssignByCategory([]string{"deductive"}, panes, nil)
+	if assignments != nil {
+		t.Fatal("expected nil assignments for nil catalog")
+	}
+}
+
+func TestAssignByCategory_TooManyModes(t *testing.T) {
+	catalog := testModeCatalog(t)
+	panes := []tmux.Pane{
+		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
+	}
+	modes := []string{"deductive", "abductive"}
+
+	assignments := AssignByCategory(modes, panes, catalog)
+	if assignments != nil {
+		t.Fatal("expected nil assignments when more modes than panes")
+	}
+}
+
+func TestAssignByCategory_DefaultPreferred(t *testing.T) {
+	// Test that when no specific affinity exists for a category, defaults are used
+	// CategoryAmpliative has affinities [gemini, claude], but we only have codex
+	catalog := testModeCatalogForCategory(t, CategoryAmpliative)
+	panes := []tmux.Pane{
+		{Title: "pane-1", Type: tmux.AgentCodex, Index: 1, NTMIndex: 1},
+	}
+
+	assignments := AssignByCategory([]string{"ampliative"}, panes, catalog)
+	if assignments == nil {
+		t.Fatal("expected assignments with fallback")
+	}
+	if len(assignments) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(assignments))
+	}
+	// It should fall back to codex since gemini and claude are not available
+	if assignments[0].AgentType != string(tmux.AgentCodex) {
+		t.Errorf("expected fallback to codex, got %s", assignments[0].AgentType)
+	}
+}
+
+func TestAssignRoundRobin_EmptyModes(t *testing.T) {
+	panes := []tmux.Pane{
+		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
+	}
+	assignments := AssignRoundRobin(nil, panes)
+	// Empty modes results in empty assignments (not nil)
+	if len(assignments) != 0 {
+		t.Fatalf("expected 0 assignments for nil modes, got %d", len(assignments))
+	}
+}
+
+func TestAssignRoundRobin_EmptyPanes(t *testing.T) {
+	modes := []string{"deductive"}
+	assignments := AssignRoundRobin(modes, nil)
+	if assignments != nil {
+		t.Fatal("expected nil assignments for nil panes")
+	}
+}
+
+func TestAssignExplicit_DuplicateMode(t *testing.T) {
+	panes := []tmux.Pane{
+		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
+		{Title: "pane-2", Type: tmux.AgentCodex, Index: 2, NTMIndex: 2},
+	}
+	specs := []string{"deductive:cc", "deductive:cod"}
+
+	_, err := AssignExplicit(specs, panes)
+	if err == nil {
+		t.Fatal("expected error for duplicate mode assignment")
+	}
+}
+
+func TestAssignExplicit_FallbackPaneType(t *testing.T) {
+	// Request codex but only claude available - should fall back
+	panes := []tmux.Pane{
+		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
+	}
+	specs := []string{"deductive:cod"}
+
+	assignments, err := AssignExplicit(specs, panes)
+	if err != nil {
+		t.Fatalf("AssignExplicit error: %v", err)
+	}
+	if len(assignments) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(assignments))
+	}
+	// Falls back to claude since codex isn't available
+	if assignments[0].AgentType != string(tmux.AgentClaude) {
+		t.Errorf("expected fallback to claude, got %s", assignments[0].AgentType)
+	}
+}
+
+func TestAssignExplicit_EmptySpecs(t *testing.T) {
+	panes := []tmux.Pane{
+		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
+	}
+
+	_, err := AssignExplicit(nil, panes)
+	if err == nil {
+		t.Fatal("expected error for empty specs")
+	}
+}
+
+func TestAssignExplicit_CommaExpansion(t *testing.T) {
+	panes := []tmux.Pane{
+		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
+		{Title: "pane-2", Type: tmux.AgentCodex, Index: 2, NTMIndex: 2},
+	}
+	// Single string with comma-separated specs
+	specs := []string{"deductive:cc,abductive:cod"}
+
+	assignments, err := AssignExplicit(specs, panes)
+	if err != nil {
+		t.Fatalf("AssignExplicit error: %v", err)
+	}
+	if len(assignments) != 2 {
+		t.Fatalf("expected 2 assignments, got %d", len(assignments))
+	}
+}
+
+func TestGroupPanesByType_SkipsUserPanes(t *testing.T) {
+	panes := []tmux.Pane{
+		{Title: "pane-1", Type: tmux.AgentClaude, Index: 1, NTMIndex: 1},
+		{Title: "user", Type: tmux.AgentUser, Index: 2, NTMIndex: 2},
+		{Title: "", Type: tmux.AgentCodex, Index: 3, NTMIndex: 3}, // No title
+	}
+
+	byType := groupPanesByType(panes)
+	if len(byType[string(tmux.AgentClaude)]) != 1 {
+		t.Errorf("expected 1 claude pane, got %d", len(byType[string(tmux.AgentClaude)]))
+	}
+	if len(byType[string(tmux.AgentUser)]) != 0 {
+		t.Error("expected 0 user panes")
+	}
+	if len(byType[string(tmux.AgentCodex)]) != 0 {
+		t.Error("expected 0 codex panes (no title)")
+	}
+}
+
+func TestValidateAssignments_EmptyModeID(t *testing.T) {
+	now := time.Now().UTC()
+	assignments := []ModeAssignment{
+		{ModeID: "", PaneName: "pane-1", AgentType: string(tmux.AgentClaude), Status: AssignmentPending, AssignedAt: now},
+	}
+
+	err := ValidateAssignments(assignments, []string{""})
+	if err == nil {
+		t.Fatal("expected error for empty mode ID")
+	}
+}
+
+func TestValidateAssignments_EmptyPaneName(t *testing.T) {
+	now := time.Now().UTC()
+	assignments := []ModeAssignment{
+		{ModeID: "deductive", PaneName: "", AgentType: string(tmux.AgentClaude), Status: AssignmentPending, AssignedAt: now},
+	}
+
+	err := ValidateAssignments(assignments, []string{"deductive"})
+	if err == nil {
+		t.Fatal("expected error for empty pane name")
+	}
+}
+
+func TestValidateAssignments_EmptyStatus(t *testing.T) {
+	now := time.Now().UTC()
+	assignments := []ModeAssignment{
+		{ModeID: "deductive", PaneName: "pane-1", AgentType: string(tmux.AgentClaude), Status: "", AssignedAt: now},
+	}
+
+	err := ValidateAssignments(assignments, []string{"deductive"})
+	if err == nil {
+		t.Fatal("expected error for empty status")
+	}
+}
+
+func TestValidateAssignments_UnknownMode(t *testing.T) {
+	now := time.Now().UTC()
+	assignments := []ModeAssignment{
+		{ModeID: "unknown", PaneName: "pane-1", AgentType: string(tmux.AgentClaude), Status: AssignmentPending, AssignedAt: now},
+	}
+
+	err := ValidateAssignments(assignments, []string{"deductive"})
+	if err == nil {
+		t.Fatal("expected error for unknown mode")
+	}
+}
+
+func TestValidateAssignments_CountMismatch(t *testing.T) {
+	now := time.Now().UTC()
+	assignments := []ModeAssignment{
+		{ModeID: "deductive", PaneName: "pane-1", AgentType: string(tmux.AgentClaude), Status: AssignmentPending, AssignedAt: now},
+	}
+
+	err := ValidateAssignments(assignments, []string{"deductive", "abductive"})
+	if err == nil {
+		t.Fatal("expected error for count mismatch")
+	}
+}
+
+func TestResolveMode_EmptyKey(t *testing.T) {
+	_, _, err := resolveMode("", nil)
+	if err == nil {
+		t.Fatal("expected error for empty key")
+	}
+}
+
+func TestResolveMode_NotFound(t *testing.T) {
+	catalog := testModeCatalog(t)
+	_, _, err := resolveMode("nonexistent", catalog)
+	if err == nil {
+		t.Fatal("expected error for nonexistent mode")
+	}
+}
+
+func TestResolveModeByCode_InvalidCode(t *testing.T) {
+	catalog := testModeCatalog(t)
+	mode, err := resolveModeByCode("invalid", catalog)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mode != nil {
+		t.Fatal("expected nil mode for invalid code")
+	}
+}
+
+func TestResolveModeByCode_OutOfRange(t *testing.T) {
+	catalog := testModeCatalog(t)
+	_, err := resolveModeByCode("A99", catalog)
+	if err == nil {
+		t.Fatal("expected error for out of range code")
+	}
+}
+
+func TestParseModeCode_TooShort(t *testing.T) {
+	_, _, ok := parseModeCode("A")
+	if ok {
+		t.Fatal("expected false for too short code")
+	}
+}
+
+func TestParseModeCode_InvalidCategory(t *testing.T) {
+	_, _, ok := parseModeCode("Z1")
+	if ok {
+		t.Fatal("expected false for invalid category letter")
+	}
+}
+
+func TestParseModeCode_InvalidNumber(t *testing.T) {
+	_, _, ok := parseModeCode("Ax")
+	if ok {
+		t.Fatal("expected false for non-numeric index")
+	}
+}
+
+func TestExpandSpecs_EmptyParts(t *testing.T) {
+	specs := []string{"deductive:cc,,abductive:cod", ""}
+	expanded := expandSpecs(specs)
+	if len(expanded) != 2 {
+		t.Fatalf("expected 2 expanded specs, got %d", len(expanded))
+	}
+}
+
+func TestSortAssignablePanes_FiltersAndSorts(t *testing.T) {
+	panes := []tmux.Pane{
+		{Title: "pane-3", Type: tmux.AgentGemini, Index: 3, NTMIndex: 3},
+		{Title: "user", Type: tmux.AgentUser, Index: 1, NTMIndex: 1},
+		{Title: "pane-2", Type: tmux.AgentCodex, Index: 2, NTMIndex: 2},
+		{Title: "", Type: tmux.AgentClaude, Index: 0, NTMIndex: 0}, // No title
+	}
+
+	sorted := sortAssignablePanes(panes)
+	if len(sorted) != 2 {
+		t.Fatalf("expected 2 assignable panes, got %d", len(sorted))
+	}
+	if sorted[0].Title != "pane-2" {
+		t.Errorf("first pane should be pane-2, got %s", sorted[0].Title)
+	}
+	if sorted[1].Title != "pane-3" {
+		t.Errorf("second pane should be pane-3, got %s", sorted[1].Title)
+	}
+}
+
+func TestPickAvailablePaneWithReason_NoPanes(t *testing.T) {
+	byType := make(map[string][]tmux.Pane)
+	choice, fallback, reason := pickAvailablePaneWithReason(byType, []string{string(tmux.AgentClaude)}, nil)
+	if choice.Title != "" {
+		t.Fatal("expected empty pane for empty byType")
+	}
+	if !fallback {
+		t.Fatal("expected fallback true")
+	}
+	if reason != "no panes available" {
+		t.Errorf("unexpected reason: %s", reason)
+	}
+}
+
+func TestIsAssignableAgentType_Various(t *testing.T) {
+	tests := []struct {
+		agentType string
+		expected  bool
+	}{
+		{"cc", true},
+		{"cod", true},
+		{"gmi", true},
+		{"user", false},
+		{"invalid", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		result := isAssignableAgentType(tt.agentType)
+		if result != tt.expected {
+			t.Errorf("isAssignableAgentType(%q) = %v, want %v", tt.agentType, result, tt.expected)
+		}
+	}
+}

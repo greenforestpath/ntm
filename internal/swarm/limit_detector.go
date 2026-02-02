@@ -25,7 +25,7 @@ type LimitEvent struct {
 type LimitDetector struct {
 	// TmuxClient for capturing pane output.
 	// If nil, the default tmux client is used.
-	TmuxClient *tmux.Client
+	TmuxClient paneCapturer
 
 	// Tracker records limit events for learning (optional).
 	Tracker *ratelimit.RateLimitTracker
@@ -53,6 +53,10 @@ type LimitDetector struct {
 
 	// ctx is the context for all monitoring goroutines.
 	ctx context.Context
+}
+
+type paneCapturer interface {
+	CapturePaneOutput(target string, lines int) (string, error)
 }
 
 // NewLimitDetector creates a new LimitDetector with default settings.
@@ -83,7 +87,7 @@ func NewLimitDetectorWithClient(client *tmux.Client) *LimitDetector {
 }
 
 // tmuxClient returns the configured tmux client or the default client.
-func (d *LimitDetector) tmuxClient() *tmux.Client {
+func (d *LimitDetector) tmuxClient() paneCapturer {
 	if d.TmuxClient != nil {
 		return d.TmuxClient
 	}
@@ -289,7 +293,18 @@ func (d *LimitDetector) handleLimitEvent(event *LimitEvent) {
 	// Record in tracker if available
 	if d.Tracker != nil {
 		provider := ratelimit.NormalizeProvider(event.AgentType)
-		d.Tracker.RecordRateLimit(provider, "swarm")
+		waitSeconds := ratelimit.ParseWaitSeconds(event.RawOutput)
+		cooldown := d.Tracker.RecordRateLimitWithCooldown(provider, "swarm", waitSeconds)
+		if err := d.Tracker.SaveToDir(""); err != nil {
+			d.logger().Warn("[LimitDetector] tracker_persist_failed",
+				"provider", provider,
+				"error", err)
+		} else {
+			d.logger().Info("[LimitDetector] tracker_updated",
+				"provider", provider,
+				"cooldown", cooldown.String(),
+				"wait_seconds", waitSeconds)
+		}
 	}
 
 	// Send event to channel (non-blocking)

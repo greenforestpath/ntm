@@ -1,6 +1,7 @@
 package ensemble
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -121,6 +122,46 @@ func TestCheckpointStore_SaveAndLoadMetadata(t *testing.T) {
 	t.Logf("TEST: %s - assertion: metadata save/load works", t.Name())
 }
 
+func TestCheckpointStore_SaveAndLoadSynthesisCheckpoint(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+
+	tmpDir := t.TempDir()
+	store, err := NewCheckpointStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewCheckpointStore failed: %v", err)
+	}
+
+	runID := "test-synth-run"
+	checkpoint := SynthesisCheckpoint{
+		RunID:       runID,
+		SessionName: "test-session",
+		LastIndex:   7,
+		Error:       "context canceled",
+		CreatedAt:   time.Now().UTC(),
+	}
+
+	if err := store.SaveSynthesisCheckpoint(runID, checkpoint); err != nil {
+		t.Fatalf("SaveSynthesisCheckpoint failed: %v", err)
+	}
+
+	loaded, err := store.LoadSynthesisCheckpoint(runID)
+	if err != nil {
+		t.Fatalf("LoadSynthesisCheckpoint failed: %v", err)
+	}
+
+	if loaded.LastIndex != checkpoint.LastIndex {
+		t.Errorf("LastIndex = %d, want %d", loaded.LastIndex, checkpoint.LastIndex)
+	}
+	if loaded.Error != checkpoint.Error {
+		t.Errorf("Error = %q, want %q", loaded.Error, checkpoint.Error)
+	}
+	if loaded.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt is zero")
+	}
+
+	t.Logf("TEST: %s - assertion: synthesis checkpoint save/load works", t.Name())
+}
+
 func TestCheckpointStore_LoadCheckpoint_NotFound(t *testing.T) {
 	t.Logf("TEST: %s - starting", t.Name())
 
@@ -174,6 +215,51 @@ func TestCheckpointStore_LoadAllCheckpoints(t *testing.T) {
 	}
 
 	t.Logf("TEST: %s - assertion: all checkpoints loaded", t.Name())
+}
+
+func TestCheckpointStore_LoadAllCheckpoints_SkipsSynthesis(t *testing.T) {
+	t.Logf("TEST: %s - starting", t.Name())
+
+	tmpDir := t.TempDir()
+	store, err := NewCheckpointStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewCheckpointStore failed: %v", err)
+	}
+
+	runID := "test-run-skip-synthesis"
+
+	// Save a mode checkpoint
+	modeCP := ModeCheckpoint{
+		ModeID: "deductive",
+		Status: string(AssignmentDone),
+	}
+	if err := store.SaveCheckpoint(runID, modeCP); err != nil {
+		t.Fatalf("SaveCheckpoint failed: %v", err)
+	}
+
+	// Save a synthesis checkpoint (should be skipped by LoadAllCheckpoints)
+	synthCP := SynthesisCheckpoint{
+		RunID:     runID,
+		LastIndex: 5,
+	}
+	if err := store.SaveSynthesisCheckpoint(runID, synthCP); err != nil {
+		t.Fatalf("SaveSynthesisCheckpoint failed: %v", err)
+	}
+
+	// LoadAllCheckpoints should only return the mode checkpoint, not the synthesis
+	checkpoints, err := store.LoadAllCheckpoints(runID)
+	if err != nil {
+		t.Fatalf("LoadAllCheckpoints failed: %v", err)
+	}
+
+	if len(checkpoints) != 1 {
+		t.Errorf("got %d checkpoints, want 1 (synthesis.json should be skipped)", len(checkpoints))
+	}
+	if len(checkpoints) > 0 && checkpoints[0].ModeID != "deductive" {
+		t.Errorf("expected deductive mode, got %q", checkpoints[0].ModeID)
+	}
+
+	t.Logf("TEST: %s - assertion: synthesis checkpoint correctly skipped", t.Name())
 }
 
 func TestCheckpointStore_ListRuns(t *testing.T) {
@@ -560,4 +646,333 @@ func TestRemoveFromSlice(t *testing.T) {
 	}
 
 	t.Logf("TEST: %s - assertion: removeFromSlice works correctly", t.Name())
+}
+
+func TestCheckpointStore_WithLogger(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewCheckpointStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewCheckpointStore failed: %v", err)
+	}
+
+	// Should return self for chaining
+	result := store.WithLogger(nil)
+	if result != store {
+		t.Error("WithLogger should return store for chaining")
+	}
+
+	// Should work with non-nil logger
+	result = store.WithLogger(store.logger)
+	if result != store {
+		t.Error("WithLogger should return store for chaining")
+	}
+}
+
+func TestCheckpointStore_CleanOld(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewCheckpointStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewCheckpointStore failed: %v", err)
+	}
+
+	// Create old run - manually write metadata with old timestamp
+	oldRunID := "old-run"
+	oldRunDir := filepath.Join(tmpDir, checkpointDirName, oldRunID)
+	if err := os.MkdirAll(oldRunDir, 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+
+	oldMeta := CheckpointMetadata{
+		RunID:     oldRunID,
+		CreatedAt: time.Now().Add(-48 * time.Hour),
+		UpdatedAt: time.Now().Add(-48 * time.Hour),
+	}
+	oldData, _ := json.Marshal(oldMeta)
+	if err := os.WriteFile(filepath.Join(oldRunDir, checkpointMetaFile), oldData, 0o644); err != nil {
+		t.Fatalf("write old metadata failed: %v", err)
+	}
+
+	// Create new run
+	newMeta := CheckpointMetadata{
+		RunID:     "new-run",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := store.SaveMetadata(newMeta); err != nil {
+		t.Fatalf("SaveMetadata failed: %v", err)
+	}
+
+	// Clean runs older than 24 hours
+	removed, err := store.CleanOld(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("CleanOld failed: %v", err)
+	}
+
+	if removed != 1 {
+		t.Errorf("CleanOld removed %d, want 1", removed)
+	}
+
+	// Old run should be gone
+	if store.RunExists(oldRunID) {
+		t.Error("old run should be removed")
+	}
+
+	// New run should still exist
+	if !store.RunExists("new-run") {
+		t.Error("new run should still exist")
+	}
+}
+
+func TestCheckpointStore_CleanOld_NilStore(t *testing.T) {
+	var store *CheckpointStore
+	_, err := store.CleanOld(24 * time.Hour)
+	if err == nil {
+		t.Error("CleanOld on nil should return error")
+	}
+}
+
+func TestCheckpointStore_GetPendingModeIDs(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewCheckpointStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewCheckpointStore failed: %v", err)
+	}
+
+	runID := "pending-test"
+	meta := CheckpointMetadata{
+		RunID:      runID,
+		PendingIDs: []string{"mode-1", "mode-2", "mode-3"},
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata failed: %v", err)
+	}
+
+	pending, err := store.GetPendingModeIDs(runID)
+	if err != nil {
+		t.Fatalf("GetPendingModeIDs failed: %v", err)
+	}
+
+	if len(pending) != 3 {
+		t.Errorf("GetPendingModeIDs returned %d, want 3", len(pending))
+	}
+}
+
+func TestCheckpointManager_WithLogger(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewCheckpointStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewCheckpointStore failed: %v", err)
+	}
+
+	manager := NewCheckpointManager(store, "test-run")
+
+	// Should return self for chaining
+	result := manager.WithLogger(nil)
+	if result != manager {
+		t.Error("WithLogger should return manager for chaining")
+	}
+
+	// Should work with non-nil logger
+	result = manager.WithLogger(manager.logger)
+	if result != manager {
+		t.Error("WithLogger should return manager for chaining")
+	}
+}
+
+func TestCheckpointManager_RecordError(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewCheckpointStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewCheckpointStore failed: %v", err)
+	}
+
+	runID := "error-test"
+	manager := NewCheckpointManager(store, runID)
+
+	// Initialize metadata
+	meta := CheckpointMetadata{
+		RunID:      runID,
+		PendingIDs: []string{"failing-mode"},
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata failed: %v", err)
+	}
+
+	// Record error
+	testErr := os.ErrNotExist
+	if err := manager.RecordError("failing-mode", testErr); err != nil {
+		t.Fatalf("RecordError failed: %v", err)
+	}
+
+	// Verify checkpoint was saved
+	cp, err := store.LoadCheckpoint(runID, "failing-mode")
+	if err != nil {
+		t.Fatalf("LoadCheckpoint failed: %v", err)
+	}
+
+	if cp.Status != string(AssignmentError) {
+		t.Errorf("Status = %q, want %q", cp.Status, string(AssignmentError))
+	}
+	if cp.Error == "" {
+		t.Error("Error message should be set")
+	}
+
+	// Verify metadata was updated
+	loaded, err := store.LoadMetadata(runID)
+	if err != nil {
+		t.Fatalf("LoadMetadata failed: %v", err)
+	}
+	if len(loaded.ErrorIDs) != 1 || loaded.ErrorIDs[0] != "failing-mode" {
+		t.Errorf("ErrorIDs = %v, want [failing-mode]", loaded.ErrorIDs)
+	}
+}
+
+func TestCheckpointManager_RecordError_NilManager(t *testing.T) {
+	var manager *CheckpointManager
+	err := manager.RecordError("mode", os.ErrNotExist)
+	if err == nil {
+		t.Error("RecordError on nil should return error")
+	}
+}
+
+func TestCheckpointManager_MarkComplete(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewCheckpointStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewCheckpointStore failed: %v", err)
+	}
+
+	runID := "complete-test"
+	manager := NewCheckpointManager(store, runID)
+
+	// Initialize metadata
+	meta := CheckpointMetadata{
+		RunID:        runID,
+		Status:       EnsembleActive,
+		CompletedIDs: []string{"mode-1"},
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata failed: %v", err)
+	}
+
+	// Mark complete without cleanup
+	if err := manager.MarkComplete(false); err != nil {
+		t.Fatalf("MarkComplete failed: %v", err)
+	}
+
+	// Verify status was updated
+	loaded, err := store.LoadMetadata(runID)
+	if err != nil {
+		t.Fatalf("LoadMetadata failed: %v", err)
+	}
+	if loaded.Status != EnsembleComplete {
+		t.Errorf("Status = %q, want %q", loaded.Status, EnsembleComplete)
+	}
+
+	// Run should still exist
+	if !store.RunExists(runID) {
+		t.Error("run should still exist without cleanup")
+	}
+}
+
+func TestCheckpointManager_MarkComplete_WithCleanup(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewCheckpointStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewCheckpointStore failed: %v", err)
+	}
+
+	runID := "cleanup-test"
+	manager := NewCheckpointManager(store, runID)
+
+	// Initialize metadata
+	meta := CheckpointMetadata{
+		RunID:        runID,
+		Status:       EnsembleActive,
+		CompletedIDs: []string{"mode-1"},
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata failed: %v", err)
+	}
+
+	// Mark complete with cleanup
+	if err := manager.MarkComplete(true); err != nil {
+		t.Fatalf("MarkComplete with cleanup failed: %v", err)
+	}
+
+	// Run should be deleted
+	if store.RunExists(runID) {
+		t.Error("run should be deleted with cleanup")
+	}
+}
+
+func TestCheckpointManager_MarkComplete_NilManager(t *testing.T) {
+	var manager *CheckpointManager
+	err := manager.MarkComplete(false)
+	if err == nil {
+		t.Error("MarkComplete on nil should return error")
+	}
+}
+
+func TestCheckpointManager_GetResumeState(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewCheckpointStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewCheckpointStore failed: %v", err)
+	}
+
+	runID := "resume-test"
+	manager := NewCheckpointManager(store, runID)
+
+	// Initialize metadata
+	meta := CheckpointMetadata{
+		RunID:        runID,
+		SessionName:  "test-session",
+		Question:     "Test question?",
+		PendingIDs:   []string{"mode-2"},
+		CompletedIDs: []string{"mode-1"},
+	}
+	if err := store.SaveMetadata(meta); err != nil {
+		t.Fatalf("SaveMetadata failed: %v", err)
+	}
+
+	// Save a completed checkpoint
+	cp := ModeCheckpoint{
+		ModeID: "mode-1",
+		Output: &ModeOutput{ModeID: "mode-1", Thesis: "Result"},
+		Status: string(AssignmentDone),
+	}
+	if err := store.SaveCheckpoint(runID, cp); err != nil {
+		t.Fatalf("SaveCheckpoint failed: %v", err)
+	}
+
+	// Get resume state
+	resumeMeta, outputs, err := manager.GetResumeState()
+	if err != nil {
+		t.Fatalf("GetResumeState failed: %v", err)
+	}
+
+	if resumeMeta == nil {
+		t.Fatal("resumeMeta should not be nil")
+	}
+	if resumeMeta.SessionName != "test-session" {
+		t.Errorf("SessionName = %q, want test-session", resumeMeta.SessionName)
+	}
+	if len(resumeMeta.PendingIDs) != 1 {
+		t.Errorf("PendingIDs count = %d, want 1", len(resumeMeta.PendingIDs))
+	}
+	if len(outputs) != 1 {
+		t.Errorf("outputs count = %d, want 1", len(outputs))
+	}
+	if outputs[0].Thesis != "Result" {
+		t.Errorf("output Thesis = %q, want Result", outputs[0].Thesis)
+	}
+}
+
+func TestCheckpointManager_GetResumeState_NilManager(t *testing.T) {
+	var manager *CheckpointManager
+	_, _, err := manager.GetResumeState()
+	if err == nil {
+		t.Error("GetResumeState on nil should return error")
+	}
 }

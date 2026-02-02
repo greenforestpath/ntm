@@ -383,6 +383,15 @@ func runList(tags []string) error {
 				if s.AgentCounts.Gemini > 0 {
 					parts = append(parts, fmt.Sprintf("%d GMI", s.AgentCounts.Gemini))
 				}
+				if s.AgentCounts.Cursor > 0 {
+					parts = append(parts, fmt.Sprintf("%d CUR", s.AgentCounts.Cursor))
+				}
+				if s.AgentCounts.Windsurf > 0 {
+					parts = append(parts, fmt.Sprintf("%d WND", s.AgentCounts.Windsurf))
+				}
+				if s.AgentCounts.Aider > 0 {
+					parts = append(parts, fmt.Sprintf("%d AID", s.AgentCounts.Aider))
+				}
 				if s.AgentCounts.User > 0 {
 					parts = append(parts, fmt.Sprintf("%d Usr", s.AgentCounts.User))
 				}
@@ -432,23 +441,27 @@ func buildSessionListResponse(tags []string) (output.ListResponse, error) {
 		return output.ListResponse{}, err
 	}
 
+	// Optimization: fetch all panes once
+	allPanes, err := tmux.GetAllPanes()
+	if err != nil {
+		return output.ListResponse{}, err
+	}
+
 	// Filter sessions by tag
 	if len(tags) > 0 {
 		var filtered []tmux.Session
 		for _, s := range sessions {
-			panes, err := tmux.GetPanes(s.Name)
-			if err == nil {
-				// Check if any pane has matching tag
-				hasTag := false
-				for _, p := range panes {
-					if HasAnyTag(p.Tags, tags) {
-						hasTag = true
-						break
-					}
+			panes := allPanes[s.Name]
+			// Check if any pane has matching tag
+			hasTag := false
+			for _, p := range panes {
+				if HasAnyTag(p.Tags, tags) {
+					hasTag = true
+					break
 				}
-				if hasTag {
-					filtered = append(filtered, s)
-				}
+			}
+			if hasTag {
+				filtered = append(filtered, s)
 			}
 		}
 		sessions = filtered
@@ -464,12 +477,12 @@ func buildSessionListResponse(tags []string) (output.ListResponse, error) {
 		}
 
 		// Get panes to count agents
-		panes, err := tmux.GetPanes(s.Name)
-		if err == nil {
+		panes := allPanes[s.Name]
+		if len(panes) > 0 {
 			item.PaneCount = len(panes)
 
 			// Count agent types
-			var claudeCount, codexCount, geminiCount, userCount int
+			var claudeCount, codexCount, geminiCount, cursorCount, windsurfCount, aiderCount, userCount int
 			for _, p := range panes {
 				switch p.Type {
 				case tmux.AgentClaude:
@@ -478,16 +491,25 @@ func buildSessionListResponse(tags []string) (output.ListResponse, error) {
 					codexCount++
 				case tmux.AgentGemini:
 					geminiCount++
+				case tmux.AgentCursor:
+					cursorCount++
+				case tmux.AgentWindsurf:
+					windsurfCount++
+				case tmux.AgentAider:
+					aiderCount++
 				default:
 					userCount++
 				}
 			}
 			item.AgentCounts = &output.AgentCountsResponse{
-				Claude: claudeCount,
-				Codex:  codexCount,
-				Gemini: geminiCount,
-				User:   userCount,
-				Total:  len(panes),
+				Claude:   claudeCount,
+				Codex:    codexCount,
+				Gemini:   geminiCount,
+				Cursor:   cursorCount,
+				Windsurf: windsurfCount,
+				Aider:    aiderCount,
+				User:     userCount,
+				Total:    len(panes),
 			}
 		}
 		items[i] = item

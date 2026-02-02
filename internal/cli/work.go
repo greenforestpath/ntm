@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
 func newWorkCmd() *cobra.Command {
@@ -261,25 +263,22 @@ func resolveTriageFormat(format string) string {
 
 // runGroupedTriage runs bv with grouped output
 func runGroupedTriage(dir string, byLabel, byTrack bool) error {
-	var args []string
-	if byLabel {
-		args = append(args, "-robot-triage-by-label")
-	} else if byTrack {
-		args = append(args, "-robot-triage-by-track")
-	}
-
-	output, err := bv.RunRaw(dir, args...)
+	adapter := tools.NewBVAdapter()
+	output, err := adapter.GetGroupedTriage(context.Background(), dir, tools.BVGroupedTriageOptions{
+		ByLabel: byLabel,
+		ByTrack: byTrack,
+	})
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput {
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
 	// For non-JSON, just print the structured output
-	fmt.Println(output)
+	fmt.Println(string(output))
 	return nil
 }
 
@@ -395,33 +394,31 @@ func runWorkAlerts(criticalOnly bool, alertType, labelFilter string) error {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	args := []string{"-robot-alerts"}
-
-	if alertType != "" {
-		args = append(args, "-alert-type", alertType)
-	}
-	if labelFilter != "" {
-		args = append(args, "-alert-label", labelFilter)
-	}
+	severity := ""
 	if criticalOnly {
-		args = append(args, "-severity", "critical")
+		severity = "critical"
 	}
 
-	output, err := bv.RunRaw(dir, args...)
+	adapter := tools.NewBVAdapter()
+	output, err := adapter.GetAlerts(context.Background(), dir, tools.BVAlertOptions{
+		AlertType: alertType,
+		Severity:  severity,
+		Label:     labelFilter,
+	})
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput {
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
 	// Parse and render
 	var resp AlertsResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+	if err := json.Unmarshal(output, &resp); err != nil {
 		// If parsing fails, just print raw output
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
@@ -512,29 +509,26 @@ func runWorkSearch(query string, limit int, mode string) error {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	args := []string{"-robot-search", "-search", query}
-	if limit > 0 {
-		args = append(args, "-search-limit", fmt.Sprintf("%d", limit))
-	}
-	if mode != "" {
-		args = append(args, "-search-mode", mode)
-	}
-
-	output, err := bv.RunRaw(dir, args...)
+	adapter := tools.NewBVAdapter()
+	output, err := adapter.GetSearchWithOptions(context.Background(), dir, tools.BVSearchOptions{
+		Query: query,
+		Limit: limit,
+		Mode:  mode,
+	})
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput {
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
 	// Parse and render
 	var resp SearchResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+	if err := json.Unmarshal(output, &resp); err != nil {
 		// If parsing fails, just print raw output
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
@@ -605,26 +599,25 @@ func runWorkImpact(paths []string) error {
 
 	// Join paths with comma for bv
 	pathArg := strings.Join(paths, ",")
-	args := []string{"-robot-impact", pathArg}
-
-	output, err := bv.RunRaw(dir, args...)
+	adapter := tools.NewBVAdapter()
+	output, err := adapter.GetImpact(context.Background(), dir, pathArg)
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput {
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
 	// Parse and render
 	var resp ImpactResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+	if err := json.Unmarshal(output, &resp); err != nil {
 		// Try parsing as array of results
 		var results []ImpactResult
-		if err2 := json.Unmarshal([]byte(output), &results); err2 != nil {
+		if err2 := json.Unmarshal(output, &results); err2 != nil {
 			// If parsing fails, just print raw output
-			fmt.Println(output)
+			fmt.Println(string(output))
 			return nil
 		}
 		resp.Files = results
@@ -1020,23 +1013,22 @@ func runWorkHistory() error {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	args := []string{"-robot-history"}
-
-	output, err := bv.RunRaw(dir, args...)
+	adapter := tools.NewBVAdapter()
+	output, err := adapter.GetHistory(context.Background(), dir)
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput {
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
 	// Parse and render
 	var resp HistoryResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+	if err := json.Unmarshal(output, &resp); err != nil {
 		// If parsing fails, just print raw output
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
@@ -1089,28 +1081,27 @@ func runWorkForecast(issueID string) error {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	var args []string
+	target := "all"
 	if issueID != "" {
-		args = []string{"-robot-forecast", issueID}
-	} else {
-		args = []string{"-robot-forecast", "all"}
+		target = issueID
 	}
 
-	output, err := bv.RunRaw(dir, args...)
+	adapter := tools.NewBVAdapter()
+	output, err := adapter.GetForecast(context.Background(), dir, target)
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput {
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
 	// Parse and render
 	var resp ForecastResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+	if err := json.Unmarshal(output, &resp); err != nil {
 		// If parsing fails, just print raw output
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
@@ -1168,23 +1159,21 @@ func runWorkGraph(format string) error {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	args := []string{"-robot-graph"}
-	if format != "" && format != "json" {
-		args = append(args, "-graph-format", format)
-	}
-
-	output, err := bv.RunRaw(dir, args...)
+	adapter := tools.NewBVAdapter()
+	output, err := adapter.GetGraph(context.Background(), dir, tools.BVGraphOptions{
+		Format: format,
+	})
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput || format == "json" {
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
 	// For non-JSON formats like DOT or Mermaid, just print directly
-	fmt.Println(output)
+	fmt.Println(string(output))
 	return nil
 }
 
@@ -1195,23 +1184,22 @@ func runWorkLabelHealth() error {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	args := []string{"-robot-label-health"}
-
-	output, err := bv.RunRaw(dir, args...)
+	adapter := tools.NewBVAdapter()
+	output, err := adapter.GetLabelHealth(context.Background(), dir)
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput {
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
 	// Parse and render
 	var resp LabelHealthResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+	if err := json.Unmarshal(output, &resp); err != nil {
 		// If parsing fails, just print raw output
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
@@ -1278,23 +1266,22 @@ func runWorkLabelFlow() error {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	args := []string{"-robot-label-flow"}
-
-	output, err := bv.RunRaw(dir, args...)
+	adapter := tools.NewBVAdapter()
+	output, err := adapter.GetLabelFlow(context.Background(), dir)
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput {
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
 	// Parse and render
 	var resp LabelFlowResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+	if err := json.Unmarshal(output, &resp); err != nil {
 		// If parsing fails, just print raw output
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
@@ -1352,23 +1339,22 @@ func runWorkBurndown(sprint string) error {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
 
-	args := []string{"-robot-burndown", sprint}
-
-	output, err := bv.RunRaw(dir, args...)
+	adapter := tools.NewBVAdapter()
+	output, err := adapter.GetBurndown(context.Background(), dir, sprint)
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput {
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
 	// Parse and render
 	var resp BurndownResponse
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+	if err := json.Unmarshal(output, &resp); err != nil {
 		// If parsing fails, just print raw output
-		fmt.Println(output)
+		fmt.Println(string(output))
 		return nil
 	}
 
