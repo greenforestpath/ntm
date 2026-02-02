@@ -15,15 +15,24 @@ import (
 	"time"
 )
 
-// Synthetic secret fixtures (never use real keys)
+// Synthetic secret fixtures that match the redaction patterns (never use real keys)
+// These are structured to match the patterns in internal/redaction/patterns.go
 const (
-	fakeOpenAIKey    = "sk-FAKE_test_key_1234567890123456789012345678901234567890"
-	fakeGitHubToken  = "ghp_FAKEtesttoken1234567890123456789012345"
-	fakeAWSKey       = "AKIAFAKETEST1234567890"
-	fakeAWSSecret    = "aws-secret-FAKE123456789012345678901234567890ab"
-	fakeJWT          = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.fake"
-	fakePassword     = "password=hunter2hunter2"
-	redactedMarker   = "[REDACTED:"
+	// OpenAI project key format: sk-proj-[40+ chars]
+	fakeOpenAIKey = "sk-proj-FAKEtestkey1234567890123456789012345678901234"
+	// GitHub personal token format: ghp_[30+ chars]
+	fakeGitHubToken = "ghp_FAKEtesttokenvalue12345678901234567"
+	// AWS Access Key format: AKIA[16 chars]
+	fakeAWSKey = "AKIAFAKETEST12345678"
+	// AWS Secret format: aws_secret=[40 chars]
+	fakeAWSSecret = "aws_secret=FAKE1234567890123456789012345678901234"
+	// JWT format: eyJ[base64].eyJ[base64].[signature]
+	fakeJWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+	// Password format: password=[value]
+	fakePassword = "password=secretpass123456"
+	// Redacted marker prefix
+	redactedMarker = "[REDACTED:"
+	// Error code for blocked secrets
 	sendBlockedError = "SENSITIVE_DATA_BLOCKED"
 )
 
