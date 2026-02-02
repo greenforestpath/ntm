@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/Dicklesworthstone/ntm/internal/redaction"
@@ -189,9 +190,11 @@ func (rw *redactingResponseWriter) Flush() {
 }
 
 // isJSONContent checks if the content type is JSON.
+// Content-Type comparison is case-insensitive per RFC 2616.
 func isJSONContent(contentType string) bool {
-	return contentType == "application/json" ||
-		len(contentType) > 16 && contentType[:16] == "application/json"
+	ct := strings.ToLower(contentType)
+	return ct == "application/json" ||
+		len(ct) > 16 && ct[:16] == "application/json"
 }
 
 // logRedactionSummary logs a redaction summary.
