@@ -118,6 +118,13 @@ type PolicyValidateResponse struct {
 	Warnings    []string  `json:"warnings,omitempty"`
 }
 
+// PolicyResetResponse mirrors the JSON output from `ntm policy reset --json`.
+type PolicyResetResponse struct {
+	Success    bool   `json:"success"`
+	PolicyPath string `json:"policy_path"`
+	Action     string `json:"action"`
+}
+
 // SafetyTestSuite manages E2E tests for safety commands.
 type SafetyTestSuite struct {
 	t       *testing.T
@@ -324,6 +331,43 @@ func (s *SafetyTestSuite) runPolicyValidate(path string) (*PolicyValidateRespons
 	return &resp, stdoutStr, stderrStr, err
 }
 
+func (s *SafetyTestSuite) runPolicyReset(force bool) (*PolicyResetResponse, string, string, error) {
+	args := []string{"policy", "reset", "--json"}
+	if force {
+		args = append(args, "--force")
+	}
+	s.logger.Log("[E2E-SAFETY] Running: ntm %s", strings.Join(args, " "))
+
+	cmd := exec.Command("ntm", args...)
+	cmd.Env = append(os.Environ(), "HOME="+s.tempDir)
+	cmd.Dir = s.tempDir
+
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	stdoutStr := stdout.String()
+	stderrStr := stderr.String()
+
+	s.logger.Log("[E2E-SAFETY] stdout: %s", stdoutStr)
+	if stderrStr != "" {
+		s.logger.Log("[E2E-SAFETY] stderr: %s", stderrStr)
+	}
+	if err != nil {
+		s.logger.Log("[E2E-SAFETY] error: %v", err)
+	}
+
+	var resp PolicyResetResponse
+	if jsonErr := json.Unmarshal([]byte(stdoutStr), &resp); jsonErr != nil {
+		s.logger.Log("[E2E-SAFETY] JSON parse error: %v", jsonErr)
+		return nil, stdoutStr, stderrStr, jsonErr
+	}
+
+	s.logger.LogJSON("[E2E-SAFETY] Policy reset response", resp)
+	return &resp, stdoutStr, stderrStr, err
+}
+
 func (s *SafetyTestSuite) runSafetyBlocked(hours, limit int) (*SafetyBlockedResponse, string, string, error) {
 	args := []string{"safety", "blocked", "--json"}
 	if hours > 0 {
@@ -516,6 +560,32 @@ func TestPolicyValidate_JSON_MissingFile(t *testing.T) {
 	}
 
 	suite.logger.Log("[E2E-SAFETY] policy_validate_missing_completed")
+}
+
+func TestPolicyReset_JSON(t *testing.T) {
+	suite := NewSafetyTestSuite(t, "policy-reset")
+
+	resp, _, _, err := suite.runPolicyReset(true)
+	if resp == nil {
+		t.Fatalf("[E2E-SAFETY] Failed to parse policy reset response: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("[E2E-SAFETY] Expected exit code 0 for policy reset, got error: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("[E2E-SAFETY] Expected success=true, got false")
+	}
+	if resp.Action != "reset" {
+		t.Fatalf("[E2E-SAFETY] Expected action=reset, got %q", resp.Action)
+	}
+	if resp.PolicyPath == "" {
+		t.Fatalf("[E2E-SAFETY] Expected policy_path to be set")
+	}
+	if _, statErr := os.Stat(resp.PolicyPath); statErr != nil {
+		t.Fatalf("[E2E-SAFETY] Expected policy file to exist: %v", statErr)
+	}
+
+	suite.logger.Log("[E2E-SAFETY] policy_reset_completed")
 }
 
 func TestSafetyInstall_JSON(t *testing.T) {
