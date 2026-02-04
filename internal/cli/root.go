@@ -419,6 +419,13 @@ Shell Integration:
 			}
 			return
 		}
+		if robotGiilFetch != "" {
+			if err := robot.PrintGIILFetch(robotGiilFetch); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if robotMail {
 			projectKey := GetProjectRoot()
 			sessionName := ""
@@ -2091,6 +2098,9 @@ var (
 	// Robot-ru-sync flag for RU
 	robotRUSync bool // --robot-ru-sync flag
 
+	// Robot-giil-fetch flag for GIIL
+	robotGiilFetch string // --robot-giil-fetch flag
+
 	// Robot-quota-status and robot-quota-check flags for caut
 	robotQuotaStatus        bool   // --robot-quota-status flag
 	robotQuotaCheck         bool   // --robot-quota-check flag
@@ -2516,6 +2526,9 @@ func init() {
 
 	// Robot-ru-sync flag for RU
 	rootCmd.Flags().BoolVar(&robotRUSync, "robot-ru-sync", false, "Run ru sync with JSON output. Optional with --dry-run. Example: ntm --robot-ru-sync")
+
+	// Robot-giil-fetch flag for GIIL
+	rootCmd.Flags().StringVar(&robotGiilFetch, "robot-giil-fetch", "", "Download image from share URL via giil (JSON). Required: URL. Example: ntm --robot-giil-fetch=https://share.icloud.com/photos/abc123")
 
 	// Robot-quota-status and robot-quota-check flags for caut
 	rootCmd.Flags().BoolVar(&robotQuotaStatus, "robot-quota-status", false, "Show caut quota status for all providers. JSON output. Example: ntm --robot-quota-status")

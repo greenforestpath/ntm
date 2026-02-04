@@ -944,6 +944,18 @@ func buildCommandRegistry() []RobotCommandInfo {
 			},
 		},
 		{
+			Name:        "giil-fetch",
+			Flag:        "--robot-giil-fetch",
+			Category:    "utility",
+			Description: "Download image from share URL via giil and return JSON metadata.",
+			Parameters: []RobotParameter{
+				{Name: "url", Flag: "--robot-giil-fetch", Type: "string", Required: true, Description: "Share URL (iCloud, Dropbox, Google Photos, Google Drive)"},
+			},
+			Examples: []string{
+				"ntm --robot-giil-fetch=https://share.icloud.com/photos/abc123",
+			},
+		},
+		{
 			Name:        "rano-stats",
 			Flag:        "--robot-rano-stats",
 			Category:    "utility",

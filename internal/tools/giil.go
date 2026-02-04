@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -139,6 +140,7 @@ type GIILMetadata struct {
 	DirectURL    string `json:"direct_url,omitempty"`
 	Filename     string `json:"filename,omitempty"`
 	OutputPath   string `json:"output_path,omitempty"`
+	Path         string `json:"path,omitempty"`
 	ContentType  string `json:"content_type,omitempty"`
 	Size         int64  `json:"size,omitempty"`
 	Width        int    `json:"width,omitempty"`
@@ -167,13 +169,28 @@ func (a *GIILAdapter) GetDirectURL(ctx context.Context, shareURL string) (*GIILM
 
 	output := stdout.Bytes()
 	if !json.Valid(output) {
-		// Return basic metadata with just the URL
+		raw := strings.TrimSpace(string(output))
+		if raw != "" {
+			return &GIILMetadata{
+				URL:       shareURL,
+				DirectURL: raw,
+			}, nil
+		}
 		return &GIILMetadata{URL: shareURL}, nil
 	}
 
 	var meta GIILMetadata
 	if err := json.Unmarshal(output, &meta); err != nil {
 		return nil, fmt.Errorf("failed to parse giil output: %w", err)
+	}
+	if meta.OutputPath == "" && meta.Path != "" {
+		meta.OutputPath = meta.Path
+	}
+	if meta.Filename == "" && meta.OutputPath != "" {
+		meta.Filename = filepath.Base(meta.OutputPath)
+	}
+	if meta.URL == "" {
+		meta.URL = shareURL
 	}
 
 	return &meta, nil
@@ -204,12 +221,29 @@ func (a *GIILAdapter) Download(ctx context.Context, shareURL, outputDir string) 
 
 	output := stdout.Bytes()
 	if !json.Valid(output) {
+		raw := strings.TrimSpace(string(output))
+		if raw != "" {
+			return &GIILMetadata{
+				URL:        shareURL,
+				OutputPath: raw,
+				Filename:   filepath.Base(raw),
+			}, nil
+		}
 		return &GIILMetadata{URL: shareURL}, nil
 	}
 
 	var meta GIILMetadata
 	if err := json.Unmarshal(output, &meta); err != nil {
 		return nil, fmt.Errorf("failed to parse giil output: %w", err)
+	}
+	if meta.OutputPath == "" && meta.Path != "" {
+		meta.OutputPath = meta.Path
+	}
+	if meta.Filename == "" && meta.OutputPath != "" {
+		meta.Filename = filepath.Base(meta.OutputPath)
+	}
+	if meta.URL == "" {
+		meta.URL = shareURL
 	}
 
 	return &meta, nil

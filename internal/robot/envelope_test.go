@@ -165,6 +165,7 @@ func TestOutputTypesEmbedRobotResponse(t *testing.T) {
 		{"ErrorsOutput", reflect.TypeOf(ErrorsOutput{})},
 		{"FilesOutput", reflect.TypeOf(FilesOutput{})},
 		{"GraphOutput", reflect.TypeOf(GraphOutput{})},
+		{"GIILFetchOutput", reflect.TypeOf(GIILFetchOutput{})},
 		{"HealthOutput", reflect.TypeOf(HealthOutput{})},
 		{"HistoryOutput", reflect.TypeOf(HistoryOutput{})},
 		{"InspectPaneOutput", reflect.TypeOf(InspectPaneOutput{})},

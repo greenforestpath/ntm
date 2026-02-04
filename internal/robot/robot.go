@@ -1438,6 +1438,7 @@ Analysis & Monitoring:
 Tool Bridges:
 -------------
 --robot-cass-search=QUERY    Search past conversations (--limit=20, --since=7d)
+--robot-giil-fetch=URL       Download image from share URL via giil
 --robot-jfp-search=QUERY     Search prompts library
 --robot-ms-search=QUERY      Search Meta Skill catalog
 --robot-ms-show=ID           Show Meta Skill details
