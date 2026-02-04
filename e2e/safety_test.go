@@ -9,9 +9,13 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/policy"
 )
 
 // SafetyStatusResponse mirrors the JSON output from `ntm safety status --json`.
@@ -50,6 +54,13 @@ type SafetyDCGVerdict struct {
 	Blocked   bool   `json:"blocked"`
 	Reason    string `json:"reason,omitempty"`
 	Error     string `json:"error,omitempty"`
+}
+
+// SafetyBlockedResponse mirrors the JSON output from `ntm safety blocked --json`.
+type SafetyBlockedResponse struct {
+	GeneratedAt time.Time             `json:"generated_at"`
+	Entries     []policy.BlockedEntry `json:"entries"`
+	Count       int                   `json:"count"`
 }
 
 // SafetyTestSuite manages E2E tests for safety commands.
@@ -147,6 +158,70 @@ func (s *SafetyTestSuite) runSafetyCheck(command string) (*SafetyCheckResponse, 
 	return &resp, stdoutStr, stderrStr, err
 }
 
+func (s *SafetyTestSuite) runSafetyBlocked(hours, limit int) (*SafetyBlockedResponse, string, string, error) {
+	args := []string{"safety", "blocked", "--json"}
+	if hours > 0 {
+		args = append(args, "--hours", strconv.Itoa(hours))
+	}
+	if limit > 0 {
+		args = append(args, "--limit", strconv.Itoa(limit))
+	}
+	s.logger.Log("[E2E-SAFETY] Running: ntm %s", strings.Join(args, " "))
+
+	cmd := exec.Command("ntm", args...)
+	cmd.Env = append(os.Environ(), "HOME="+s.tempDir)
+	cmd.Dir = s.tempDir
+
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	stdoutStr := stdout.String()
+	stderrStr := stderr.String()
+
+	s.logger.Log("[E2E-SAFETY] stdout: %s", stdoutStr)
+	if stderrStr != "" {
+		s.logger.Log("[E2E-SAFETY] stderr: %s", stderrStr)
+	}
+	if err != nil {
+		s.logger.Log("[E2E-SAFETY] error: %v", err)
+	}
+
+	var resp SafetyBlockedResponse
+	if jsonErr := json.Unmarshal([]byte(stdoutStr), &resp); jsonErr != nil {
+		s.logger.Log("[E2E-SAFETY] JSON parse error: %v", jsonErr)
+		return nil, stdoutStr, stderrStr, jsonErr
+	}
+
+	s.logger.LogJSON("[E2E-SAFETY] Blocked response", resp)
+	return &resp, stdoutStr, stderrStr, err
+}
+
+func (s *SafetyTestSuite) writeBlockedLog(entries []policy.BlockedEntry) (string, error) {
+	logDir := filepath.Join(s.tempDir, ".ntm", "logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return "", err
+	}
+	logPath := filepath.Join(logDir, "blocked.jsonl")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	for _, entry := range entries {
+		if entry.Timestamp.IsZero() {
+			entry.Timestamp = time.Now()
+		}
+		if err := enc.Encode(entry); err != nil {
+			return "", err
+		}
+	}
+	return logPath, nil
+}
+
 func TestSafetyStatus_JSON(t *testing.T) {
 	suite := NewSafetyTestSuite(t, "status")
 
@@ -222,4 +297,43 @@ func TestSafetyCheck_Allowed(t *testing.T) {
 	}
 
 	suite.logger.Log("[E2E-SAFETY] safety_check_allowed_completed")
+}
+
+func TestSafetyBlocked_JSON(t *testing.T) {
+	suite := NewSafetyTestSuite(t, "blocked")
+
+	entry := policy.BlockedEntry{
+		Timestamp: time.Now().Add(-time.Minute),
+		Command:   "rm -rf /",
+		Pattern:   `rm\\s+-rf\\s+/$`,
+		Reason:    "Recursive delete of root is catastrophic",
+		Action:    policy.ActionBlock,
+	}
+
+	if _, err := suite.writeBlockedLog([]policy.BlockedEntry{entry}); err != nil {
+		t.Fatalf("[E2E-SAFETY] Failed to write blocked log: %v", err)
+	}
+
+	resp, _, _, err := suite.runSafetyBlocked(24, 20)
+	if resp == nil {
+		t.Fatalf("[E2E-SAFETY] Failed to parse blocked response: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("[E2E-SAFETY] Expected exit code 0 for safety blocked, got error: %v", err)
+	}
+
+	if resp.Count < 1 {
+		t.Fatalf("[E2E-SAFETY] Expected count >= 1, got %d", resp.Count)
+	}
+	if len(resp.Entries) < 1 {
+		t.Fatalf("[E2E-SAFETY] Expected entries >= 1, got %d", len(resp.Entries))
+	}
+	if resp.Entries[0].Command != entry.Command {
+		t.Errorf("[E2E-SAFETY] Expected first entry command %q, got %q", entry.Command, resp.Entries[0].Command)
+	}
+	if resp.Entries[0].Pattern == "" {
+		t.Errorf("[E2E-SAFETY] Expected pattern to be populated")
+	}
+
+	suite.logger.Log("[E2E-SAFETY] safety_blocked_test_completed")
 }
