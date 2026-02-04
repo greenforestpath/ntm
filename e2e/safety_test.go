@@ -63,6 +63,16 @@ type SafetyBlockedResponse struct {
 	Count       int                   `json:"count"`
 }
 
+// SafetyInstallResponse mirrors the JSON output from `ntm safety install --json`.
+type SafetyInstallResponse struct {
+	Success    bool      `json:"success"`
+	Timestamp  time.Time `json:"timestamp"`
+	GitWrapper string    `json:"git_wrapper"`
+	RMWrapper  string    `json:"rm_wrapper"`
+	Hook       string    `json:"hook"`
+	Policy     string    `json:"policy"`
+}
+
 // SafetyTestSuite manages E2E tests for safety commands.
 type SafetyTestSuite struct {
 	t       *testing.T
@@ -158,6 +168,43 @@ func (s *SafetyTestSuite) runSafetyCheck(command string) (*SafetyCheckResponse, 
 	return &resp, stdoutStr, stderrStr, err
 }
 
+func (s *SafetyTestSuite) runSafetyInstall(force bool) (*SafetyInstallResponse, string, string, error) {
+	args := []string{"safety", "install", "--json"}
+	if force {
+		args = append(args, "--force")
+	}
+	s.logger.Log("[E2E-SAFETY] Running: ntm %s", strings.Join(args, " "))
+
+	cmd := exec.Command("ntm", args...)
+	cmd.Env = append(os.Environ(), "HOME="+s.tempDir)
+	cmd.Dir = s.tempDir
+
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	stdoutStr := stdout.String()
+	stderrStr := stderr.String()
+
+	s.logger.Log("[E2E-SAFETY] stdout: %s", stdoutStr)
+	if stderrStr != "" {
+		s.logger.Log("[E2E-SAFETY] stderr: %s", stderrStr)
+	}
+	if err != nil {
+		s.logger.Log("[E2E-SAFETY] error: %v", err)
+	}
+
+	var resp SafetyInstallResponse
+	if jsonErr := json.Unmarshal([]byte(stdoutStr), &resp); jsonErr != nil {
+		s.logger.Log("[E2E-SAFETY] JSON parse error: %v", jsonErr)
+		return nil, stdoutStr, stderrStr, jsonErr
+	}
+
+	s.logger.LogJSON("[E2E-SAFETY] Install response", resp)
+	return &resp, stdoutStr, stderrStr, err
+}
+
 func (s *SafetyTestSuite) runSafetyBlocked(hours, limit int) (*SafetyBlockedResponse, string, string, error) {
 	args := []string{"safety", "blocked", "--json"}
 	if hours > 0 {
@@ -249,6 +296,40 @@ func TestSafetyStatus_JSON(t *testing.T) {
 	suite.logger.Log("[E2E-SAFETY] safety_status_test_completed")
 }
 
+func TestSafetyInstall_JSON(t *testing.T) {
+	suite := NewSafetyTestSuite(t, "install")
+
+	resp, _, _, err := suite.runSafetyInstall(false)
+	if resp == nil {
+		t.Fatalf("[E2E-SAFETY] Failed to parse install response: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("[E2E-SAFETY] Expected exit code 0 for safety install, got error: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("[E2E-SAFETY] Expected success=true, got false")
+	}
+	if resp.GitWrapper == "" || resp.RMWrapper == "" || resp.Hook == "" || resp.Policy == "" {
+		t.Fatalf("[E2E-SAFETY] Expected wrapper/hook/policy paths to be set, got %+v", resp)
+	}
+
+	for _, path := range []string{resp.GitWrapper, resp.RMWrapper, resp.Hook, resp.Policy} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("[E2E-SAFETY] Expected path to exist: %s (err=%v)", path, statErr)
+		}
+	}
+
+	status, _, _, statusErr := suite.runSafetyStatus()
+	if status == nil {
+		t.Fatalf("[E2E-SAFETY] Failed to parse status response: %v", statusErr)
+	}
+	if !status.Installed {
+		t.Fatalf("[E2E-SAFETY] Expected installed=true after safety install")
+	}
+
+	suite.logger.Log("[E2E-SAFETY] safety_install_test_completed")
+}
+
 func TestSafetyCheck_Blocked(t *testing.T) {
 	suite := NewSafetyTestSuite(t, "check-blocked")
 
@@ -297,6 +378,31 @@ func TestSafetyCheck_Allowed(t *testing.T) {
 	}
 
 	suite.logger.Log("[E2E-SAFETY] safety_check_allowed_completed")
+}
+
+func TestSafetyCheck_ApprovalRequired(t *testing.T) {
+	suite := NewSafetyTestSuite(t, "check-approve")
+
+	command := "rm -rf /tmp/ntm-test"
+	resp, _, _, err := suite.runSafetyCheck(command)
+	if resp == nil {
+		t.Fatalf("[E2E-SAFETY] Failed to parse check response: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("[E2E-SAFETY] Expected exit code 0 for approve action, got error: %v", err)
+	}
+
+	if resp.Action != "approve" {
+		t.Errorf("[E2E-SAFETY] Expected action=approve, got %q", resp.Action)
+	}
+	if resp.Policy == nil || resp.Policy.Action != "approve" {
+		t.Errorf("[E2E-SAFETY] Expected policy action=approve, got %+v", resp.Policy)
+	}
+	if resp.Pattern == "" {
+		t.Errorf("[E2E-SAFETY] Expected non-empty pattern for approval-required command")
+	}
+
+	suite.logger.Log("[E2E-SAFETY] safety_check_approval_completed")
 }
 
 func TestSafetyBlocked_JSON(t *testing.T) {
