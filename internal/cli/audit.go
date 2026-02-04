@@ -1,0 +1,469 @@
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/Dicklesworthstone/ntm/internal/audit"
+	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
+)
+
+func newAuditCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "audit",
+		Short: "Query and verify audit logs",
+		Long: `Query, search, and verify tamper-evident audit logs.
+
+Audit logs record all significant NTM actions with hash-chain integrity.
+
+Examples:
+  ntm audit show myproject                  # Show audit log for session
+  ntm audit search "spawn"                  # Search all logs
+  ntm audit search --type=error --days=7    # Errors in last week
+  ntm audit verify myproject                # Verify log integrity
+  ntm audit export myproject --format=json  # Export session log`,
+	}
+
+	cmd.AddCommand(
+		newAuditShowCmd(),
+		newAuditSearchCmd(),
+		newAuditVerifyCmd(),
+		newAuditExportCmd(),
+		newAuditListCmd(),
+	)
+
+	return cmd
+}
+
+func newAuditShowCmd() *cobra.Command {
+	var (
+		since   string
+		until   string
+		evTypes string
+		limit   int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "show <session>",
+		Short: "Display audit log for a session",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAuditShow(args[0], since, until, evTypes, limit)
+		},
+	}
+
+	cmd.Flags().StringVar(&since, "since", "", "Show entries after this time (RFC3339 or duration like '1h', '7d')")
+	cmd.Flags().StringVar(&until, "until", "", "Show entries before this time (RFC3339 or duration like '1h')")
+	cmd.Flags().StringVar(&evTypes, "type", "", "Filter by event type (comma-separated: command,spawn,send,response,error,state_change)")
+	cmd.Flags().IntVar(&limit, "limit", 100, "Maximum entries to show")
+
+	return cmd
+}
+
+func newAuditSearchCmd() *cobra.Command {
+	var (
+		sessions string
+		evTypes  string
+		actors   string
+		target   string
+		days     int
+		limit    int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "search <pattern>",
+		Short: "Search across all audit logs",
+		Long: `Full-text search across all audit logs using regex patterns.
+
+Examples:
+  ntm audit search "auth error"
+  ntm audit search --type=spawn --days=7 "cc_"
+  ntm audit search --actor=system "state_change"`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAuditSearch(args[0], sessions, evTypes, actors, target, days, limit)
+		},
+	}
+
+	cmd.Flags().StringVar(&sessions, "sessions", "", "Filter by session (comma-separated)")
+	cmd.Flags().StringVar(&evTypes, "type", "", "Filter by event type (comma-separated)")
+	cmd.Flags().StringVar(&actors, "actor", "", "Filter by actor (comma-separated: user,agent,system)")
+	cmd.Flags().StringVar(&target, "target", "", "Filter by target (glob pattern, e.g. 'proj__cc_*')")
+	cmd.Flags().IntVar(&days, "days", 30, "Search logs from last N days")
+	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum results")
+
+	return cmd
+}
+
+func newAuditVerifyCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "verify <session>",
+		Short: "Verify audit log integrity",
+		Long: `Verify the hash chain and sequence numbers of an audit log.
+
+Checks for:
+- Broken hash chains (indicating tampering)
+- Sequence number gaps (indicating deletion)
+- Checksum mismatches (indicating modification)`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAuditVerify(args[0])
+		},
+	}
+	return cmd
+}
+
+func newAuditExportCmd() *cobra.Command {
+	var (
+		format string
+		output string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "export <session>",
+		Short: "Export audit log to file",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAuditExport(args[0], format, output)
+		},
+	}
+
+	cmd.Flags().StringVar(&format, "format", "json", "Export format (json, csv)")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file path (default: stdout)")
+
+	return cmd
+}
+
+func newAuditListCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List available audit logs",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAuditList()
+		},
+	}
+	return cmd
+}
+
+// --- Run functions ---
+
+func runAuditShow(session, since, until, evTypes string, limit int) error {
+	searcher, err := newAuditSearcherFunc()
+	if err != nil {
+		return fmt.Errorf("failed to create searcher: %w", err)
+	}
+
+	q := audit.Query{
+		Sessions: []string{session},
+		Limit:    limit,
+	}
+
+	if since != "" {
+		t, err := parseTimeArg(since)
+		if err != nil {
+			return fmt.Errorf("invalid --since: %w", err)
+		}
+		q.Since = &t
+	}
+	if until != "" {
+		t, err := parseTimeArg(until)
+		if err != nil {
+			return fmt.Errorf("invalid --until: %w", err)
+		}
+		q.Until = &t
+	}
+	if evTypes != "" {
+		for _, et := range strings.Split(evTypes, ",") {
+			q.EventTypes = append(q.EventTypes, audit.EventType(strings.TrimSpace(et)))
+		}
+	}
+
+	result, err := searcher.Search(q)
+	if err != nil {
+		return fmt.Errorf("search failed: %w", err)
+	}
+
+	if jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
+
+	return renderAuditEntries(result)
+}
+
+func runAuditSearch(pattern, sessions, evTypes, actors, target string, days, limit int) error {
+	searcher, err := newAuditSearcherFunc()
+	if err != nil {
+		return fmt.Errorf("failed to create searcher: %w", err)
+	}
+
+	since := time.Now().AddDate(0, 0, -days)
+	q := audit.Query{
+		Since:       &since,
+		GrepPattern: pattern,
+		Limit:       limit,
+	}
+
+	if sessions != "" {
+		q.Sessions = strings.Split(sessions, ",")
+	}
+	if evTypes != "" {
+		for _, et := range strings.Split(evTypes, ",") {
+			q.EventTypes = append(q.EventTypes, audit.EventType(strings.TrimSpace(et)))
+		}
+	}
+	if actors != "" {
+		for _, a := range strings.Split(actors, ",") {
+			q.Actors = append(q.Actors, audit.Actor(strings.TrimSpace(a)))
+		}
+	}
+	if target != "" {
+		q.TargetPattern = target
+	}
+
+	result, err := searcher.Search(q)
+	if err != nil {
+		return fmt.Errorf("search failed: %w", err)
+	}
+
+	if jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
+
+	if result.TotalCount == 0 {
+		fmt.Println("No matching entries found.")
+		return nil
+	}
+
+	fmt.Printf("Found %d entries (scanned %d in %s)\n\n", result.TotalCount, result.Scanned, result.Duration.Round(time.Millisecond))
+	return renderAuditEntries(result)
+}
+
+func runAuditVerify(session string) error {
+	searcher, err := newAuditSearcherFunc()
+	if err != nil {
+		return fmt.Errorf("failed to create searcher: %w", err)
+	}
+
+	auditDir := searcher.AuditDir()
+	pattern := filepath.Join(auditDir, session+"-*.jsonl")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return fmt.Errorf("failed to find log files: %w", err)
+	}
+	if len(matches) == 0 {
+		return fmt.Errorf("no audit logs found for session %q", session)
+	}
+
+	t := theme.Current()
+	allPassed := true
+
+	for _, logPath := range matches {
+		fname := filepath.Base(logPath)
+		if err := audit.VerifyIntegrity(logPath); err != nil {
+			allPassed = false
+			if jsonOutput {
+				_ = json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+					"file":     fname,
+					"status":   "FAIL",
+					"error":    err.Error(),
+					"verified": false,
+				})
+			} else {
+				fmt.Printf("%s✗%s %s: FAIL - %v\n", colorize(t.Error), "\033[0m", fname, err)
+			}
+		} else {
+			if jsonOutput {
+				_ = json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+					"file":     fname,
+					"status":   "PASS",
+					"verified": true,
+				})
+			} else {
+				fmt.Printf("%s✓%s %s: PASS\n", colorize(t.Success), "\033[0m", fname)
+			}
+		}
+	}
+
+	if !allPassed {
+		return fmt.Errorf("integrity verification failed for one or more files")
+	}
+	return nil
+}
+
+func runAuditExport(session, format, outputPath string) error {
+	searcher, err := newAuditSearcherFunc()
+	if err != nil {
+		return fmt.Errorf("failed to create searcher: %w", err)
+	}
+
+	q := audit.Query{
+		Sessions: []string{session},
+	}
+
+	result, err := searcher.Search(q)
+	if err != nil {
+		return fmt.Errorf("search failed: %w", err)
+	}
+
+	var w *os.File
+	if outputPath != "" {
+		w, err = os.Create(outputPath)
+		if err != nil {
+			return fmt.Errorf("failed to create output file: %w", err)
+		}
+		defer w.Close()
+	} else {
+		w = os.Stdout
+	}
+
+	switch format {
+	case "json":
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(result.Entries)
+	case "csv":
+		fmt.Fprintln(w, "timestamp,session_id,event_type,actor,target,sequence_num")
+		for _, e := range result.Entries {
+			fmt.Fprintf(w, "%s,%s,%s,%s,%s,%d\n",
+				e.Timestamp.Format(time.RFC3339),
+				e.SessionID, e.EventType, e.Actor, e.Target, e.SequenceNum)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q (use json or csv)", format)
+	}
+}
+
+func runAuditList() error {
+	searcher, err := newAuditSearcherFunc()
+	if err != nil {
+		return fmt.Errorf("failed to create searcher: %w", err)
+	}
+
+	auditDir := searcher.AuditDir()
+	matches, err := filepath.Glob(filepath.Join(auditDir, "*.jsonl"))
+	if err != nil {
+		return fmt.Errorf("failed to list audit logs: %w", err)
+	}
+
+	if len(matches) == 0 {
+		if jsonOutput {
+			return json.NewEncoder(os.Stdout).Encode([]interface{}{})
+		}
+		fmt.Println("No audit logs found.")
+		return nil
+	}
+
+	type logInfo struct {
+		File    string `json:"file"`
+		Size    int64  `json:"size"`
+		ModTime string `json:"mod_time"`
+	}
+
+	var logs []logInfo
+	for _, m := range matches {
+		info, err := os.Stat(m)
+		if err != nil {
+			continue
+		}
+		logs = append(logs, logInfo{
+			File:    filepath.Base(m),
+			Size:    info.Size(),
+			ModTime: info.ModTime().Format(time.RFC3339),
+		})
+	}
+
+	if jsonOutput {
+		return json.NewEncoder(os.Stdout).Encode(logs)
+	}
+
+	fmt.Printf("Audit logs in %s:\n\n", auditDir)
+	for _, l := range logs {
+		fmt.Printf("  %-50s  %8s  %s\n", l.File, formatBytes(l.Size), l.ModTime)
+	}
+	return nil
+}
+
+// --- Helpers ---
+
+func renderAuditEntries(result *audit.QueryResult) error {
+	t := theme.Current()
+
+	for _, e := range result.Entries {
+		var typeColor string
+		switch e.EventType {
+		case audit.EventTypeError:
+			typeColor = colorize(t.Error)
+		case audit.EventTypeSpawn:
+			typeColor = colorize(t.Success)
+		case audit.EventTypeCommand:
+			typeColor = colorize(t.Secondary)
+		default:
+			typeColor = colorize(t.Subtext)
+		}
+
+		ts := e.Timestamp.Format("15:04:05")
+		fmt.Printf("%s %s%-12s%s %-8s %-30s seq=%d\n",
+			ts, typeColor, e.EventType, "\033[0m",
+			e.Actor, e.Target, e.SequenceNum)
+
+		if e.Payload != nil && len(e.Payload) > 0 {
+			payloadJSON, _ := json.Marshal(e.Payload)
+			if len(payloadJSON) > 120 {
+				payloadJSON = append(payloadJSON[:117], "..."...)
+			}
+			fmt.Printf("  payload: %s\n", string(payloadJSON))
+		}
+	}
+
+	if result.Truncated {
+		fmt.Printf("\n(showing %d of %d entries, use --limit to see more)\n", len(result.Entries), result.TotalCount)
+	}
+	return nil
+}
+
+// parseTimeArg parses a time argument that can be RFC3339 or a relative duration.
+// Relative durations: "1h" (1 hour ago), "7d" (7 days ago), "30m" (30 minutes ago).
+func parseTimeArg(s string) (time.Time, error) {
+	// Try RFC3339 first
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+
+	// Try relative duration
+	s = strings.TrimSpace(s)
+	if len(s) < 2 {
+		return time.Time{}, fmt.Errorf("invalid time %q: use RFC3339 or relative like '1h', '7d'", s)
+	}
+
+	unit := s[len(s)-1]
+	numStr := s[:len(s)-1]
+	var n int
+	if _, err := fmt.Sscanf(numStr, "%d", &n); err != nil {
+		return time.Time{}, fmt.Errorf("invalid time %q: %w", s, err)
+	}
+
+	now := time.Now()
+	switch unit {
+	case 'm':
+		return now.Add(-time.Duration(n) * time.Minute), nil
+	case 'h':
+		return now.Add(-time.Duration(n) * time.Hour), nil
+	case 'd':
+		return now.AddDate(0, 0, -n), nil
+	default:
+		return time.Time{}, fmt.Errorf("invalid time unit %q: use m (minutes), h (hours), or d (days)", string(unit))
+	}
+}
+
+// newAuditSearcherFunc is the factory for creating audit searchers.
+// Tests override this to inject a mock searcher.
+var newAuditSearcherFunc = func() (*audit.Searcher, error) {
+	return audit.NewSearcher()
+}

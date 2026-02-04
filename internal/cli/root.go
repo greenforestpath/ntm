@@ -2920,6 +2920,7 @@ func init() {
 		newRedactCmd(),
 		newBugsCmd(),
 		newCassCmd(),
+		newAuditCmd(),
 		newHooksCmd(),
 		newHealthCmd(),
 		newDoctorCmd(),
