@@ -116,6 +116,8 @@ Primary usage:
 	bindEnsembleSharedFlags(cmd, &opts)
 	cmd.AddCommand(newEnsembleSpawnCmd())
 	cmd.AddCommand(newEnsemblePresetsCmd())
+	cmd.AddCommand(newEnsembleExportCmd())
+	cmd.AddCommand(newEnsembleImportCmd())
 	cmd.AddCommand(newEnsembleStatusCmd())
 	cmd.AddCommand(newEnsembleStopCmd())
 	cmd.AddCommand(newEnsembleSuggestCmd())
