@@ -659,3 +659,112 @@ func TestDependencyGraph_ExecutedCount(t *testing.T) {
 		t.Errorf("ExecutedCount() = %d, want 3", count)
 	}
 }
+
+func TestFindUnreachable(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		Steps: []Step{
+			{ID: "a", Prompt: "step a"},
+			{ID: "b", Prompt: "step b", DependsOn: []string{"a", "nonexistent"}}, // depends on nonexistent
+		},
+	}
+
+	g := NewDependencyGraph(w)
+	errs := g.Validate()
+
+	// Should find that b has a missing dependency
+	found := false
+	for _, e := range errs {
+		if e.Type == "missing_dep" && len(e.Steps) > 0 && e.Steps[0] == "b" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected missing_dep error for step b, got %v", errs)
+	}
+}
+
+func TestResolve_WithCycle(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		Steps: []Step{
+			{ID: "a", Prompt: "step a", DependsOn: []string{"c"}},
+			{ID: "b", Prompt: "step b", DependsOn: []string{"a"}},
+			{ID: "c", Prompt: "step c", DependsOn: []string{"b"}}, // creates cycle
+		},
+	}
+
+	g := NewDependencyGraph(w)
+	plan := g.Resolve()
+
+	if plan.Valid {
+		t.Error("Resolve() should return invalid plan for cyclic graph")
+	}
+	if len(plan.Errors) == 0 {
+		t.Error("Resolve() should return errors for cyclic graph")
+	}
+
+	// Check that cycle error is present
+	found := false
+	for _, e := range plan.Errors {
+		if e.Type == "cycle" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected cycle error, got %v", plan.Errors)
+	}
+}
+
+func TestResolve_WithLevels(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		Steps: []Step{
+			{ID: "a", Prompt: "step a"},                         // level 0
+			{ID: "b", Prompt: "step b"},                         // level 0
+			{ID: "c", Prompt: "step c", DependsOn: []string{"a"}}, // level 1
+			{ID: "d", Prompt: "step d", DependsOn: []string{"b"}}, // level 1
+			{ID: "e", Prompt: "step e", DependsOn: []string{"c", "d"}}, // level 2
+		},
+	}
+
+	g := NewDependencyGraph(w)
+	plan := g.Resolve()
+
+	if !plan.Valid {
+		t.Errorf("Resolve() returned invalid plan: %v", plan.Errors)
+	}
+
+	// Should have at least 3 levels
+	if len(plan.Levels) < 3 {
+		t.Errorf("expected at least 3 levels, got %d", len(plan.Levels))
+	}
+
+	// First level should have a and b (no deps)
+	if len(plan.Levels[0]) != 2 {
+		t.Errorf("first level should have 2 steps (a, b), got %d", len(plan.Levels[0]))
+	}
+
+	// e should be in order after c and d
+	eIdx := -1
+	cIdx := -1
+	dIdx := -1
+	for i, id := range plan.Order {
+		switch id {
+		case "e":
+			eIdx = i
+		case "c":
+			cIdx = i
+		case "d":
+			dIdx = i
+		}
+	}
+	if eIdx < cIdx || eIdx < dIdx {
+		t.Error("step e should come after c and d in execution order")
+	}
+}
