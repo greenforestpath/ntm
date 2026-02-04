@@ -230,7 +230,10 @@ func getCommandsContent() *DocsContent {
 				Body: `--robot-capabilities: Machine-discoverable API schema
 --robot-docs: Documentation (this command)
 --robot-version: Version and build info
---robot-help: Human-readable help text`,
+--robot-help: Human-readable help text
+--robot-slb-pending: List SLB pending approvals
+--robot-slb-approve=ID: Approve SLB request
+--robot-slb-deny=ID: Deny SLB request`,
 			},
 		},
 	}

@@ -931,6 +931,35 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Examples: []string{"ntm --robot-dcg-check --command='rm -rf /tmp'"},
 		},
 		{
+			Name:        "slb-pending",
+			Flag:        "--robot-slb-pending",
+			Category:    "utility",
+			Description: "List pending SLB approval requests.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-slb-pending"},
+		},
+		{
+			Name:        "slb-approve",
+			Flag:        "--robot-slb-approve",
+			Category:    "utility",
+			Description: "Approve an SLB request by ID.",
+			Parameters: []RobotParameter{
+				{Name: "id", Flag: "--robot-slb-approve", Type: "string", Required: true, Description: "Request ID"},
+			},
+			Examples: []string{"ntm --robot-slb-approve=req-123"},
+		},
+		{
+			Name:        "slb-deny",
+			Flag:        "--robot-slb-deny",
+			Category:    "utility",
+			Description: "Deny an SLB request by ID.",
+			Parameters: []RobotParameter{
+				{Name: "id", Flag: "--robot-slb-deny", Type: "string", Required: true, Description: "Request ID"},
+				{Name: "reason", Flag: "--reason", Type: "string", Required: false, Description: "Optional denial reason"},
+			},
+			Examples: []string{"ntm --robot-slb-deny=req-123 --reason='Too risky'"},
+		},
+		{
 			Name:        "ru-sync",
 			Flag:        "--robot-ru-sync",
 			Category:    "utility",

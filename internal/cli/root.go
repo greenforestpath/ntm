@@ -409,6 +409,27 @@ Shell Integration:
 			}
 			return
 		}
+		if robotSLBPending {
+			if err := robot.PrintSLBPending(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotSLBApprove != "" {
+			if err := robot.PrintSLBApprove(robotSLBApprove); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if robotSLBDeny != "" {
+			if err := robot.PrintSLBDeny(robotSLBDeny, slbReason); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if robotRUSync {
 			opts := robot.RUSyncOptions{
 				DryRun: robotDryRun,
@@ -1701,13 +1722,16 @@ func loadRobotSendMessage(msg, msgFile string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open msg file: %w", err)
 	}
-	defer f.Close()
 
 	// Read up to 10MB + 1 byte to detect truncation
 	limit := int64(10 * 1024 * 1024)
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
+		_ = f.Close()
 		return "", fmt.Errorf("read msg file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("close msg file: %w", err)
 	}
 
 	if int64(len(data)) > limit {
@@ -2094,6 +2118,12 @@ var (
 	robotDCGStatus bool   // --robot-dcg-status flag
 	robotDCGCheck  bool   // --robot-dcg-check / --robot-guard flag
 	robotDCGCmd    string // --command / --cmd flag (required with --robot-dcg-check / --robot-guard)
+
+	// Robot-slb flags for SLB approvals
+	robotSLBPending bool   // --robot-slb-pending flag
+	robotSLBApprove string // --robot-slb-approve flag
+	robotSLBDeny    string // --robot-slb-deny flag
+	slbReason       string // --reason (optional with --robot-slb-deny)
 
 	// Robot-ru-sync flag for RU
 	robotRUSync bool // --robot-ru-sync flag
@@ -2523,6 +2553,12 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotDCGCheck, "robot-guard", false, "DEPRECATED: use --robot-dcg-check")
 	rootCmd.Flags().StringVar(&robotDCGCmd, "command", "", "Command to preflight with --robot-dcg-check / --robot-guard (no execution). Example: --command='rm -rf /tmp'")
 	rootCmd.Flags().StringVar(&robotDCGCmd, "cmd", "", "DEPRECATED: use --command")
+
+	// Robot-slb flags for SLB approvals
+	rootCmd.Flags().BoolVar(&robotSLBPending, "robot-slb-pending", false, "List pending SLB approval requests. JSON output. Example: ntm --robot-slb-pending")
+	rootCmd.Flags().StringVar(&robotSLBApprove, "robot-slb-approve", "", "Approve SLB request by ID. JSON output. Example: ntm --robot-slb-approve=req-123")
+	rootCmd.Flags().StringVar(&robotSLBDeny, "robot-slb-deny", "", "Deny SLB request by ID. JSON output. Example: ntm --robot-slb-deny=req-123 --reason='Too risky'")
+	rootCmd.Flags().StringVar(&slbReason, "reason", "", "Reason for SLB denial. Optional with --robot-slb-deny")
 
 	// Robot-ru-sync flag for RU
 	rootCmd.Flags().BoolVar(&robotRUSync, "robot-ru-sync", false, "Run ru sync with JSON output. Optional with --dry-run. Example: ntm --robot-ru-sync")
