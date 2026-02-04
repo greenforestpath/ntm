@@ -7,6 +7,8 @@ import (
 )
 
 func TestAgentType_String(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		at   AgentType
 		want string
@@ -14,6 +16,11 @@ func TestAgentType_String(t *testing.T) {
 		{AgentTypeClaudeCode, "cc"},
 		{AgentTypeCodex, "cod"},
 		{AgentTypeGemini, "gmi"},
+		{AgentTypeOllama, "ollama"},
+		{AgentTypeCursor, "cursor"},
+		{AgentTypeWindsurf, "windsurf"},
+		{AgentTypeAider, "aider"},
+		{AgentTypeUser, "user"},
 		{AgentTypeUnknown, "unknown"},
 	}
 
@@ -25,6 +32,8 @@ func TestAgentType_String(t *testing.T) {
 }
 
 func TestAgentType_DisplayName(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		at   AgentType
 		want string
@@ -32,17 +41,25 @@ func TestAgentType_DisplayName(t *testing.T) {
 		{AgentTypeClaudeCode, "Claude Code"},
 		{AgentTypeCodex, "Codex CLI"},
 		{AgentTypeGemini, "Gemini CLI"},
+		{AgentTypeOllama, "Ollama"},
+		{AgentTypeCursor, "Cursor"},
+		{AgentTypeWindsurf, "Windsurf"},
+		{AgentTypeAider, "Aider"},
+		{AgentTypeUser, "User"},
 		{AgentTypeUnknown, "Unknown"},
+		{AgentType("anything-else"), "Unknown"},
 	}
 
 	for _, tt := range tests {
 		if got := tt.at.DisplayName(); got != tt.want {
-			t.Errorf("AgentType.DisplayName() = %q, want %q", got, tt.want)
+			t.Errorf("AgentType(%q).DisplayName() = %q, want %q", tt.at, got, tt.want)
 		}
 	}
 }
 
 func TestAgentType_IsValid(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		at   AgentType
 		want bool
@@ -50,8 +67,14 @@ func TestAgentType_IsValid(t *testing.T) {
 		{AgentTypeClaudeCode, true},
 		{AgentTypeCodex, true},
 		{AgentTypeGemini, true},
+		{AgentTypeOllama, true},
+		{AgentTypeCursor, true},
+		{AgentTypeWindsurf, true},
+		{AgentTypeAider, true},
+		{AgentTypeUser, true},
 		{AgentTypeUnknown, false},
 		{AgentType("invalid"), false},
+		{AgentType(""), false},
 	}
 
 	for _, tt := range tests {
