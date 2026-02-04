@@ -869,7 +869,7 @@ func TestGenerateWorkPrompt(t *testing.T) {
 	if !containsAnyStr(prompt, "High priority") {
 		t.Error("Prompt should contain reasons")
 	}
-	if !containsAnyStr(prompt, "br update test-123 --status done") {
+	if !containsAnyStr(prompt, "br close test-123 --reason \"Completed\"") {
 		t.Error("Prompt should contain completion command")
 	}
 

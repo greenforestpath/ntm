@@ -338,8 +338,13 @@ func (e *Engine) Deny(ctx context.Context, id string, approverID string, reason 
 
 // WaitForApproval blocks until the approval is approved, denied, or times out.
 func (e *Engine) WaitForApproval(ctx context.Context, id string, timeout time.Duration) (*state.Approval, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	baseCtx := ctx
+
 	// First check current status
-	approval, err := e.Check(ctx, id)
+	approval, err := e.Check(baseCtx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -368,26 +373,19 @@ func (e *Engine) WaitForApproval(ctx context.Context, id string, timeout time.Du
 		e.waitersMu.Unlock()
 	}()
 
-	// Wait with timeout
-	timer := time.NewTimer(timeout)
-	defer func() {
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-	}()
+	waitCtx, cancel := context.WithTimeout(baseCtx, timeout)
+	defer cancel()
 
 	select {
 	case <-waitCh:
 		// Approval was decided
-		return e.Check(ctx, id)
-	case <-timer.C:
+		return e.Check(baseCtx, id)
+	case <-waitCtx.Done():
+		if baseCtx.Err() != nil {
+			return nil, baseCtx.Err()
+		}
 		// Timeout - check final status
-		return e.Check(ctx, id)
-	case <-ctx.Done():
-		return nil, ctx.Err()
+		return e.Check(baseCtx, id)
 	}
 }
 

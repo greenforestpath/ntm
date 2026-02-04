@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Client handles tmux operations, optionally on a remote host
@@ -68,9 +69,16 @@ func binaryExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-// Run executes a tmux command
+// DefaultCommandTimeout is the maximum time a tmux command may run before
+// being killed.  This prevents indefinite hangs when the tmux server is
+// overloaded (e.g. during parallel tests) or a pane/session is wedged.
+const DefaultCommandTimeout = 30 * time.Second
+
+// Run executes a tmux command with a default timeout.
 func (c *Client) Run(args ...string) (string, error) {
-	return c.RunContext(context.Background(), args...)
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultCommandTimeout)
+	defer cancel()
+	return c.RunContext(ctx, args...)
 }
 
 // RunContext executes a tmux command with cancellation support.

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -356,16 +357,22 @@ func captureStdout(t *testing.T, f func() error) (string, error) {
 	}
 	os.Stdout = w
 
+	// Read in a background goroutine to prevent deadlock when f writes
+	// more than the pipe buffer (64 KB on Linux).
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&buf, r)
+		close(done)
+	}()
+
 	runErr := f()
 	_ = w.Close()
 	os.Stdout = old
 
-	output, readErr := io.ReadAll(r)
+	<-done // wait for reader to drain
 	_ = r.Close()
-	if readErr != nil {
-		t.Fatalf("ReadAll failed: %v", readErr)
-	}
-	return string(output), runErr
+	return buf.String(), runErr
 }
 
 type templateCounts struct {

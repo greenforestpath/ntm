@@ -812,7 +812,7 @@ func generateWorkPrompt(item workItem) string {
 		}
 	}
 
-	sb.WriteString("\nWhen done, mark it completed with: `br update " + item.ID + " --status done`")
+	sb.WriteString("\nWhen done, close it with: `br close " + item.ID + " --reason \"Completed\"`")
 
 	return sb.String()
 }

@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -219,7 +220,9 @@ func WaitForSession(name string, timeout time.Duration) error {
 // CapturePane captures the visible content of a pane.
 func CapturePane(name string, paneIndex int) (string, error) {
 	target := fmt.Sprintf("%s:%d", name, paneIndex)
-	out, err := exec.Command(tmux.BinaryPath(), "capture-pane", "-t", target, "-p").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), tmux.DefaultCommandTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, tmux.BinaryPath(), "capture-pane", "-t", target, "-p").Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to capture pane %s: %w", target, err)
 	}
