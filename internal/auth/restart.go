@@ -14,9 +14,14 @@ import (
 
 // Orchestrator manages the restart process
 type Orchestrator struct {
-	cfg           *config.Config
-	authFlows     map[string]AuthFlow
-	captureOutput func(string, int) (string, error)
+	cfg                 *config.Config
+	authFlows           map[string]AuthFlow
+	captureOutput       func(string, int) (string, error)
+	sendKeys            func(string, string, bool) error
+	sendInterrupt       func(string) error
+	buildPaneCommand    func(string, string) (string, error)
+	sanitizePaneCommand func(string) (string, error)
+	sleep               func(time.Duration)
 }
 
 // AuthFlow interface for provider-specific auth actions
@@ -28,9 +33,14 @@ type AuthFlow interface {
 // NewOrchestrator creates a new Orchestrator
 func NewOrchestrator(cfg *config.Config) *Orchestrator {
 	return &Orchestrator{
-		cfg:           cfg,
-		authFlows:     make(map[string]AuthFlow),
-		captureOutput: tmux.CapturePaneOutput,
+		cfg:                 cfg,
+		authFlows:           make(map[string]AuthFlow),
+		captureOutput:       tmux.CapturePaneOutput,
+		sendKeys:            tmux.SendKeys,
+		sendInterrupt:       tmux.SendInterrupt,
+		buildPaneCommand:    tmux.BuildPaneCommand,
+		sanitizePaneCommand: tmux.SanitizePaneCommand,
+		sleep:               time.Sleep,
 	}
 }
 
@@ -75,22 +85,22 @@ func (o *Orchestrator) TerminateSession(paneID string, provider string) error {
 
 	// Try provider-specific exit command first if available
 	if prov != nil && prov.ExitCommand() != "" {
-		_ = tmux.SendKeys(paneID, prov.ExitCommand(), true)
-		time.Sleep(1 * time.Second)
+		_ = o.sendKeys(paneID, prov.ExitCommand(), true)
+		o.sleep(1 * time.Second)
 	}
 
 	// Try graceful exit (Ctrl+C)
-	if err := tmux.SendInterrupt(paneID); err != nil {
+	if err := o.sendInterrupt(paneID); err != nil {
 		return err
 	}
-	time.Sleep(1 * time.Second)
+	o.sleep(1 * time.Second)
 
 	// Check if still active (heuristic: check process or output)
 	// For now, assume we need a second Ctrl+C or explicit exit
-	if err := tmux.SendInterrupt(paneID); err != nil {
+	if err := o.sendInterrupt(paneID); err != nil {
 		return err
 	}
-	time.Sleep(1 * time.Second)
+	o.sleep(1 * time.Second)
 
 	return nil
 }
@@ -172,16 +182,16 @@ func (o *Orchestrator) StartNewAgentSession(ctx RestartContext) error {
 	}
 
 	// Sanitize and build proper shell command with cd
-	safeAgentCmd, err := tmux.SanitizePaneCommand(agentCmd)
+	safeAgentCmd, err := o.sanitizePaneCommand(agentCmd)
 	if err != nil {
 		return fmt.Errorf("invalid agent command: %w", err)
 	}
 
-	cmd, err := tmux.BuildPaneCommand(ctx.ProjectDir, safeAgentCmd)
+	cmd, err := o.buildPaneCommand(ctx.ProjectDir, safeAgentCmd)
 	if err != nil {
 		return fmt.Errorf("building pane command: %w", err)
 	}
 
 	// For now, just run the agent command
-	return tmux.SendKeys(ctx.PaneID, cmd, true)
+	return o.sendKeys(ctx.PaneID, cmd, true)
 }

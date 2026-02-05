@@ -1,6 +1,9 @@
 package auth
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // =============================================================================
 // NewClaudeAuthFlow
@@ -30,6 +33,77 @@ func TestNewClaudeAuthFlow(t *testing.T) {
 			t.Error("isRemote should be true")
 		}
 	})
+}
+
+// =============================================================================
+// InitiateAuth
+// =============================================================================
+
+func TestClaudeAuthFlow_InitiateAuth(t *testing.T) {
+	t.Parallel()
+
+	flow := NewClaudeAuthFlow(false)
+	var gotPane string
+	var gotKeys string
+	var gotEnter bool
+
+	flow.sendKeys = func(paneID, keys string, enter bool) error {
+		gotPane = paneID
+		gotKeys = keys
+		gotEnter = enter
+		return nil
+	}
+
+	if err := flow.InitiateAuth("pane-1"); err != nil {
+		t.Fatalf("InitiateAuth error: %v", err)
+	}
+	if gotPane != "pane-1" {
+		t.Errorf("paneID = %q, want %q", gotPane, "pane-1")
+	}
+	if gotKeys != "/login" {
+		t.Errorf("keys = %q, want %q", gotKeys, "/login")
+	}
+	if !gotEnter {
+		t.Error("expected enter=true")
+	}
+}
+
+// =============================================================================
+// SendContinuation
+// =============================================================================
+
+func TestClaudeAuthFlow_SendContinuation(t *testing.T) {
+	t.Parallel()
+
+	flow := NewClaudeAuthFlow(false)
+	var slept time.Duration
+	var gotPane string
+	var gotPrompt string
+	var gotEnter bool
+
+	flow.sleep = func(d time.Duration) { slept = d }
+	flow.pasteKeys = func(paneID, prompt string, enter bool) error {
+		gotPane = paneID
+		gotPrompt = prompt
+		gotEnter = enter
+		return nil
+	}
+
+	if err := flow.SendContinuation("pane-2", "continue now"); err != nil {
+		t.Fatalf("SendContinuation error: %v", err)
+	}
+	if slept != 500*time.Millisecond {
+		t.Errorf("sleep = %v, want %v", slept, 500*time.Millisecond)
+	}
+	if gotPane != "pane-2" {
+		t.Errorf("paneID = %q, want %q", gotPane, "pane-2")
+	}
+	if gotPrompt != "continue now" {
+		t.Errorf("prompt = %q, want %q", gotPrompt, "continue now")
+	}
+	if !gotEnter {
+		t.Error("expected enter=true")
+	}
 }
 
 // =============================================================================

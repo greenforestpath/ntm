@@ -30,19 +30,25 @@ type AuthResult struct {
 
 // ClaudeAuthFlow handles the authentication process for Claude Code
 type ClaudeAuthFlow struct {
-	isRemote bool
+	isRemote  bool
+	sendKeys  func(string, string, bool) error
+	pasteKeys func(string, string, bool) error
+	sleep     func(time.Duration)
 }
 
 // NewClaudeAuthFlow creates a new Claude auth flow handler
 func NewClaudeAuthFlow(isRemote bool) *ClaudeAuthFlow {
 	return &ClaudeAuthFlow{
-		isRemote: isRemote,
+		isRemote:  isRemote,
+		sendKeys:  tmux.SendKeys,
+		pasteKeys: tmux.PasteKeys,
+		sleep:     time.Sleep,
 	}
 }
 
 // InitiateAuth starts the authentication process
 func (f *ClaudeAuthFlow) InitiateAuth(paneID string) error {
-	return tmux.SendKeys(paneID, "/login", true)
+	return f.sendKeys(paneID, "/login", true)
 }
 
 // MonitorAuth watches the pane output for auth prompts and handles them
@@ -91,10 +97,10 @@ func (f *ClaudeAuthFlow) MonitorAuth(ctx context.Context, paneID string) (*AuthR
 // SendContinuation sends a prompt to continue after auth is complete
 func (f *ClaudeAuthFlow) SendContinuation(paneID, prompt string) error {
 	// Wait briefly for prompt to be ready
-	time.Sleep(500 * time.Millisecond)
+	f.sleep(500 * time.Millisecond)
 
 	// Send continuation prompt
-	return tmux.PasteKeys(paneID, prompt, true)
+	return f.pasteKeys(paneID, prompt, true)
 }
 
 // claudeLoginURLRegex matches the Claude login URL

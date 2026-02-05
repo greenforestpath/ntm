@@ -530,6 +530,39 @@ func TestContextMonitor_UnregisterAgent(t *testing.T) {
 	}
 }
 
+func TestContextMonitor_SetAgentType(t *testing.T) {
+	t.Parallel()
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+
+	// Register an agent
+	monitor.RegisterAgent("agent-1", "pane-1", "claude-opus-4")
+
+	state := monitor.GetState("agent-1")
+	if state == nil {
+		t.Fatal("expected agent-1 to be registered")
+	}
+	if state.AgentType != "claude" { // claude-opus-4 normalizes to claude
+		t.Errorf("initial AgentType = %q, want %q", state.AgentType, "claude")
+	}
+
+	// Update agent type
+	monitor.SetAgentType("agent-1", "codex")
+
+	state = monitor.GetState("agent-1")
+	if state.AgentType != "codex" {
+		t.Errorf("after SetAgentType, AgentType = %q, want %q", state.AgentType, "codex")
+	}
+
+	// SetAgentType on non-existent agent should not panic
+	monitor.SetAgentType("non-existent", "gemini")
+
+	// Verify non-existent agent wasn't created
+	if monitor.GetState("non-existent") != nil {
+		t.Error("SetAgentType should not create a new agent")
+	}
+}
+
 func TestEstimatorInterfaces(t *testing.T) {
 	t.Parallel()
 

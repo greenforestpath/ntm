@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +33,21 @@ func TestNewOrchestrator(t *testing.T) {
 	}
 	if orch.captureOutput == nil {
 		t.Error("captureOutput should be set")
+	}
+	if orch.sendKeys == nil {
+		t.Error("sendKeys should be set")
+	}
+	if orch.sendInterrupt == nil {
+		t.Error("sendInterrupt should be set")
+	}
+	if orch.buildPaneCommand == nil {
+		t.Error("buildPaneCommand should be set")
+	}
+	if orch.sanitizePaneCommand == nil {
+		t.Error("sanitizePaneCommand should be set")
+	}
+	if orch.sleep == nil {
+		t.Error("sleep should be set")
 	}
 }
 
@@ -220,4 +237,202 @@ func TestRestartContextFields(t *testing.T) {
 	if ctx.PaneIndex != 3 {
 		t.Errorf("PaneIndex = %d", ctx.PaneIndex)
 	}
+}
+
+// =============================================================================
+// TerminateSession
+// =============================================================================
+
+func TestOrchestrator_TerminateSession(t *testing.T) {
+	t.Parallel()
+
+	t.Run("uses provider exit command and interrupts twice", func(t *testing.T) {
+		t.Parallel()
+
+		orch := NewOrchestrator(config.Default())
+		orch.sleep = func(time.Duration) {}
+
+		var gotExit []string
+		orch.sendKeys = func(paneID, keys string, enter bool) error {
+			gotExit = append(gotExit, keys)
+			return nil
+		}
+
+		interrupts := 0
+		orch.sendInterrupt = func(paneID string) error {
+			interrupts++
+			return nil
+		}
+
+		if err := orch.TerminateSession("pane-1", "claude"); err != nil {
+			t.Fatalf("TerminateSession error: %v", err)
+		}
+		if len(gotExit) != 1 || gotExit[0] != "/exit" {
+			t.Errorf("exit commands = %v, want [/exit]", gotExit)
+		}
+		if interrupts != 2 {
+			t.Errorf("interrupts = %d, want 2", interrupts)
+		}
+	})
+
+	t.Run("unknown provider skips exit command", func(t *testing.T) {
+		t.Parallel()
+
+		orch := NewOrchestrator(config.Default())
+		orch.sleep = func(time.Duration) {}
+
+		calledExit := false
+		orch.sendKeys = func(paneID, keys string, enter bool) error {
+			calledExit = true
+			return nil
+		}
+		interrupts := 0
+		orch.sendInterrupt = func(paneID string) error {
+			interrupts++
+			return nil
+		}
+
+		if err := orch.TerminateSession("pane-2", "unknown"); err != nil {
+			t.Fatalf("TerminateSession error: %v", err)
+		}
+		if calledExit {
+			t.Error("expected no exit command for unknown provider")
+		}
+		if interrupts != 2 {
+			t.Errorf("interrupts = %d, want 2", interrupts)
+		}
+	})
+
+	t.Run("interrupt error surfaces", func(t *testing.T) {
+		t.Parallel()
+
+		orch := NewOrchestrator(config.Default())
+		orch.sleep = func(time.Duration) {}
+
+		orch.sendInterrupt = func(paneID string) error {
+			return errors.New("boom")
+		}
+
+		if err := orch.TerminateSession("pane-3", "claude"); err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+}
+
+// =============================================================================
+// StartNewAgentSession
+// =============================================================================
+
+func TestOrchestrator_StartNewAgentSession(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unknown provider", func(t *testing.T) {
+		t.Parallel()
+
+		orch := NewOrchestrator(config.Default())
+		if err := orch.StartNewAgentSession(RestartContext{Provider: "unknown"}); err == nil {
+			t.Fatal("expected error for unknown provider")
+		}
+	})
+
+	t.Run("build and send command", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := config.Default()
+		cfg.Agents.Claude = "claude --model {{.Model}} --session {{.SessionName}} --pane {{.PaneIndex}}"
+
+		orch := NewOrchestrator(cfg)
+		orch.sleep = func(time.Duration) {}
+
+		var sanitizeInput string
+		orch.sanitizePaneCommand = func(cmd string) (string, error) {
+			sanitizeInput = cmd
+			return "sanitized-cmd", nil
+		}
+		var buildDir string
+		var buildCmd string
+		orch.buildPaneCommand = func(dir, cmd string) (string, error) {
+			buildDir = dir
+			buildCmd = cmd
+			return "built-cmd", nil
+		}
+		var sent string
+		orch.sendKeys = func(paneID, keys string, enter bool) error {
+			sent = keys
+			return nil
+		}
+
+		ctx := RestartContext{
+			PaneID:      "%1",
+			Provider:    "claude",
+			ModelAlias:  "",
+			SessionName: "proj",
+			PaneIndex:   2,
+			ProjectDir:  "/data/projects/ntm",
+		}
+
+		if err := orch.StartNewAgentSession(ctx); err != nil {
+			t.Fatalf("StartNewAgentSession error: %v", err)
+		}
+		if sanitizeInput == "" {
+			t.Fatal("expected sanitize to receive a command")
+		}
+		if !strings.Contains(sanitizeInput, "claude --model") || !strings.Contains(sanitizeInput, "proj") {
+			t.Errorf("sanitize input = %q, want template fields expanded", sanitizeInput)
+		}
+		if buildDir != ctx.ProjectDir {
+			t.Errorf("build dir = %q, want %q", buildDir, ctx.ProjectDir)
+		}
+		if buildCmd != "sanitized-cmd" {
+			t.Errorf("build cmd = %q, want %q", buildCmd, "sanitized-cmd")
+		}
+		if sent != "built-cmd" {
+			t.Errorf("sent keys = %q, want %q", sent, "built-cmd")
+		}
+	})
+
+	t.Run("sanitize error surfaces", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := config.Default()
+		orch := NewOrchestrator(cfg)
+		orch.sanitizePaneCommand = func(cmd string) (string, error) {
+			return "", errors.New("bad cmd")
+		}
+
+		ctx := RestartContext{
+			PaneID:      "%2",
+			Provider:    "claude",
+			SessionName: "proj",
+			PaneIndex:   1,
+			ProjectDir:  "/data/projects/ntm",
+		}
+		if err := orch.StartNewAgentSession(ctx); err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("build error surfaces", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := config.Default()
+		orch := NewOrchestrator(cfg)
+		orch.sanitizePaneCommand = func(cmd string) (string, error) {
+			return "ok", nil
+		}
+		orch.buildPaneCommand = func(dir, cmd string) (string, error) {
+			return "", errors.New("build fail")
+		}
+
+		ctx := RestartContext{
+			PaneID:      "%3",
+			Provider:    "claude",
+			SessionName: "proj",
+			PaneIndex:   1,
+			ProjectDir:  "/data/projects/ntm",
+		}
+		if err := orch.StartNewAgentSession(ctx); err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
 }
