@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -235,6 +236,229 @@ func TestSessionsEndpoint(t *testing.T) {
 	}
 	if _, ok := resp["sessions"]; !ok {
 		t.Error("Expected sessions field")
+	}
+}
+
+func TestHandleListBeadsStub(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub br uses sh")
+	}
+	writeStubBr(t, "bd-1")
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/beads", nil)
+	rec := httptest.NewRecorder()
+	srv.handleListBeads(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := int(resp["count"].(float64)); got != 1 {
+		t.Fatalf("count=%d, want 1", got)
+	}
+}
+
+func TestHandleCreateBeadSuccess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub br uses sh")
+	}
+	writeStubBr(t, "bd-2")
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/beads", strings.NewReader(`{"title":"Test bead","priority":"P2"}`))
+	rec := httptest.NewRecorder()
+	srv.handleCreateBead(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, ok := resp["bead"]; !ok {
+		t.Fatalf("missing bead in response")
+	}
+}
+
+func TestHandleBeadsStatsAndReady(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub br uses sh")
+	}
+	writeStubBr(t, "bd-3")
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+
+	statsReq := httptest.NewRequest(http.MethodGet, "/api/v1/beads/stats", nil)
+	statsRec := httptest.NewRecorder()
+	srv.handleBeadsStats(statsRec, statsReq)
+	if statsRec.Code != http.StatusOK {
+		t.Fatalf("stats status=%d, want %d", statsRec.Code, http.StatusOK)
+	}
+	var statsResp map[string]interface{}
+	if err := json.NewDecoder(statsRec.Body).Decode(&statsResp); err != nil {
+		t.Fatalf("decode stats response: %v", err)
+	}
+	if _, ok := statsResp["stats"]; !ok {
+		t.Fatalf("missing stats in response")
+	}
+
+	readyReq := httptest.NewRequest(http.MethodGet, "/api/v1/beads/ready", nil)
+	readyRec := httptest.NewRecorder()
+	srv.handleBeadsReady(readyRec, readyReq)
+	if readyRec.Code != http.StatusOK {
+		t.Fatalf("ready status=%d, want %d", readyRec.Code, http.StatusOK)
+	}
+	var readyResp map[string]interface{}
+	if err := json.NewDecoder(readyRec.Body).Decode(&readyResp); err != nil {
+		t.Fatalf("decode ready response: %v", err)
+	}
+	if got := int(readyResp["count"].(float64)); got != 0 {
+		t.Fatalf("ready count=%d, want 0", got)
+	}
+}
+
+func TestHandleBeadsBlockedAndInProgress(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub br uses sh")
+	}
+	writeStubBr(t, "bd-4")
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+
+	blockedReq := httptest.NewRequest(http.MethodGet, "/api/v1/beads/blocked", nil)
+	blockedRec := httptest.NewRecorder()
+	srv.handleBeadsBlocked(blockedRec, blockedReq)
+	if blockedRec.Code != http.StatusOK {
+		t.Fatalf("blocked status=%d, want %d", blockedRec.Code, http.StatusOK)
+	}
+	var blockedResp map[string]interface{}
+	if err := json.NewDecoder(blockedRec.Body).Decode(&blockedResp); err != nil {
+		t.Fatalf("decode blocked response: %v", err)
+	}
+	if got := int(blockedResp["count"].(float64)); got != 0 {
+		t.Fatalf("blocked count=%d, want 0", got)
+	}
+
+	inProgressReq := httptest.NewRequest(http.MethodGet, "/api/v1/beads/in-progress", nil)
+	inProgressRec := httptest.NewRecorder()
+	srv.handleBeadsInProgress(inProgressRec, inProgressReq)
+	if inProgressRec.Code != http.StatusOK {
+		t.Fatalf("in-progress status=%d, want %d", inProgressRec.Code, http.StatusOK)
+	}
+	var inProgressResp map[string]interface{}
+	if err := json.NewDecoder(inProgressRec.Body).Decode(&inProgressResp); err != nil {
+		t.Fatalf("decode in-progress response: %v", err)
+	}
+	if got := int(inProgressResp["count"].(float64)); got != 1 {
+		t.Fatalf("in-progress count=%d, want 1", got)
+	}
+}
+
+func TestHandleGetUpdateCloseClaimBead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub br uses sh")
+	}
+	writeStubBr(t, "bd-5")
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/beads/bd-5", nil)
+	getCtx := chi.NewRouteContext()
+	getCtx.URLParams.Add("id", "bd-5")
+	getReq = getReq.WithContext(context.WithValue(getReq.Context(), chi.RouteCtxKey, getCtx))
+	getRec := httptest.NewRecorder()
+	srv.handleGetBead(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status=%d, want %d", getRec.Code, http.StatusOK)
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPatch, "/api/v1/beads/bd-5", strings.NewReader(`{"title":"Updated"}`))
+	upCtx := chi.NewRouteContext()
+	upCtx.URLParams.Add("id", "bd-5")
+	updateReq = updateReq.WithContext(context.WithValue(updateReq.Context(), chi.RouteCtxKey, upCtx))
+	updateRec := httptest.NewRecorder()
+	srv.handleUpdateBead(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update status=%d, want %d", updateRec.Code, http.StatusOK)
+	}
+
+	closeReq := httptest.NewRequest(http.MethodPost, "/api/v1/beads/bd-5/close", nil)
+	closeCtx := chi.NewRouteContext()
+	closeCtx.URLParams.Add("id", "bd-5")
+	closeReq = closeReq.WithContext(context.WithValue(closeReq.Context(), chi.RouteCtxKey, closeCtx))
+	closeRec := httptest.NewRecorder()
+	srv.handleCloseBead(closeRec, closeReq)
+	if closeRec.Code != http.StatusOK {
+		t.Fatalf("close status=%d, want %d", closeRec.Code, http.StatusOK)
+	}
+
+	claimReq := httptest.NewRequest(http.MethodPost, "/api/v1/beads/bd-5/claim", strings.NewReader(`{"assignee":"tester"}`))
+	claimCtx := chi.NewRouteContext()
+	claimCtx.URLParams.Add("id", "bd-5")
+	claimReq = claimReq.WithContext(context.WithValue(claimReq.Context(), chi.RouteCtxKey, claimCtx))
+	claimRec := httptest.NewRecorder()
+	srv.handleClaimBead(claimRec, claimReq)
+	if claimRec.Code != http.StatusOK {
+		t.Fatalf("claim status=%d, want %d", claimRec.Code, http.StatusOK)
+	}
+}
+
+func TestHandleBeadsDaemonAndSync(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub br uses sh")
+	}
+	writeStubBr(t, "bd-6")
+
+	srv, _ := setupTestServer(t)
+	srv.projectDir = t.TempDir()
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/beads/daemon/status", nil)
+	statusRec := httptest.NewRecorder()
+	srv.handleBeadsDaemonStatus(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("daemon status=%d, want %d", statusRec.Code, http.StatusOK)
+	}
+	var statusResp map[string]interface{}
+	if err := json.NewDecoder(statusRec.Body).Decode(&statusResp); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if statusResp["running"] != true {
+		t.Fatalf("running=%v, want true", statusResp["running"])
+	}
+
+	startReq := httptest.NewRequest(http.MethodPost, "/api/v1/beads/daemon/start", nil)
+	startRec := httptest.NewRecorder()
+	srv.handleBeadsDaemonStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("daemon start=%d, want %d", startRec.Code, http.StatusOK)
+	}
+
+	stopReq := httptest.NewRequest(http.MethodPost, "/api/v1/beads/daemon/stop", nil)
+	stopRec := httptest.NewRecorder()
+	srv.handleBeadsDaemonStop(stopRec, stopReq)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("daemon stop=%d, want %d", stopRec.Code, http.StatusOK)
+	}
+
+	syncReq := httptest.NewRequest(http.MethodPost, "/api/v1/beads/sync", nil)
+	syncRec := httptest.NewRecorder()
+	srv.handleBeadsSync(syncRec, syncReq)
+	if syncRec.Code != http.StatusOK {
+		t.Fatalf("sync status=%d, want %d", syncRec.Code, http.StatusOK)
 	}
 }
 

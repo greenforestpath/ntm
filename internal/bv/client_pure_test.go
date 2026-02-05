@@ -257,3 +257,68 @@ func TestBVClientBuildInsightsFromTriage(t *testing.T) {
 		t.Fatalf("Bottlenecks[1] = %#v, want id=bd-c betweenness=0.2", insights.Bottlenecks[1])
 	}
 }
+
+func TestBVClientBuildInsightsFromTriage_NoHealthMetrics(t *testing.T) {
+	t.Parallel()
+
+	client := NewBVClient()
+	triage := &TriageResponse{
+		Triage: TriageData{
+			QuickRef: TriageQuickRef{
+				ActionableCount: 3,
+			},
+			ProjectHealth: nil,
+			Recommendations: []TriageRecommendation{
+				{ID: "bd-x", Breakdown: &ScoreBreakdown{Betweenness: 0.01}},
+			},
+		},
+	}
+
+	insights := client.buildInsightsFromTriage(triage)
+
+	if insights.TotalCount != 0 {
+		t.Fatalf("TotalCount = %d, want 0 when no project health", insights.TotalCount)
+	}
+	if insights.ReadyCount != 3 {
+		t.Fatalf("ReadyCount = %d, want 3", insights.ReadyCount)
+	}
+	if len(insights.Cycles) != 0 {
+		t.Fatalf("Cycles len = %d, want 0", len(insights.Cycles))
+	}
+	if len(insights.Bottlenecks) != 0 {
+		t.Fatalf("Bottlenecks len = %d, want 0", len(insights.Bottlenecks))
+	}
+}
+
+func TestBVClientBuildInsightsFromTriage_NoRecommendations(t *testing.T) {
+	t.Parallel()
+
+	client := NewBVClient()
+	triage := &TriageResponse{
+		Triage: TriageData{
+			QuickRef: TriageQuickRef{
+				ActionableCount: 2,
+			},
+			ProjectHealth: &ProjectHealth{
+				StatusDistribution: map[string]int{"total": 42},
+				GraphMetrics:       &GraphMetrics{CycleCount: 0},
+			},
+			Recommendations: nil,
+		},
+	}
+
+	insights := client.buildInsightsFromTriage(triage)
+
+	if insights.TotalCount != 42 {
+		t.Fatalf("TotalCount = %d, want 42", insights.TotalCount)
+	}
+	if insights.ReadyCount != 2 {
+		t.Fatalf("ReadyCount = %d, want 2", insights.ReadyCount)
+	}
+	if len(insights.Bottlenecks) != 0 {
+		t.Fatalf("Bottlenecks len = %d, want 0", len(insights.Bottlenecks))
+	}
+	if len(insights.Cycles) != 0 {
+		t.Fatalf("Cycles len = %d, want 0", len(insights.Cycles))
+	}
+}

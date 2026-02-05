@@ -478,6 +478,40 @@ func TestValidationErrorsCollection(t *testing.T) {
 	}
 }
 
+func TestValidate_AllowsGeneralSession(t *testing.T) {
+	h := &Handoff{
+		Session: "general",
+		Goal:    "Goal",
+		Now:     "Now",
+		Status:  StatusComplete,
+		Outcome: OutcomeSucceeded,
+	}
+
+	errs := h.Validate()
+	if errs.HasErrors() {
+		if len(errs.ForField("session")) > 0 {
+			t.Fatalf("expected session=general to be allowed, got errors: %v", errs)
+		}
+	}
+}
+
+func TestValidate_TokensPctOutOfRange(t *testing.T) {
+	h := &Handoff{
+		Goal:       "Goal",
+		Now:        "Now",
+		Status:     StatusComplete,
+		Outcome:    OutcomeSucceeded,
+		TokensMax:  100,
+		TokensUsed: 50,
+		TokensPct:  150,
+	}
+
+	errs := h.Validate()
+	if len(errs.ForField("tokens_pct")) != 1 {
+		t.Fatalf("expected tokens_pct validation error, got: %v", errs)
+	}
+}
+
 func TestValidationError(t *testing.T) {
 	err := ValidationError{
 		Field:   "test_field",
