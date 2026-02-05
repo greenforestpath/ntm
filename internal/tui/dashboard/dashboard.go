@@ -1780,27 +1780,45 @@ func (m *Model) fetchSessionDataWithOutputsCtx(ctx context.Context) tea.Cmd {
 
 		plan := planPaneCaptures(panesWithActivity, selectedPaneID, lastCaptured, budget, startCursor)
 
-		var outputs []PaneOutputData
+		// Parallelize output capture
+		type captureResult struct {
+			pane      tmux.PaneActivity
+			output    string
+			err       error
+		}
+
+		resultsCh := make(chan captureResult, len(plan.Targets))
 		for _, pane := range plan.Targets {
-			if err := ctx.Err(); err != nil {
-				return SessionDataWithOutputMsg{Err: err, Duration: time.Since(start), Gen: gen}
-			}
+			go func(p tmux.PaneActivity) {
+				capCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				defer cancel()
+				
+				out, err := tmux.CapturePaneOutputContext(capCtx, p.Pane.ID, outputLines)
+				resultsCh <- captureResult{pane: p, output: out, err: err}
+			}(pane)
+		}
 
-			out, err := tmux.CapturePaneOutputContext(ctx, pane.Pane.ID, outputLines)
-			if err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return SessionDataWithOutputMsg{Err: ctxErr, Duration: time.Since(start), Gen: gen}
+		var outputs []PaneOutputData
+		for i := 0; i < len(plan.Targets); i++ {
+			select {
+			case res := <-resultsCh:
+				if res.err != nil {
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						return SessionDataWithOutputMsg{Err: ctxErr, Duration: time.Since(start), Gen: gen}
+					}
+					continue
 				}
-				continue
+				
+				outputs = append(outputs, PaneOutputData{
+					PaneID:       res.pane.Pane.ID,
+					PaneIndex:    res.pane.Pane.Index,
+					LastActivity: res.pane.LastActivity,
+					Output:       res.output,
+					AgentType:    string(res.pane.Pane.Type), // Simplified mapping
+				})
+			case <-ctx.Done():
+				return SessionDataWithOutputMsg{Err: ctx.Err(), Duration: time.Since(start), Gen: gen}
 			}
-
-			outputs = append(outputs, PaneOutputData{
-				PaneID:       pane.Pane.ID,
-				PaneIndex:    pane.Pane.Index,
-				LastActivity: pane.LastActivity,
-				Output:       out,
-				AgentType:    string(pane.Pane.Type), // Simplified mapping
-			})
 		}
 
 		if err := ctx.Err(); err != nil {
