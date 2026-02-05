@@ -87,3 +87,30 @@ func TestWorkNextCmd(t *testing.T) {
 		t.Errorf("expected Use to be 'next', got %q", cmd.Use)
 	}
 }
+
+func TestResolveTriageFormat(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"json", "json"},
+		{"JSON", "json"},
+		{"markdown", "markdown"},
+		{"md", "markdown"},
+		{"auto", "terminal"},
+		{"", "terminal"},
+		{"unknown", "terminal"},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.input, func(t *testing.T) {
+			t.Parallel()
+			if got := resolveTriageFormat(tc.input); got != tc.want {
+				t.Errorf("resolveTriageFormat(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}

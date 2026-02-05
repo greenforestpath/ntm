@@ -121,6 +121,59 @@ func TestPrintJSON(t *testing.T) {
 	}
 }
 
+func TestWriteJSONPrettyAndCompact(t *testing.T) {
+	payload := map[string]string{"foo": "bar"}
+
+	var prettyBuf bytes.Buffer
+	if err := WriteJSON(&prettyBuf, payload, true); err != nil {
+		t.Fatalf("WriteJSON pretty error: %v", err)
+	}
+	prettyOut := prettyBuf.String()
+	if !strings.Contains(prettyOut, "\n  \"foo\"") {
+		t.Errorf("pretty JSON should be indented, got: %q", prettyOut)
+	}
+
+	var compactBuf bytes.Buffer
+	if err := WriteJSON(&compactBuf, payload, false); err != nil {
+		t.Fatalf("WriteJSON compact error: %v", err)
+	}
+	compactOut := compactBuf.String()
+	if strings.Contains(compactOut, "\n  \"foo\"") {
+		t.Errorf("compact JSON should not be indented, got: %q", compactOut)
+	}
+}
+
+func TestPrintJSONCompactOutput(t *testing.T) {
+	stdout, _ := captureOutput(func() {
+		if err := PrintJSONCompact(map[string]string{"foo": "bar"}); err != nil {
+			t.Fatalf("PrintJSONCompact error: %v", err)
+		}
+	})
+	if strings.Contains(stdout, "\n  \"foo\"") {
+		t.Errorf("PrintJSONCompact output should not be indented: %q", stdout)
+	}
+}
+
+func TestMarshalJSONPrettyAndCompact(t *testing.T) {
+	payload := map[string]string{"foo": "bar"}
+
+	pretty, err := MarshalJSON(payload, true)
+	if err != nil {
+		t.Fatalf("MarshalJSON pretty error: %v", err)
+	}
+	if !strings.Contains(string(pretty), "\n  \"foo\"") {
+		t.Errorf("MarshalJSON pretty should be indented, got: %q", string(pretty))
+	}
+
+	compact, err := MarshalJSON(payload, false)
+	if err != nil {
+		t.Fatalf("MarshalJSON compact error: %v", err)
+	}
+	if strings.Contains(string(compact), "\n  \"foo\"") {
+		t.Errorf("MarshalJSON compact should not be indented, got: %q", string(compact))
+	}
+}
+
 func TestOutputOrText(t *testing.T) {
 	data := map[string]string{"key": "val"}
 	textCalled := false
@@ -324,6 +377,21 @@ func TestTableAlignment(t *testing.T) {
 	// Check for padding/alignment (heuristic)
 	if !strings.Contains(output, "Short ") { // Should have padding
 		t.Error("Table row padding seems missing")
+	}
+}
+
+func TestTableRenderMissingColumns(t *testing.T) {
+	var buf bytes.Buffer
+	tbl := NewTable(&buf, "A", "B", "C")
+	tbl.AddRow("one", "two")
+	tbl.Render()
+
+	output := buf.String()
+	if !strings.Contains(output, "A") || !strings.Contains(output, "B") || !strings.Contains(output, "C") {
+		t.Fatalf("expected headers in output, got: %q", output)
+	}
+	if !strings.Contains(output, "one") || !strings.Contains(output, "two") {
+		t.Fatalf("expected row values in output, got: %q", output)
 	}
 }
 

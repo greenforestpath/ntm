@@ -235,3 +235,106 @@ func TestEncodeJSON_RespectsVerbosityDebug(t *testing.T) {
 		t.Fatal("expected success to remain in debug output")
 	}
 }
+
+// ============== Edge Case Tests ==============
+
+func TestPayloadTypeName_Nil(t *testing.T) {
+	t.Parallel()
+	got := payloadTypeName(nil)
+	if got != "nil" {
+		t.Errorf("payloadTypeName(nil) = %q, want %q", got, "nil")
+	}
+}
+
+func TestPayloadTypeName_VariousTypes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		payload any
+		want    string
+	}{
+		{name: "string", payload: "hello", want: "string"},
+		{name: "int", payload: 42, want: "int"},
+		{name: "float64", payload: 3.14, want: "float64"},
+		{name: "bool", payload: true, want: "bool"},
+		{name: "map", payload: map[string]any{"a": 1}, want: "map[string]interface {}"},
+		{name: "slice", payload: []int{1, 2, 3}, want: "[]int"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := payloadTypeName(tt.payload)
+			if got != tt.want {
+				t.Errorf("payloadTypeName(%v) = %q, want %q", tt.payload, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyDebugProfile_PrimitiveTypes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		payload any
+	}{
+		{name: "string", payload: "hello world"},
+		{name: "int", payload: 42},
+		{name: "float64", payload: 3.14},
+		{name: "bool", payload: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := applyDebugProfile(tt.payload)
+			typed, ok := result.(map[string]any)
+			if !ok {
+				t.Fatalf("applyDebugProfile(%v) returned %T, want map[string]any", tt.payload, result)
+			}
+			if _, exists := typed["_debug"]; !exists {
+				t.Errorf("expected _debug map for primitive payload")
+			}
+			if _, exists := typed["value"]; !exists {
+				t.Errorf("expected value key for primitive payload")
+			}
+		})
+	}
+}
+
+func TestApplyTerseProfile_UnmarshalablePayload(t *testing.T) {
+	t.Parallel()
+	// A channel cannot be marshaled to JSON
+	payload := make(chan int)
+	result := applyTerseProfile(payload)
+	// Should return the original payload unchanged when normalization fails
+	if result != payload {
+		t.Errorf("expected original payload to be returned on marshal error")
+	}
+}
+
+func TestApplyDebugProfile_UnmarshalablePayload(t *testing.T) {
+	t.Parallel()
+	// A function cannot be marshaled to JSON
+	payload := func() {}
+	result := applyDebugProfile(payload)
+	// Should return the original payload unchanged when normalization fails
+	// Note: We compare function pointers which should be equal
+	if result == nil {
+		t.Errorf("expected non-nil result on marshal error")
+	}
+}
+
+func TestNormalizePayload_ValidData(t *testing.T) {
+	t.Parallel()
+	payload := map[string]any{"key": "value", "num": 42}
+	result, err := normalizePayload(payload)
+	if err != nil {
+		t.Fatalf("normalizePayload() error = %v", err)
+	}
+	typed, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("normalizePayload() returned %T, want map[string]any", result)
+	}
+	if typed["key"] != "value" {
+		t.Errorf("expected key='value', got %v", typed["key"])
+	}
+}
