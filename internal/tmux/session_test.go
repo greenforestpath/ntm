@@ -1230,3 +1230,258 @@ func TestParseTagsEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+// ============== Pure Function Tests ==============
+
+func TestFormatPaneName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		session   string
+		agentType string
+		index     int
+		variant   string
+		want      string
+	}{
+		{
+			name:      "claude agent no variant",
+			session:   "myproject",
+			agentType: "cc",
+			index:     1,
+			variant:   "",
+			want:      "myproject__cc_1",
+		},
+		{
+			name:      "codex agent no variant",
+			session:   "myproject",
+			agentType: "cod",
+			index:     2,
+			variant:   "",
+			want:      "myproject__cod_2",
+		},
+		{
+			name:      "gemini agent no variant",
+			session:   "backend",
+			agentType: "gmi",
+			index:     3,
+			variant:   "",
+			want:      "backend__gmi_3",
+		},
+		{
+			name:      "claude with variant",
+			session:   "myproject",
+			agentType: "cc",
+			index:     1,
+			variant:   "opus",
+			want:      "myproject__cc_1_opus",
+		},
+		{
+			name:      "codex with variant",
+			session:   "frontend",
+			agentType: "cod",
+			index:     4,
+			variant:   "gpt5",
+			want:      "frontend__cod_4_gpt5",
+		},
+		{
+			name:      "user pane",
+			session:   "test",
+			agentType: "user",
+			index:     0,
+			variant:   "",
+			want:      "test__user_0",
+		},
+		{
+			name:      "hyphenated session name",
+			session:   "my-cool-project",
+			agentType: "cc",
+			index:     1,
+			variant:   "",
+			want:      "my-cool-project__cc_1",
+		},
+		{
+			name:      "underscore session name",
+			session:   "my_other_project",
+			agentType: "gmi",
+			index:     5,
+			variant:   "pro",
+			want:      "my_other_project__gmi_5_pro",
+		},
+		{
+			name:      "high index",
+			session:   "swarm",
+			agentType: "cc",
+			index:     100,
+			variant:   "",
+			want:      "swarm__cc_100",
+		},
+		{
+			name:      "zero index",
+			session:   "proj",
+			agentType: "user",
+			index:     0,
+			variant:   "",
+			want:      "proj__user_0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatPaneName(tt.session, tt.agentType, tt.index, tt.variant)
+			if got != tt.want {
+				t.Errorf("FormatPaneName(%q, %q, %d, %q) = %q, want %q",
+					tt.session, tt.agentType, tt.index, tt.variant, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNeedsBufferSend(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		agentType AgentType
+		content   string
+		want      bool
+	}{
+		// Gemini cases - uses buffer for newlines
+		{
+			name:      "gemini single line",
+			agentType: AgentGemini,
+			content:   "hello world",
+			want:      false,
+		},
+		{
+			name:      "gemini with newline",
+			agentType: AgentGemini,
+			content:   "line1\nline2",
+			want:      true,
+		},
+		{
+			name:      "gemini multiple newlines",
+			agentType: AgentGemini,
+			content:   "a\nb\nc\nd",
+			want:      true,
+		},
+		{
+			name:      "gemini empty string",
+			agentType: AgentGemini,
+			content:   "",
+			want:      false,
+		},
+		// Codex cases - uses buffer for newlines or large content (>512)
+		{
+			name:      "codex single line short",
+			agentType: AgentCodex,
+			content:   "hello world",
+			want:      false,
+		},
+		{
+			name:      "codex with newline",
+			agentType: AgentCodex,
+			content:   "line1\nline2",
+			want:      true,
+		},
+		{
+			name:      "codex long content no newline",
+			agentType: AgentCodex,
+			content:   strings.Repeat("a", 513),
+			want:      true,
+		},
+		{
+			name:      "codex exactly 512 chars",
+			agentType: AgentCodex,
+			content:   strings.Repeat("b", 512),
+			want:      false,
+		},
+		{
+			name:      "codex 511 chars",
+			agentType: AgentCodex,
+			content:   strings.Repeat("c", 511),
+			want:      false,
+		},
+		{
+			name:      "codex empty string",
+			agentType: AgentCodex,
+			content:   "",
+			want:      false,
+		},
+		// Claude cases - never uses buffer
+		{
+			name:      "claude single line",
+			agentType: AgentClaude,
+			content:   "hello world",
+			want:      false,
+		},
+		{
+			name:      "claude with newline",
+			agentType: AgentClaude,
+			content:   "line1\nline2",
+			want:      false,
+		},
+		{
+			name:      "claude long content",
+			agentType: AgentClaude,
+			content:   strings.Repeat("x", 1000),
+			want:      false,
+		},
+		// User pane - never uses buffer
+		{
+			name:      "user single line",
+			agentType: AgentUser,
+			content:   "echo hello",
+			want:      false,
+		},
+		{
+			name:      "user with newline",
+			agentType: AgentUser,
+			content:   "echo line1\necho line2",
+			want:      false,
+		},
+		// Other agent types - never uses buffer
+		{
+			name:      "cursor single line",
+			agentType: AgentCursor,
+			content:   "test",
+			want:      false,
+		},
+		{
+			name:      "cursor with newline",
+			agentType: AgentCursor,
+			content:   "a\nb",
+			want:      false,
+		},
+		{
+			name:      "windsurf with newline",
+			agentType: AgentWindsurf,
+			content:   "x\ny",
+			want:      false,
+		},
+		{
+			name:      "aider with newline",
+			agentType: AgentAider,
+			content:   "test\ndata",
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := needsBufferSend(tt.agentType, tt.content)
+			if got != tt.want {
+				t.Errorf("needsBufferSend(%v, %q) = %v, want %v",
+					tt.agentType, truncateForLog(tt.content), got, tt.want)
+			}
+		})
+	}
+}
+
+// truncateForLog truncates long strings for readable test output
+func truncateForLog(s string) string {
+	if len(s) > 50 {
+		return s[:47] + "..."
+	}
+	return s
+}
