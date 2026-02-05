@@ -319,6 +319,153 @@ webhooks:
 	}
 }
 
+func TestWebhookE2E_TimeoutRecovery(t *testing.T) {
+	CommonE2EPrerequisites(t)
+	SkipIfNoAgents(t)
+
+	agentType := GetAvailableAgent()
+	if agentType == "" {
+		t.Skip("no agent CLI available")
+	}
+
+	suite := NewWebhookTestSuite(t, "webhook_timeout_recovery")
+	defer suite.Cleanup()
+
+	var attempts int32
+	recv := make(chan webhookCapture, 1)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		body, _ := io.ReadAll(r.Body)
+		var payload WebhookPayload
+		_ = json.Unmarshal(body, &payload)
+
+		n := atomic.AddInt32(&attempts, 1)
+		if n == 1 {
+			// Simulate a timeout on the first attempt.
+			time.Sleep(300 * time.Millisecond)
+			w.WriteHeader(http.StatusGatewayTimeout)
+			return
+		}
+
+		recv <- webhookCapture{
+			payload:       payload,
+			raw:           body,
+			signature:     r.Header.Get("X-NTM-Signature"),
+			eventTypeHdr:  r.Header.Get("X-NTM-Event-Type"),
+			attemptHeader: r.Header.Get("X-NTM-Attempt"),
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	suite.WriteConfig(fmt.Sprintf(`
+webhooks:
+  - name: session_killed_timeout
+    url: %s
+    events: ["session.killed"]
+    formatter: json
+    timeout: 100ms
+    retry:
+      max_attempts: 2
+`, srv.URL))
+
+	if err := suite.spawn(agentType); err != nil {
+		t.Fatalf("[E2E-WEBHOOK] spawn failed: %v", err)
+	}
+
+	if err := suite.kill(); err != nil {
+		t.Fatalf("[E2E-WEBHOOK] kill failed: %v", err)
+	}
+
+	capture := waitForWebhook(t, recv, 30*time.Second)
+	suite.logger.LogJSON("[E2E-WEBHOOK] payload", capture.payload)
+
+	if capture.payload.Type != "session.killed" {
+		t.Fatalf("[E2E-WEBHOOK] unexpected type: %q", capture.payload.Type)
+	}
+
+	if got := atomic.LoadInt32(&attempts); got < 2 {
+		t.Fatalf("[E2E-WEBHOOK] expected timeout retry (>=2 attempts), got %d", got)
+	}
+}
+
+func TestWebhookE2E_NetworkFailureRecovery(t *testing.T) {
+	CommonE2EPrerequisites(t)
+	SkipIfNoAgents(t)
+
+	agentType := GetAvailableAgent()
+	if agentType == "" {
+		t.Skip("no agent CLI available")
+	}
+
+	suite := NewWebhookTestSuite(t, "webhook_network_failure")
+	defer suite.Cleanup()
+
+	var attempts int32
+	recv := make(chan webhookCapture, 1)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		body, _ := io.ReadAll(r.Body)
+		var payload WebhookPayload
+		_ = json.Unmarshal(body, &payload)
+
+		n := atomic.AddInt32(&attempts, 1)
+		if n == 1 {
+			// Simulate a hard network failure by closing the connection.
+			if hijacker, ok := w.(http.Hijacker); ok {
+				conn, _, err := hijacker.Hijack()
+				if err == nil {
+					_ = conn.Close()
+					return
+				}
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+
+		recv <- webhookCapture{
+			payload:       payload,
+			raw:           body,
+			signature:     r.Header.Get("X-NTM-Signature"),
+			eventTypeHdr:  r.Header.Get("X-NTM-Event-Type"),
+			attemptHeader: r.Header.Get("X-NTM-Attempt"),
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	suite.WriteConfig(fmt.Sprintf(`
+webhooks:
+  - name: session_killed_network
+    url: %s
+    events: ["session.killed"]
+    formatter: json
+    retry:
+      max_attempts: 2
+`, srv.URL))
+
+	if err := suite.spawn(agentType); err != nil {
+		t.Fatalf("[E2E-WEBHOOK] spawn failed: %v", err)
+	}
+
+	if err := suite.kill(); err != nil {
+		t.Fatalf("[E2E-WEBHOOK] kill failed: %v", err)
+	}
+
+	capture := waitForWebhook(t, recv, 30*time.Second)
+	suite.logger.LogJSON("[E2E-WEBHOOK] payload", capture.payload)
+
+	if capture.payload.Type != "session.killed" {
+		t.Fatalf("[E2E-WEBHOOK] unexpected type: %q", capture.payload.Type)
+	}
+
+	if got := atomic.LoadInt32(&attempts); got < 2 {
+		t.Fatalf("[E2E-WEBHOOK] expected network failure retry (>=2 attempts), got %d", got)
+	}
+}
+
 func TestWebhookE2E_MultipleEndpoints(t *testing.T) {
 	CommonE2EPrerequisites(t)
 	SkipIfNoAgents(t)
