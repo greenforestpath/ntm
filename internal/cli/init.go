@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/output"
@@ -109,10 +111,40 @@ func runProjectInit(opts initOptions) error {
 		return fmt.Errorf("ntm already initialized at %s (use --force to reinitialize)", ntmDir)
 	}
 
+	auditStart := time.Now()
+	_ = audit.LogEvent("", audit.EventTypeCommand, audit.ActorUser, "config.project_init", map[string]interface{}{
+		"phase":           "start",
+		"project_path":    absTarget,
+		"template":        opts.Template,
+		"agents":          opts.Agents,
+		"auto_spawn":      opts.AutoSpawn,
+		"non_interactive": opts.NonInteractive,
+		"force":           opts.Force,
+		"no_hooks":        opts.NoHooks,
+		"correlation_id":  auditCorrelationID,
+	}, nil)
 	result, err := config.InitProjectConfigAt(absTarget, opts.Force)
 	if err != nil {
+		_ = audit.LogEvent("", audit.EventTypeCommand, audit.ActorUser, "config.project_init", map[string]interface{}{
+			"phase":          "finish",
+			"project_path":   absTarget,
+			"success":        false,
+			"error":          err.Error(),
+			"duration_ms":    time.Since(auditStart).Milliseconds(),
+			"correlation_id": auditCorrelationID,
+		}, nil)
 		return err
 	}
+	_ = audit.LogEvent("", audit.EventTypeCommand, audit.ActorUser, "config.project_init", map[string]interface{}{
+		"phase":          "finish",
+		"project_path":   absTarget,
+		"ntm_dir":        result.NTMDir,
+		"created_dirs":   len(result.CreatedDirs),
+		"created_files":  len(result.CreatedFiles),
+		"success":        true,
+		"duration_ms":    time.Since(auditStart).Milliseconds(),
+		"correlation_id": auditCorrelationID,
+	}, nil)
 
 	configPath := filepath.Join(result.NTMDir, "config.toml")
 	registered, warning, err := registerAgentMailProject(absTarget, configPath)

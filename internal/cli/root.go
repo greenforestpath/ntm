@@ -3199,10 +3199,29 @@ func newConfigCmd() *cobra.Command {
 		Use:   "init",
 		Short: "Create default configuration file",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			auditStart := time.Now()
+			_ = audit.LogEvent("", audit.EventTypeCommand, audit.ActorUser, "config.init", map[string]interface{}{
+				"phase":          "start",
+				"correlation_id": auditCorrelationID,
+			}, nil)
 			path, err := config.CreateDefault()
 			if err != nil {
+				_ = audit.LogEvent("", audit.EventTypeCommand, audit.ActorUser, "config.init", map[string]interface{}{
+					"phase":          "finish",
+					"success":        false,
+					"error":          err.Error(),
+					"duration_ms":    time.Since(auditStart).Milliseconds(),
+					"correlation_id": auditCorrelationID,
+				}, nil)
 				return err
 			}
+			_ = audit.LogEvent("", audit.EventTypeCommand, audit.ActorUser, "config.init", map[string]interface{}{
+				"phase":          "finish",
+				"success":        true,
+				"path":           path,
+				"duration_ms":    time.Since(auditStart).Milliseconds(),
+				"correlation_id": auditCorrelationID,
+			}, nil)
 			fmt.Printf("Created config file: %s\n", path)
 			return nil
 		},
@@ -3234,12 +3253,34 @@ Examples:
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := args[0]
+			auditStart := time.Now()
+			_ = audit.LogEvent("", audit.EventTypeCommand, audit.ActorUser, "config.set_projects_base", map[string]interface{}{
+				"phase":          "start",
+				"path":           path,
+				"correlation_id": auditCorrelationID,
+			}, nil)
 			if err := config.SetProjectsBase(path); err != nil {
+				_ = audit.LogEvent("", audit.EventTypeCommand, audit.ActorUser, "config.set_projects_base", map[string]interface{}{
+					"phase":          "finish",
+					"path":           path,
+					"success":        false,
+					"error":          err.Error(),
+					"duration_ms":    time.Since(auditStart).Milliseconds(),
+					"correlation_id": auditCorrelationID,
+				}, nil)
 				return err
 			}
 			expanded := config.ExpandHome(path)
 			fmt.Printf("Projects base set to: %s\n", expanded)
 			fmt.Printf("Config saved to: %s\n", config.DefaultPath())
+			_ = audit.LogEvent("", audit.EventTypeCommand, audit.ActorUser, "config.set_projects_base", map[string]interface{}{
+				"phase":          "finish",
+				"path":           path,
+				"expanded_path":  expanded,
+				"success":        true,
+				"duration_ms":    time.Since(auditStart).Milliseconds(),
+				"correlation_id": auditCorrelationID,
+			}, nil)
 			return nil
 		},
 	})
