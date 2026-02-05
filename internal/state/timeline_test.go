@@ -457,6 +457,31 @@ func TestTimelineStateIsTerminal(t *testing.T) {
 	}
 }
 
+func TestTimelineStateString(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		state TimelineState
+		want  string
+	}{
+		{TimelineIdle, "idle"},
+		{TimelineWorking, "working"},
+		{TimelineWaiting, "waiting"},
+		{TimelineError, "error"},
+		{TimelineStopped, "stopped"},
+		{TimelineState("custom"), "custom"},
+	}
+
+	for _, tc := range tests {
+		t.Run(string(tc.state), func(t *testing.T) {
+			t.Parallel()
+			got := tc.state.String()
+			if got != tc.want {
+				t.Errorf("TimelineState(%q).String() = %q, want %q", tc.state, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	tracker := NewTimelineTracker(&TimelineConfig{PruneInterval: 0})
 	defer tracker.Stop()
