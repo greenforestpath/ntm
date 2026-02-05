@@ -156,6 +156,58 @@ func TestExtractRCHInnerCommand(t *testing.T) {
 			command: "go build ./cmd/ntm",
 			ok:      false,
 		},
+		// Edge cases for coverage
+		{
+			name:    "empty command",
+			command: "",
+			ok:      false,
+		},
+		{
+			name:    "whitespace only",
+			command: "   \t  ",
+			ok:      false,
+		},
+		{
+			name:    "rch alone",
+			command: "rch",
+			ok:      false,
+		},
+		{
+			name:    "rch build alone",
+			command: "rch build",
+			ok:      false,
+		},
+		{
+			name:    "rch intercept alone",
+			command: "rch intercept",
+			ok:      false,
+		},
+		{
+			name:    "rch offload alone",
+			command: "rch offload",
+			ok:      false,
+		},
+		{
+			name:    "rch with separator at end",
+			command: "rch --",
+			ok:      false,
+		},
+		{
+			name:    "rch build with separator at end",
+			command: "rch build --",
+			ok:      false,
+		},
+		{
+			name:    "rch unknown subcommand",
+			command: "rch unknown something",
+			ok:      false,
+		},
+		{
+			name:     "rch build cargo with multiple args",
+			command:  "rch build cargo build --release --target x86_64-unknown-linux-gnu",
+			expected: "cargo build --release --target x86_64-unknown-linux-gnu",
+			ok:       true,
+		},
 	}
 
 	for _, tc := range tests {
