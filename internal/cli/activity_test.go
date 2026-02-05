@@ -3,6 +3,8 @@ package cli
 import (
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestStateIcon(t *testing.T) {
@@ -56,6 +58,148 @@ func TestFormatActivityDuration(t *testing.T) {
 			got := formatActivityDuration(tt.duration)
 			if got != tt.want {
 				t.Errorf("formatActivityDuration(%v) = %q, want %q", tt.duration, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPassesFilter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		agentType string
+		pane      tmux.Pane
+		opts      activityOptions
+		want      bool
+	}{
+		{
+			name:      "no_filters_allows_all",
+			agentType: "claude",
+			pane:      tmux.Pane{Index: 1, Title: "cc_1"},
+			opts:      activityOptions{},
+			want:      true,
+		},
+		{
+			name:      "filter_by_pane_title_match",
+			agentType: "claude",
+			pane:      tmux.Pane{Index: 1, Title: "cc_1"},
+			opts:      activityOptions{filterPane: "cc_1"},
+			want:      true,
+		},
+		{
+			name:      "filter_by_pane_title_no_match",
+			agentType: "claude",
+			pane:      tmux.Pane{Index: 1, Title: "cc_1"},
+			opts:      activityOptions{filterPane: "cc_2"},
+			want:      false,
+		},
+		{
+			name:      "filter_by_pane_index_match",
+			agentType: "codex",
+			pane:      tmux.Pane{Index: 2, Title: "cod_2"},
+			opts:      activityOptions{filterPane: "2"},
+			want:      true,
+		},
+		{
+			name:      "filter_by_pane_index_no_match",
+			agentType: "codex",
+			pane:      tmux.Pane{Index: 2, Title: "cod_2"},
+			opts:      activityOptions{filterPane: "3"},
+			want:      false,
+		},
+		{
+			name:      "filter_claude_type_match",
+			agentType: "claude",
+			pane:      tmux.Pane{Index: 1, Title: "cc_1"},
+			opts:      activityOptions{filterClaude: true},
+			want:      true,
+		},
+		{
+			name:      "filter_claude_type_no_match",
+			agentType: "codex",
+			pane:      tmux.Pane{Index: 2, Title: "cod_2"},
+			opts:      activityOptions{filterClaude: true},
+			want:      false,
+		},
+		{
+			name:      "filter_codex_type_match",
+			agentType: "codex",
+			pane:      tmux.Pane{Index: 2, Title: "cod_2"},
+			opts:      activityOptions{filterCodex: true},
+			want:      true,
+		},
+		{
+			name:      "filter_codex_type_no_match",
+			agentType: "claude",
+			pane:      tmux.Pane{Index: 1, Title: "cc_1"},
+			opts:      activityOptions{filterCodex: true},
+			want:      false,
+		},
+		{
+			name:      "filter_gemini_type_match",
+			agentType: "gemini",
+			pane:      tmux.Pane{Index: 3, Title: "gmi_3"},
+			opts:      activityOptions{filterGemini: true},
+			want:      true,
+		},
+		{
+			name:      "filter_gemini_type_no_match",
+			agentType: "claude",
+			pane:      tmux.Pane{Index: 1, Title: "cc_1"},
+			opts:      activityOptions{filterGemini: true},
+			want:      false,
+		},
+		{
+			name:      "multiple_type_filters_match_first",
+			agentType: "claude",
+			pane:      tmux.Pane{Index: 1, Title: "cc_1"},
+			opts:      activityOptions{filterClaude: true, filterCodex: true},
+			want:      true,
+		},
+		{
+			name:      "multiple_type_filters_match_second",
+			agentType: "codex",
+			pane:      tmux.Pane{Index: 2, Title: "cod_2"},
+			opts:      activityOptions{filterClaude: true, filterCodex: true},
+			want:      true,
+		},
+		{
+			name:      "multiple_type_filters_no_match",
+			agentType: "gemini",
+			pane:      tmux.Pane{Index: 3, Title: "gmi_3"},
+			opts:      activityOptions{filterClaude: true, filterCodex: true},
+			want:      false,
+		},
+		{
+			name:      "all_type_filters_match_all",
+			agentType: "gemini",
+			pane:      tmux.Pane{Index: 3, Title: "gmi_3"},
+			opts:      activityOptions{filterClaude: true, filterCodex: true, filterGemini: true},
+			want:      true,
+		},
+		{
+			name:      "pane_filter_takes_precedence_over_type",
+			agentType: "claude",
+			pane:      tmux.Pane{Index: 1, Title: "cc_1"},
+			opts:      activityOptions{filterPane: "cc_1", filterCodex: true},
+			want:      true, // pane filter matches, type filter is ignored
+		},
+		{
+			name:      "pane_filter_precedence_no_match",
+			agentType: "claude",
+			pane:      tmux.Pane{Index: 1, Title: "cc_1"},
+			opts:      activityOptions{filterPane: "cc_99", filterClaude: true},
+			want:      false, // pane filter doesn't match, type filter is ignored
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := passesFilter(tt.agentType, tt.pane, tt.opts)
+			if got != tt.want {
+				t.Errorf("passesFilter(%q, %v, %+v) = %v, want %v",
+					tt.agentType, tt.pane, tt.opts, got, tt.want)
 			}
 		})
 	}
