@@ -2,6 +2,7 @@
 package health
 
 import (
+	"context"
 	"regexp"
 	"strings"
 	"sync"
@@ -103,12 +104,12 @@ type HealthSummary struct {
 }
 
 // CheckSession performs health checks on all agents in a session
-func CheckSession(session string) (*SessionHealth, error) {
+func CheckSession(ctx context.Context, session string) (*SessionHealth, error) {
 	if !tmux.SessionExists(session) {
 		return nil, &SessionNotFoundError{Session: session}
 	}
 
-	panesWithActivity, err := tmux.GetPanesWithActivity(session)
+	panesWithActivity, err := tmux.GetPanesWithActivityContext(ctx, session)
 	if err != nil {
 		return nil, err
 	}
@@ -130,8 +131,12 @@ func CheckSession(session string) (*SessionHealth, error) {
 		go func(pa tmux.PaneActivity) {
 			defer wg.Done()
 
-			sem <- struct{}{} // Acquire token
-			agentHealth := checkAgent(pa)
+			select {
+			case sem <- struct{}{}: // Acquire token
+			case <-ctx.Done():
+				return
+			}
+			agentHealth := checkAgent(ctx, pa)
 			<-sem // Release token
 
 			mu.Lock()
@@ -160,11 +165,15 @@ func CheckSession(session string) (*SessionHealth, error) {
 	}
 	wg.Wait()
 
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
 	return health, nil
 }
 
 // checkAgent performs health checks on a single agent pane
-func checkAgent(pa tmux.PaneActivity) AgentHealth {
+func checkAgent(ctx context.Context, pa tmux.PaneActivity) AgentHealth {
 	agent := AgentHealth{
 		Pane:          pa.Pane.Index,
 		PaneID:        pa.Pane.ID,
@@ -182,7 +191,7 @@ func checkAgent(pa tmux.PaneActivity) AgentHealth {
 	}
 
 	// Capture pane output for analysis
-	output, err := tmux.CapturePaneOutput(pa.Pane.ID, 50)
+	output, err := tmux.CapturePaneOutputContext(ctx, pa.Pane.ID, 50)
 	if err != nil {
 		agent.ProcessStatus = ProcessUnknown
 		agent.Status = StatusUnknown

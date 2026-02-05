@@ -3411,7 +3411,9 @@ func buildSwarmSnapshot(cfg *config.Config, sessions []tmux.Session) *SwarmSnaps
 	totalLimitHit := 0
 
 	for _, sess := range swarmSessions {
-		h, err := health.CheckSession(sess.name)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		h, err := health.CheckSession(ctx, sess.name)
+		cancel()
 		if err != nil {
 			continue
 		}

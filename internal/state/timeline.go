@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/audit"
 )
 
 // TimelineState represents the operational state of an agent in the timeline.
@@ -748,6 +750,25 @@ func GetGlobalTimelineTracker() *TimelineTracker {
 			MaxEventsPerAgent: 10000, // Allow many events for multi-agent sessions
 			RetentionDuration: 48 * time.Hour,
 			PruneInterval:     15 * time.Minute,
+		})
+		globalTimelineTracker.OnStateChange(func(event AgentEvent) {
+			payload := map[string]interface{}{
+				"agent_id":        event.AgentID,
+				"agent_type":      string(event.AgentType),
+				"state":           event.State.String(),
+				"previous_state":  event.PreviousState.String(),
+				"duration_ms":     event.Duration.Milliseconds(),
+				"trigger":         event.Trigger,
+				"event_timestamp": event.Timestamp.Format(time.RFC3339Nano),
+			}
+			if len(event.Details) > 0 {
+				details := make(map[string]interface{}, len(event.Details))
+				for k, v := range event.Details {
+					details[k] = v
+				}
+				payload["details"] = details
+			}
+			_ = audit.LogEvent(event.SessionID, audit.EventTypeStateChange, audit.ActorSystem, event.AgentID, payload, nil)
 		})
 	})
 	return globalTimelineTracker

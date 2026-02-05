@@ -557,7 +557,9 @@ func newSwarmStatusCmd() *cobra.Command {
 			}
 
 			for _, name := range swarmSessions {
-				sessionHealth, err := health.CheckSession(name)
+				ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
+				sessionHealth, err := health.CheckSession(ctx, name)
+				cancel()
 				entry := swarmSessionStatus{Session: name}
 				if err != nil {
 					entry.Error = err.Error()

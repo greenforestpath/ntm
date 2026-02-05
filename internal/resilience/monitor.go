@@ -269,7 +269,7 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 	hooksMu.RUnlock()
 
 	// Get health status for the session
-	sessionHealth, err := checkFn(m.session)
+	sessionHealth, err := checkFn(ctx, m.session)
 	if err != nil {
 		log.Printf("[resilience] health check failed: %v", err)
 		return

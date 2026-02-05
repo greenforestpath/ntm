@@ -87,7 +87,7 @@ func init() {
 		if strings.TrimSpace(opts.Session) == "" {
 			return nil, fmt.Errorf("session is required")
 		}
-		return buildHealthOutput(opts)
+		return buildHealthOutput(ctx, opts)
 	})
 }
 
@@ -176,7 +176,9 @@ func runHealthOnce(session string) error {
 		if healthPane >= 0 {
 			pane = &healthPane
 		}
-		result, err := kernel.Run(context.Background(), "sessions.health", SessionHealthInput{
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		result, err := kernel.Run(ctx, "sessions.health", SessionHealthInput{
 			Session: session,
 			Pane:    pane,
 			Status:  healthStatus,
@@ -198,7 +200,10 @@ func runHealthOnce(session string) error {
 		return encodeHealthOutput(output)
 	}
 
-	result, err := health.CheckSession(session)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := health.CheckSession(ctx, session)
 	if err != nil {
 		if _, ok := err.(*health.SessionNotFoundError); ok {
 			return fmt.Errorf("session '%s' not found", session)
@@ -376,8 +381,8 @@ func coerceHealthOutput(result any) (HealthOutput, error) {
 	}
 }
 
-func buildHealthOutput(input SessionHealthInput) (HealthOutput, error) {
-	result, err := health.CheckSession(input.Session)
+func buildHealthOutput(ctx context.Context, input SessionHealthInput) (HealthOutput, error) {
+	result, err := health.CheckSession(ctx, input.Session)
 	if err != nil {
 		if _, ok := err.(*health.SessionNotFoundError); ok {
 			return HealthOutput{

@@ -186,7 +186,7 @@ func TestStartAndStop(t *testing.T) {
 
 	// Mock checkSessionFn to avoid actual tmux calls
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents:  []health.AgentHealth{},
@@ -241,7 +241,7 @@ func TestCheckHealthWithHealthyAgent(t *testing.T) {
 	defer restore()
 
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents: []health.AgentHealth{
@@ -281,7 +281,7 @@ func TestCheckHealthDetectsCrash(t *testing.T) {
 	defer restore()
 
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents: []health.AgentHealth{
@@ -333,7 +333,7 @@ func TestCheckHealthDetectsPaneMissing(t *testing.T) {
 
 	setHooksLocked(func() {
 		// Return empty agents list - pane doesn't exist
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents:  []health.AgentHealth{},
@@ -375,7 +375,7 @@ func TestCheckHealthDetectsRateLimit(t *testing.T) {
 	defer restore()
 
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents: []health.AgentHealth{
@@ -423,7 +423,7 @@ func TestCheckHealthRateLimitUpdatesTracker(t *testing.T) {
 	defer restore()
 
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents: []health.AgentHealth{
@@ -464,7 +464,7 @@ func TestCheckHealthRateLimitCleared(t *testing.T) {
 	defer restore()
 
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents: []health.AgentHealth{
@@ -509,7 +509,7 @@ func TestCheckHealthRateLimitClearedRecordsSuccess(t *testing.T) {
 	defer restore()
 
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents: []health.AgentHealth{
@@ -550,7 +550,7 @@ func TestCheckHealthError(t *testing.T) {
 	defer restore()
 
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return nil, fmt.Errorf("session check failed")
 		}
 	})
@@ -779,7 +779,7 @@ func TestMonitorLoopRespectsMinCheckInterval(t *testing.T) {
 	var checkCount int
 	var mu sync.Mutex
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			mu.Lock()
 			checkCount++
 			mu.Unlock()

@@ -19,6 +19,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/agent/ollama"
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/cm"
@@ -861,7 +862,7 @@ Examples:
 }
 
 // spawnSessionLogic handles the creation of the session and spawning of agents
-func spawnSessionLogic(opts SpawnOptions) error {
+func spawnSessionLogic(opts SpawnOptions) (err error) {
 	// Helper for JSON error output
 	outputError := func(err error) error {
 		if IsJSONOutput() {
@@ -901,6 +902,42 @@ func spawnSessionLogic(opts SpawnOptions) error {
 	}
 
 	dir := cfg.GetProjectDir(opts.Session)
+	auditStart := time.Now()
+	auditSessionCreated := false
+	auditPanesAdded := 0
+	auditAgentsLaunched := 0
+	_ = audit.LogEvent(opts.Session, audit.EventTypeSpawn, audit.ActorUser, "session.spawn", map[string]interface{}{
+		"phase":              "start",
+		"session":            opts.Session,
+		"total_agents":       totalAgents,
+		"user_pane":          opts.UserPane,
+		"recipe":             opts.RecipeName,
+		"prompt_length":      len(opts.Prompt),
+		"init_prompt_length": len(opts.InitPrompt),
+		"stagger_mode":       opts.StaggerMode,
+		"assign_enabled":     opts.Assign,
+		"worktrees":          opts.UseWorktrees,
+		"working_dir":        dir,
+		"correlation_id":     auditCorrelationID,
+	}, nil)
+	defer func() {
+		payload := map[string]interface{}{
+			"phase":           "finish",
+			"session":         opts.Session,
+			"total_agents":    totalAgents,
+			"session_created": auditSessionCreated,
+			"panes_added":     auditPanesAdded,
+			"agents_launched": auditAgentsLaunched,
+			"success":         err == nil,
+			"duration_ms":     time.Since(auditStart).Milliseconds(),
+			"working_dir":     dir,
+			"correlation_id":  auditCorrelationID,
+		}
+		if err != nil {
+			payload["error"] = err.Error()
+		}
+		_ = audit.LogEvent(opts.Session, audit.EventTypeSpawn, audit.ActorUser, "session.spawn", payload, nil)
+	}()
 
 	testPacing, err := resolveSpawnTestPacing()
 	if err != nil {
@@ -1000,6 +1037,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			}
 			return outputError(fmt.Errorf("creating session: %w", err))
 		}
+		auditSessionCreated = true
 		if !IsJSONOutput() {
 			steps.Done()
 		}
@@ -1070,6 +1108,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 	if existingPanes < totalPanes {
 		toAdd := totalPanes - existingPanes
 		panesAdded = toAdd
+		auditPanesAdded = panesAdded
 		if !IsJSONOutput() {
 			steps.Start(fmt.Sprintf("Creating %d pane(s)", toAdd))
 		}
@@ -1567,6 +1606,7 @@ func spawnSessionLogic(opts SpawnOptions) error {
 			command:       safeAgentCmd,
 			promptDelay:   promptDelay,
 		})
+		auditAgentsLaunched = len(launchedAgents)
 
 		staggerAgentIdx++
 		profileIdx++

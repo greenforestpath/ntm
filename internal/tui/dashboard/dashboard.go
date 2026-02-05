@@ -1957,8 +1957,11 @@ func (m *Model) fetchStatuses() tea.Cmd {
 func (m Model) fetchHealthCmd() tea.Cmd {
 	session := m.session
 	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
 		// Get health check from health package
-		sessionHealth, err := health.CheckSession(session)
+		sessionHealth, err := health.CheckSession(ctx, session)
 		if err != nil {
 			return HealthUpdateMsg{Health: nil, Err: err}
 		}
