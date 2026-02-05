@@ -955,3 +955,158 @@ func TestBuildTargetDescription(t *testing.T) {
 		})
 	}
 }
+
+func TestFilterPanesForBatch(t *testing.T) {
+	// Sample panes for testing
+	panes := []tmux.Pane{
+		{Index: 0, Type: tmux.AgentUser, Title: "user_0"},
+		{Index: 1, Type: tmux.AgentClaude, Title: "cc_1", Tags: []string{"frontend"}},
+		{Index: 2, Type: tmux.AgentCodex, Title: "cod_2", Tags: []string{"backend", "api"}},
+		{Index: 3, Type: tmux.AgentGemini, Title: "gmi_3", Tags: []string{"docs"}},
+		{Index: 4, Type: tmux.AgentClaude, Title: "cc_4", Tags: []string{"backend"}},
+	}
+
+	tests := []struct {
+		name     string
+		opts     SendOptions
+		wantLen  int
+		wantIdxs []int // expected pane indices in result
+	}{
+		{
+			name:     "no filters excludes user pane",
+			opts:     SendOptions{},
+			wantLen:  4,
+			wantIdxs: []int{1, 2, 3, 4},
+		},
+		{
+			name:     "TargetAll includes everything",
+			opts:     SendOptions{TargetAll: true},
+			wantLen:  5,
+			wantIdxs: []int{0, 1, 2, 3, 4},
+		},
+		{
+			name: "filter by tag frontend",
+			opts: SendOptions{
+				Tags: []string{"frontend"},
+			},
+			wantLen:  1,
+			wantIdxs: []int{1},
+		},
+		{
+			name: "filter by tag backend (multiple matches)",
+			opts: SendOptions{
+				Tags: []string{"backend"},
+			},
+			wantLen:  2,
+			wantIdxs: []int{2, 4},
+		},
+		{
+			name: "filter by multiple tags (OR logic)",
+			opts: SendOptions{
+				Tags: []string{"frontend", "docs"},
+			},
+			wantLen:  2,
+			wantIdxs: []int{1, 3},
+		},
+		{
+			name: "filter by agent type claude",
+			opts: SendOptions{
+				Targets: SendTargets{{Type: AgentTypeClaude}},
+			},
+			wantLen:  2,
+			wantIdxs: []int{1, 4},
+		},
+		{
+			name: "filter by agent type codex",
+			opts: SendOptions{
+				Targets: SendTargets{{Type: AgentTypeCodex}},
+			},
+			wantLen:  1,
+			wantIdxs: []int{2},
+		},
+		{
+			name: "filter by agent type gemini",
+			opts: SendOptions{
+				Targets: SendTargets{{Type: AgentTypeGemini}},
+			},
+			wantLen:  1,
+			wantIdxs: []int{3},
+		},
+		{
+			name: "combined tag and type filter",
+			opts: SendOptions{
+				Tags:    []string{"backend"},
+				Targets: SendTargets{{Type: AgentTypeClaude}},
+			},
+			wantLen:  1,
+			wantIdxs: []int{4}, // cc_4 has backend tag
+		},
+		{
+			name: "filter with no matches",
+			opts: SendOptions{
+				Tags: []string{"nonexistent"},
+			},
+			wantLen:  0,
+			wantIdxs: []int{},
+		},
+		{
+			name: "multiple agent types",
+			opts: SendOptions{
+				Targets: SendTargets{
+					{Type: AgentTypeClaude},
+					{Type: AgentTypeGemini},
+				},
+			},
+			wantLen:  3,
+			wantIdxs: []int{1, 3, 4},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterPanesForBatch(panes, tt.opts)
+
+			if len(got) != tt.wantLen {
+				t.Errorf("filterPanesForBatch() returned %d panes, want %d", len(got), tt.wantLen)
+				return
+			}
+
+			for i, idx := range tt.wantIdxs {
+				if i >= len(got) {
+					t.Errorf("missing pane at position %d", i)
+					continue
+				}
+				if got[i].Index != idx {
+					t.Errorf("pane[%d].Index = %d, want %d", i, got[i].Index, idx)
+				}
+			}
+		})
+	}
+}
+
+func TestFilterPanesForBatchEmpty(t *testing.T) {
+	// Test with empty panes slice
+	got := filterPanesForBatch([]tmux.Pane{}, SendOptions{})
+	if len(got) != 0 {
+		t.Errorf("filterPanesForBatch(empty) returned %d panes, want 0", len(got))
+	}
+}
+
+func TestFilterPanesForBatchAllUser(t *testing.T) {
+	// Test with only user panes (should return empty without TargetAll)
+	userPanes := []tmux.Pane{
+		{Index: 0, Type: tmux.AgentUser},
+		{Index: 1, Type: tmux.AgentUser},
+	}
+
+	got := filterPanesForBatch(userPanes, SendOptions{})
+	if len(got) != 0 {
+		t.Errorf("filterPanesForBatch(user panes) returned %d panes, want 0", len(got))
+	}
+
+	// With TargetAll, should return all
+	got = filterPanesForBatch(userPanes, SendOptions{TargetAll: true})
+	if len(got) != 2 {
+		t.Errorf("filterPanesForBatch(user panes, TargetAll) returned %d panes, want 2", len(got))
+	}
+}
