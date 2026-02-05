@@ -13,7 +13,11 @@ TEST_ID="integration-001"
 TEST_NAME="integration_master_test"
 TEST_PREFIX="e2e-master-$$"
 
-REPORT_DIR="${E2E_LOG_DIR:-/tmp/ntm-e2e-logs}"
+E2E_LOG_DIR="${E2E_LOG_DIR:-/tmp/ntm-e2e-logs}"
+export E2E_LOG_DIR
+mkdir -p "$E2E_LOG_DIR"
+
+REPORT_DIR="$E2E_LOG_DIR"
 REPORT_FILE="${REPORT_DIR}/integration_master_report_$(date -u +%Y%m%d_%H%M%S).json"
 
 PHASE_NAMES=()
@@ -205,22 +209,210 @@ main() {
     fi
     phase_end "$status"
 
-    # Phases 5-15: Stubbed for now (tracked as failures until implemented).
-    for phase in \
-        "file_reservation" \
-        "agent_communication" \
-        "context_monitoring" \
-        "cost_tracking" \
-        "staggered_operations" \
-        "handoff" \
-        "prompt_history" \
-        "session_summarization" \
-        "output_archive" \
-        "effectiveness_scoring" \
-        "session_recovery"; do
-        phase_start "$phase"
-        phase_end "skip"
-    done
+    # Phase 5: File Reservation
+    phase_start "file_reservation"
+    status="pass"
+    if pushd "$PROJECT_DIR" >/dev/null; then
+        if log_exec ntm --json lock "$SESSION_NAME" "README.md" --reason "master integration test" --ttl 5m; then
+            local output
+            output="$(get_last_output)"
+            if ! echo "$output" | jq -e '.success == true' >/dev/null 2>&1; then
+                status="fail"
+            fi
+            if ! log_exec ntm --json unlock "$SESSION_NAME" --all; then
+                status="fail"
+            fi
+        else
+            local output
+            output="$(get_last_output)"
+            if echo "$output" | grep -qi "agent mail"; then
+                status="skip"
+            else
+                status="fail"
+            fi
+        fi
+        popd >/dev/null || true
+    else
+        status="fail"
+        log_error "failed to enter project dir: ${PROJECT_DIR}"
+    fi
+    phase_end "$status"
+
+    # Phase 6: Agent Communication (Agent Mail)
+    phase_start "agent_communication"
+    status="pass"
+    if pushd "$PROJECT_DIR" >/dev/null; then
+        if log_exec ntm mail send "$SESSION_NAME" --all --subject "E2E master integration" "Agent mail test message"; then
+            if log_exec ntm mail inbox "$SESSION_NAME" --json --limit 5; then
+                local output
+                output="$(get_last_output)"
+                log_assert_valid_json "$output" "mail inbox JSON"
+            else
+                status="fail"
+            fi
+        else
+            local output
+            output="$(get_last_output)"
+            if echo "$output" | grep -qi "agent mail"; then
+                status="skip"
+            else
+                status="fail"
+            fi
+        fi
+        popd >/dev/null || true
+    else
+        status="fail"
+        log_error "failed to enter project dir: ${PROJECT_DIR}"
+    fi
+    phase_end "$status"
+
+    # Phase 7: Context Monitoring
+    phase_start "context_monitoring"
+    status="pass"
+    if log_exec ntm status "$SESSION_NAME" --json; then
+        local output
+        output="$(get_last_output)"
+        log_assert_valid_json "$output" "status JSON"
+        if ! echo "$output" | jq -e '.panes | length > 0' >/dev/null 2>&1; then
+            status="fail"
+        fi
+    else
+        status="fail"
+    fi
+    phase_end "$status"
+
+    # Phase 8: Cost Tracking (Quota)
+    phase_start "cost_tracking"
+    status="pass"
+    if log_exec ntm --json quota "$SESSION_NAME"; then
+        local output
+        output="$(get_last_output)"
+        log_assert_valid_json "$output" "quota JSON"
+    else
+        status="fail"
+    fi
+    phase_end "$status"
+
+    # Phase 9: Staggered Operations
+    phase_start "staggered_operations"
+    status="pass"
+    local stagger_session="${TEST_PREFIX}-stagger"
+    if log_exec ntm --json spawn "$stagger_session" --cc=2 --no-user --stagger-mode=fixed --stagger-delay=1s --prompt "stagger-test"; then
+        local output
+        output="$(get_last_output)"
+        log_assert_valid_json "$output" "stagger spawn JSON"
+        if ! echo "$output" | jq -e '.stagger.enabled == true' >/dev/null 2>&1; then
+            status="fail"
+        fi
+        log_exec ntm --json kill "$stagger_session" --force || status="fail"
+    else
+        status="fail"
+    fi
+    phase_end "$status"
+
+    # Phase 10: Handoff
+    phase_start "handoff"
+    status="pass"
+    if pushd "$PROJECT_DIR" >/dev/null; then
+        if log_exec ntm handoff create "$SESSION_NAME" --goal "Master integration test" --now "Proceed to remaining phases" --json; then
+            local output
+            output="$(get_last_output)"
+            log_assert_valid_json "$output" "handoff JSON"
+        else
+            status="fail"
+        fi
+        popd >/dev/null || true
+    else
+        status="fail"
+    fi
+    phase_end "$status"
+
+    # Phase 11: Prompt History
+    phase_start "prompt_history"
+    status="pass"
+    if pushd "$PROJECT_DIR" >/dev/null; then
+        if log_exec ntm --json send "$SESSION_NAME" --all "history test prompt"; then
+            local output
+            output="$(get_last_output)"
+            log_assert_valid_json "$output" "send JSON"
+            if log_exec ntm history --session "$SESSION_NAME" --limit 5 --json; then
+                output="$(get_last_output)"
+                log_assert_valid_json "$output" "history JSON"
+                if ! echo "$output" | jq -e '.entries | length >= 1' >/dev/null 2>&1; then
+                    status="fail"
+                fi
+            else
+                status="fail"
+            fi
+        else
+            status="fail"
+        fi
+        popd >/dev/null || true
+    else
+        status="fail"
+    fi
+    phase_end "$status"
+
+    # Phase 12: Session Summarization
+    phase_start "session_summarization"
+    status="pass"
+    if pushd "$PROJECT_DIR" >/dev/null; then
+        if log_exec ntm summary "$SESSION_NAME" --format json; then
+            local output
+            output="$(get_last_output)"
+            log_assert_valid_json "$output" "summary JSON"
+        else
+            status="fail"
+        fi
+        popd >/dev/null || true
+    else
+        status="fail"
+    fi
+    phase_end "$status"
+
+    # Phase 13: Output Archive (CASS)
+    phase_start "output_archive"
+    status="pass"
+    if log_exec ntm --json cass status; then
+        local output
+        output="$(get_last_output)"
+        log_assert_valid_json "$output" "cass status JSON"
+        if echo "$output" | jq -e '.error == "cass_not_installed"' >/dev/null 2>&1; then
+            status="skip"
+        fi
+    else
+        status="fail"
+    fi
+    phase_end "$status"
+
+    # Phase 14: Effectiveness Scoring
+    phase_start "effectiveness_scoring"
+    status="pass"
+    if log_exec ntm --json agents stats; then
+        local output
+        output="$(get_last_output)"
+        log_assert_valid_json "$output" "agents stats JSON"
+    else
+        status="fail"
+    fi
+    phase_end "$status"
+
+    # Phase 15: Session Recovery
+    phase_start "session_recovery"
+    status="pass"
+    if pushd "$PROJECT_DIR" >/dev/null; then
+        if log_exec ntm resume "$SESSION_NAME" --dry-run --json; then
+            local output
+            output="$(get_last_output)"
+            log_assert_valid_json "$output" "resume JSON"
+        else
+            status="fail"
+        fi
+        popd >/dev/null || true
+    else
+        status="fail"
+    fi
+    phase_end "$status"
 
     write_report_json
 
