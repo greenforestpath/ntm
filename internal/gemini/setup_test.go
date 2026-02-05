@@ -1,8 +1,11 @@
 package gemini
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultSetupConfig(t *testing.T) {
@@ -213,5 +216,62 @@ func TestGeminiPromptPatternMatches(t *testing.T) {
 				t.Errorf("geminiPromptPattern.MatchString(%q) = %v, want %v", tt.input, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestIsGeminiReady_StripsANSI(t *testing.T) {
+	output := "Booting...\n\x1b[31mGEMINI>\x1b[0m"
+	if !isGeminiReady(output) {
+		t.Fatalf("expected isGeminiReady to be true for ANSI-colored prompt")
+	}
+}
+
+func TestIsModelMenuVisible_StripsANSI(t *testing.T) {
+	output := "\x1b[32mSelect a model:\x1b[0m\n1. Flash\n2. Pro"
+	if !isModelMenuVisible(output) {
+		t.Fatalf("expected isModelMenuVisible to be true for ANSI-colored menu")
+	}
+}
+
+func TestIsProModelSelected_StripsANSI(t *testing.T) {
+	output := "Model: \x1b[36mGemini Pro\x1b[0m"
+	if !isProModelSelected(output) {
+		t.Fatalf("expected isProModelSelected to be true for ANSI-colored model line")
+	}
+}
+
+func TestWaitForReady_TimeoutMessage(t *testing.T) {
+	err := WaitForReady(context.Background(), "%1", 0, time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timeout after 0s waiting for Gemini prompt") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "consider increasing gemini_setup.ready_timeout_seconds") {
+		t.Fatalf("missing config hint in error: %v", err)
+	}
+}
+
+func TestWaitForModelMenu_TimeoutMessage(t *testing.T) {
+	err := waitForModelMenu(context.Background(), "%1", 0, time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timeout after 0s waiting for model menu") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWaitForIdleAfterSetup_CanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := WaitForIdleAfterSetup(ctx, "%1", 10*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected context cancellation error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
