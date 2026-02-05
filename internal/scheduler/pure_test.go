@@ -1191,3 +1191,103 @@ func TestDefaultAgentCapConfig(t *testing.T) {
 		t.Error("default should have cooldown on failure")
 	}
 }
+
+// ─── Global scheduler singleton tests ────────────────────────────────────────
+
+func TestGlobal_ReturnsNonNil(t *testing.T) {
+	// Not parallel: depends on global scheduler state
+	// Must run before TestSetGlobal to test sync.Once initialization
+	got := Global()
+	if got == nil {
+		t.Error("Global() should return non-nil scheduler")
+	}
+}
+
+func TestSetGlobal(t *testing.T) {
+	// Not parallel: modifies package-level globalScheduler
+
+	// Save original (Global() already called above, so sync.Once has fired)
+	orig := Global()
+
+	custom := New(DefaultConfig())
+	SetGlobal(custom)
+	t.Cleanup(func() { SetGlobal(orig) })
+
+	got := Global()
+	if got != custom {
+		t.Error("Global() should return the scheduler set via SetGlobal")
+	}
+}
+
+// ─── CreateProgressHooks tests ───────────────────────────────────────────────
+
+func TestCreateProgressHooks_HooksNotNil(t *testing.T) {
+	t.Parallel()
+
+	broadcaster := NewProgressBroadcaster()
+	sched := New(DefaultConfig())
+
+	hooks := CreateProgressHooks(broadcaster, sched)
+
+	if hooks.OnJobEnqueued == nil {
+		t.Error("expected OnJobEnqueued hook to be set")
+	}
+	if hooks.OnJobStarted == nil {
+		t.Error("expected OnJobStarted hook to be set")
+	}
+	if hooks.OnJobCompleted == nil {
+		t.Error("expected OnJobCompleted hook to be set")
+	}
+	if hooks.OnJobFailed == nil {
+		t.Error("expected OnJobFailed hook to be set")
+	}
+	if hooks.OnBackpressure == nil {
+		t.Error("expected OnBackpressure hook to be set")
+	}
+}
+
+func TestCreateProgressHooks_EnqueueBroadcasts(t *testing.T) {
+	t.Parallel()
+
+	broadcaster := NewProgressBroadcaster()
+	sched := New(DefaultConfig())
+
+	var received ProgressEvent
+	broadcaster.Subscribe(func(event ProgressEvent) {
+		received = event
+	})
+	hooks := CreateProgressHooks(broadcaster, sched)
+
+	job := NewSpawnJob("job-enqueue-1", JobTypeAgentLaunch, "test-sess")
+	hooks.OnJobEnqueued(job)
+
+	if received.Type != "job_enqueued" {
+		t.Errorf("event type = %q, want job_enqueued", received.Type)
+	}
+	if received.JobID != job.ID {
+		t.Errorf("event JobID = %q, want %q", received.JobID, job.ID)
+	}
+}
+
+func TestCreateProgressHooks_FailedBroadcasts(t *testing.T) {
+	t.Parallel()
+
+	broadcaster := NewProgressBroadcaster()
+	sched := New(DefaultConfig())
+
+	var received ProgressEvent
+	broadcaster.Subscribe(func(event ProgressEvent) {
+		received = event
+	})
+	hooks := CreateProgressHooks(broadcaster, sched)
+
+	job := NewSpawnJob("job-fail-1", JobTypeAgentLaunch, "fail-sess")
+	hooks.OnJobFailed(job, errors.New("test error"))
+
+	if received.Type != "job_failed" {
+		t.Errorf("event type = %q, want job_failed", received.Type)
+	}
+	if received.Message != "Job failed: test error" {
+		t.Errorf("event Message = %q, want 'Job failed: test error'", received.Message)
+	}
+}

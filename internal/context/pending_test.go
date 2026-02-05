@@ -475,3 +475,111 @@ func TestFromPendingRotation_Fields(t *testing.T) {
 		t.Errorf("WorkDir = %q, want /projects/other", stored.WorkDir)
 	}
 }
+
+// =============================================================================
+// Global wrapper function tests
+// =============================================================================
+
+func TestAddPendingRotation_Global(t *testing.T) {
+	// Not parallel: modifies package-level DefaultPendingRotationStore
+	origStore := DefaultPendingRotationStore
+	tmpStore := NewPendingRotationStoreWithPath(filepath.Join(t.TempDir(), "pending.jsonl"))
+	DefaultPendingRotationStore = tmpStore
+	t.Cleanup(func() { DefaultPendingRotationStore = origStore })
+
+	pr := makePending("agent-global-1", "sess-g", "1.0", time.Now().Add(5*time.Minute))
+	if err := AddPendingRotation(pr); err != nil {
+		t.Fatalf("AddPendingRotation: %v", err)
+	}
+
+	got, err := GetPendingRotationByID("agent-global-1")
+	if err != nil {
+		t.Fatalf("GetPendingRotationByID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil pending rotation")
+	}
+	if got.SessionName != "sess-g" {
+		t.Errorf("SessionName = %q, want sess-g", got.SessionName)
+	}
+}
+
+func TestRemovePendingRotation_Global(t *testing.T) {
+	origStore := DefaultPendingRotationStore
+	tmpStore := NewPendingRotationStoreWithPath(filepath.Join(t.TempDir(), "pending.jsonl"))
+	DefaultPendingRotationStore = tmpStore
+	t.Cleanup(func() { DefaultPendingRotationStore = origStore })
+
+	pr := makePending("agent-rm-1", "sess-rm", "2.0", time.Now().Add(5*time.Minute))
+	if err := AddPendingRotation(pr); err != nil {
+		t.Fatalf("AddPendingRotation: %v", err)
+	}
+
+	if err := RemovePendingRotation("agent-rm-1"); err != nil {
+		t.Fatalf("RemovePendingRotation: %v", err)
+	}
+
+	got, err := GetPendingRotationByID("agent-rm-1")
+	if err != nil {
+		t.Fatalf("GetPendingRotationByID after remove: %v", err)
+	}
+	if got != nil {
+		t.Error("expected nil after removal")
+	}
+}
+
+func TestGetAllPendingRotations_Global(t *testing.T) {
+	origStore := DefaultPendingRotationStore
+	tmpStore := NewPendingRotationStoreWithPath(filepath.Join(t.TempDir(), "pending.jsonl"))
+	DefaultPendingRotationStore = tmpStore
+	t.Cleanup(func() { DefaultPendingRotationStore = origStore })
+
+	pr1 := makePending("agent-all-1", "sess-1", "1.0", time.Now().Add(5*time.Minute))
+	pr2 := makePending("agent-all-2", "sess-2", "2.0", time.Now().Add(5*time.Minute))
+	_ = AddPendingRotation(pr1)
+	_ = AddPendingRotation(pr2)
+
+	all, err := GetAllPendingRotations()
+	if err != nil {
+		t.Fatalf("GetAllPendingRotations: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("expected 2 pending rotations, got %d", len(all))
+	}
+}
+
+func TestGetPendingRotationsForSession_Global(t *testing.T) {
+	origStore := DefaultPendingRotationStore
+	tmpStore := NewPendingRotationStoreWithPath(filepath.Join(t.TempDir(), "pending.jsonl"))
+	DefaultPendingRotationStore = tmpStore
+	t.Cleanup(func() { DefaultPendingRotationStore = origStore })
+
+	pr1 := makePending("agent-sess-1", "target-sess", "1.0", time.Now().Add(5*time.Minute))
+	pr2 := makePending("agent-sess-2", "other-sess", "2.0", time.Now().Add(5*time.Minute))
+	pr3 := makePending("agent-sess-3", "target-sess", "3.0", time.Now().Add(5*time.Minute))
+	_ = AddPendingRotation(pr1)
+	_ = AddPendingRotation(pr2)
+	_ = AddPendingRotation(pr3)
+
+	forSession, err := GetPendingRotationsForSession("target-sess")
+	if err != nil {
+		t.Fatalf("GetPendingRotationsForSession: %v", err)
+	}
+	if len(forSession) != 2 {
+		t.Errorf("expected 2 rotations for target-sess, got %d", len(forSession))
+	}
+}
+
+func TestPendingRotationStoragePath_Global(t *testing.T) {
+	origStore := DefaultPendingRotationStore
+	tmpDir := t.TempDir()
+	storagePath := filepath.Join(tmpDir, "pending.jsonl")
+	tmpStore := NewPendingRotationStoreWithPath(storagePath)
+	DefaultPendingRotationStore = tmpStore
+	t.Cleanup(func() { DefaultPendingRotationStore = origStore })
+
+	got := PendingRotationStoragePath()
+	if got != storagePath {
+		t.Errorf("PendingRotationStoragePath() = %q, want %q", got, storagePath)
+	}
+}

@@ -205,6 +205,206 @@ func TestDetectConflicts_Empty(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Global wrapper tests: DetectConflictsRecent, ConflictsSince
+// =============================================================================
+
+func TestDetectConflictsRecent(t *testing.T) {
+	// Not parallel: modifies package-level GlobalFileChanges
+	origStore := GlobalFileChanges
+	store := NewFileChangeStore(100)
+	GlobalFileChanges = store
+	t.Cleanup(func() { GlobalFileChanges = origStore })
+
+	now := time.Now()
+
+	// Record changes from two agents within the last 5 minutes
+	store.Add(RecordedFileChange{
+		Timestamp: now.Add(-3 * time.Minute),
+		Session:   "s1",
+		Agents:    []string{"a1"},
+		Change:    FileChange{Path: "/src/main.go", Type: FileModified},
+	})
+	store.Add(RecordedFileChange{
+		Timestamp: now.Add(-2 * time.Minute),
+		Session:   "s1",
+		Agents:    []string{"a2"},
+		Change:    FileChange{Path: "/src/main.go", Type: FileModified},
+	})
+
+	// Detect conflicts in the last 10 minutes
+	conflicts := DetectConflictsRecent(10 * time.Minute)
+	if len(conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d", len(conflicts))
+	}
+	if conflicts[0].Path != "/src/main.go" {
+		t.Errorf("expected conflict on /src/main.go, got %s", conflicts[0].Path)
+	}
+}
+
+func TestDetectConflictsRecent_NoConflicts(t *testing.T) {
+	origStore := GlobalFileChanges
+	store := NewFileChangeStore(100)
+	GlobalFileChanges = store
+	t.Cleanup(func() { GlobalFileChanges = origStore })
+
+	now := time.Now()
+
+	// Single agent - no conflict
+	store.Add(RecordedFileChange{
+		Timestamp: now.Add(-1 * time.Minute),
+		Session:   "s1",
+		Agents:    []string{"a1"},
+		Change:    FileChange{Path: "/src/main.go", Type: FileModified},
+	})
+
+	conflicts := DetectConflictsRecent(10 * time.Minute)
+	if len(conflicts) != 0 {
+		t.Errorf("expected 0 conflicts, got %d", len(conflicts))
+	}
+}
+
+func TestConflictsSince(t *testing.T) {
+	origStore := GlobalFileChanges
+	store := NewFileChangeStore(100)
+	GlobalFileChanges = store
+	t.Cleanup(func() { GlobalFileChanges = origStore })
+
+	now := time.Now()
+
+	store.Add(RecordedFileChange{
+		Timestamp: now.Add(-5 * time.Minute),
+		Session:   "s1",
+		Agents:    []string{"a1"},
+		Change:    FileChange{Path: "/src/api.go", Type: FileModified},
+	})
+	store.Add(RecordedFileChange{
+		Timestamp: now.Add(-3 * time.Minute),
+		Session:   "s1",
+		Agents:    []string{"a2"},
+		Change:    FileChange{Path: "/src/api.go", Type: FileModified},
+	})
+	store.Add(RecordedFileChange{
+		Timestamp: now.Add(-2 * time.Minute),
+		Session:   "s2",
+		Agents:    []string{"a3"},
+		Change:    FileChange{Path: "/src/api.go", Type: FileModified},
+	})
+
+	// Filter by session s1 — should get a conflict (a1 and a2)
+	conflicts := ConflictsSince(now.Add(-10*time.Minute), "s1")
+	if len(conflicts) != 1 {
+		t.Fatalf("expected 1 conflict for session s1, got %d", len(conflicts))
+	}
+	if len(conflicts[0].Changes) != 2 {
+		t.Errorf("expected 2 changes for session s1, got %d", len(conflicts[0].Changes))
+	}
+}
+
+func TestConflictsSince_EmptySession(t *testing.T) {
+	origStore := GlobalFileChanges
+	store := NewFileChangeStore(100)
+	GlobalFileChanges = store
+	t.Cleanup(func() { GlobalFileChanges = origStore })
+
+	now := time.Now()
+
+	store.Add(RecordedFileChange{
+		Timestamp: now.Add(-3 * time.Minute),
+		Session:   "s1",
+		Agents:    []string{"a1"},
+		Change:    FileChange{Path: "/src/api.go", Type: FileModified},
+	})
+	store.Add(RecordedFileChange{
+		Timestamp: now.Add(-2 * time.Minute),
+		Session:   "s2",
+		Agents:    []string{"a2"},
+		Change:    FileChange{Path: "/src/api.go", Type: FileModified},
+	})
+
+	// Empty session means no filter — include all sessions
+	conflicts := ConflictsSince(now.Add(-10*time.Minute), "")
+	if len(conflicts) != 1 {
+		t.Fatalf("expected 1 conflict with empty session filter, got %d", len(conflicts))
+	}
+	if len(conflicts[0].Changes) != 2 {
+		t.Errorf("expected 2 changes, got %d", len(conflicts[0].Changes))
+	}
+}
+
+// =============================================================================
+// Global wrapper tests: RecordedChangesSince, RecordedChanges
+// =============================================================================
+
+func TestRecordedChangesSince(t *testing.T) {
+	origStore := GlobalFileChanges
+	store := NewFileChangeStore(100)
+	GlobalFileChanges = store
+	t.Cleanup(func() { GlobalFileChanges = origStore })
+
+	now := time.Now()
+
+	store.Add(RecordedFileChange{
+		Timestamp: now.Add(-10 * time.Minute),
+		Session:   "s1",
+		Agents:    []string{"a1"},
+		Change:    FileChange{Path: "/old.go", Type: FileModified},
+	})
+	store.Add(RecordedFileChange{
+		Timestamp: now.Add(-1 * time.Minute),
+		Session:   "s1",
+		Agents:    []string{"a2"},
+		Change:    FileChange{Path: "/new.go", Type: FileAdded},
+	})
+
+	changes := RecordedChangesSince(now.Add(-5 * time.Minute))
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change since 5min ago, got %d", len(changes))
+	}
+	if changes[0].Change.Path != "/new.go" {
+		t.Errorf("expected /new.go, got %s", changes[0].Change.Path)
+	}
+}
+
+func TestRecordedChanges(t *testing.T) {
+	origStore := GlobalFileChanges
+	store := NewFileChangeStore(100)
+	GlobalFileChanges = store
+	t.Cleanup(func() { GlobalFileChanges = origStore })
+
+	now := time.Now()
+
+	store.Add(RecordedFileChange{
+		Timestamp: now.Add(-5 * time.Minute),
+		Session:   "s1",
+		Agents:    []string{"a1"},
+		Change:    FileChange{Path: "/file1.go", Type: FileModified},
+	})
+	store.Add(RecordedFileChange{
+		Timestamp: now.Add(-1 * time.Minute),
+		Session:   "s1",
+		Agents:    []string{"a2"},
+		Change:    FileChange{Path: "/file2.go", Type: FileAdded},
+	})
+
+	all := RecordedChanges()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 changes total, got %d", len(all))
+	}
+}
+
+func TestRecordedChanges_Empty(t *testing.T) {
+	origStore := GlobalFileChanges
+	store := NewFileChangeStore(100)
+	GlobalFileChanges = store
+	t.Cleanup(func() { GlobalFileChanges = origStore })
+
+	all := RecordedChanges()
+	if len(all) != 0 {
+		t.Errorf("expected 0 changes from empty store, got %d", len(all))
+	}
+}
+
 func TestConflictSeverityFunction(t *testing.T) {
 	t.Parallel()
 
