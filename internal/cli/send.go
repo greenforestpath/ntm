@@ -210,6 +210,7 @@ type SendOptions struct {
 	Session        string
 	Prompt         string
 	PromptSource   string
+	BasePrompt     string // Prepended to all prompts (bd-3ejl)
 	Targets        SendTargets
 	TargetAll      bool
 	SkipFirst      bool
@@ -473,6 +474,8 @@ func newSendCmd() *cobra.Command {
 	var distributeAuto bool
 	var randomize bool
 	var seed int64
+	var basePrompt string
+	var basePromptFile string
 
 	// Batch mode variables
 	var batchFile string
@@ -541,6 +544,17 @@ func newSendCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			session := args[0]
 
+			// Resolve base prompt: flag > file > config (bd-3ejl)
+			var cfgBasePrompt, cfgBasePromptFile string
+			if cfg != nil {
+				cfgBasePrompt = cfg.Send.BasePrompt
+				cfgBasePromptFile = cfg.Send.BasePromptFile
+			}
+			resolvedBasePrompt, err := resolveBasePrompt(basePrompt, basePromptFile, cfgBasePrompt, cfgBasePromptFile)
+			if err != nil {
+				return err
+			}
+
 			// Handle --distribute mode: auto-distribute work from bv triage
 			if distribute {
 				if dryRun && distributeAuto {
@@ -561,6 +575,7 @@ func newSendCmd() *cobra.Command {
 				}
 				batchOpts := SendOptions{
 					Session:         session,
+					BasePrompt:      resolvedBasePrompt,
 					Targets:         targets,
 					TargetAll:       targetAll,
 					SkipFirst:       skipFirst,
@@ -600,6 +615,7 @@ func newSendCmd() *cobra.Command {
 
 			opts := SendOptions{
 				Session:        session,
+				BasePrompt:     resolvedBasePrompt,
 				Targets:        targets,
 				TargetAll:      targetAll,
 				SkipFirst:      skipFirst,
@@ -695,6 +711,10 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&randomize, "randomize", false, "Randomize send order for individualized prompts (reduces thundering herd)")
 	cmd.Flags().Int64Var(&seed, "seed", 0, "Deterministic seed for --randomize (0 = time-based)")
 
+	// Base prompt flags (bd-3ejl) - prepend common instructions to all prompts
+	cmd.Flags().StringVar(&basePrompt, "base-prompt", "", "Text to prepend to all prompts")
+	cmd.Flags().StringVar(&basePromptFile, "base-prompt-file", "", "File whose contents are prepended to all prompts")
+
 	// Batch mode flags - send multiple prompts from file
 	cmd.Flags().StringVar(&batchFile, "batch", "", "Read prompts from file (one per line or --- separated)")
 	cmd.Flags().StringVar(&batchDelay, "delay", "", "Delay between prompts (e.g., 5s, 100ms)")
@@ -771,6 +791,48 @@ func stdinHasData() bool {
 	// Check if it's a named pipe (FIFO) or has data waiting
 	// ModeCharDevice is 0 when stdin is redirected/piped
 	return (stat.Mode() & os.ModeCharDevice) == 0
+}
+
+// resolveBasePrompt determines the base prompt from flags and config.
+// Priority: flag > file flag > config string > config file > empty.
+func resolveBasePrompt(flagValue, flagFile, cfgValue, cfgFile string) (string, error) {
+	// Explicit --base-prompt flag takes highest priority
+	if flagValue != "" {
+		return flagValue, nil
+	}
+	// --base-prompt-file flag
+	if flagFile != "" {
+		data, err := os.ReadFile(flagFile)
+		if err != nil {
+			return "", fmt.Errorf("reading --base-prompt-file: %w", err)
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+	// Config string
+	if cfgValue != "" {
+		return cfgValue, nil
+	}
+	// Config file
+	if cfgFile != "" {
+		data, err := os.ReadFile(cfgFile)
+		if err != nil {
+			return "", fmt.Errorf("reading send.base_prompt_file from config: %w", err)
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+	return "", nil
+}
+
+// applyBasePrompt prepends a base prompt to a user prompt with a blank-line separator.
+// Returns userPrompt unchanged if basePrompt is empty.
+func applyBasePrompt(basePrompt, userPrompt string) string {
+	if basePrompt == "" {
+		return userPrompt
+	}
+	if userPrompt == "" {
+		return basePrompt
+	}
+	return basePrompt + "\n\n" + userPrompt
 }
 
 // buildPrompt combines prefix, content, and suffix into a single prompt string.
@@ -854,7 +916,8 @@ func runSendWithTargets(opts SendOptions) error {
 
 func runSendInternal(opts SendOptions) (err error) {
 	session := opts.Session
-	prompt := opts.Prompt
+	prompt := applyBasePrompt(opts.BasePrompt, opts.Prompt)
+	opts.Prompt = prompt // update opts so downstream sees combined prompt
 	promptSource := opts.PromptSource
 	templateName := opts.TemplateName
 	targets := opts.Targets
@@ -3050,6 +3113,13 @@ func runSendBatch(opts SendOptions) error {
 	prompts, err := parseBatchFile(opts.BatchFile)
 	if err != nil {
 		return err
+	}
+
+	// Prepend base prompt to each batch prompt (bd-3ejl)
+	if opts.BasePrompt != "" {
+		for i := range prompts {
+			prompts[i].Text = applyBasePrompt(opts.BasePrompt, prompts[i].Text)
+		}
 	}
 
 	jsonOutput := IsJSONOutput()

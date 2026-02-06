@@ -91,6 +91,7 @@ type Config struct {
 	Preflight          PreflightConfig       `toml:"preflight"`        // Prompt preflight/lint configuration
 	Redaction          RedactionConfig       `toml:"redaction"`        // Secrets/PII redaction configuration
 	Privacy            PrivacyConfig         `toml:"privacy"`          // Privacy mode configuration
+	Send               SendConfig            `toml:"send"`             // Send command defaults
 
 	// Runtime-only fields (populated by project config merging)
 	ProjectDefaults map[string]int `toml:"-"`
@@ -1758,6 +1759,12 @@ func DefaultPrivacyConfig() PrivacyConfig {
 func ValidatePrivacyConfig(cfg *PrivacyConfig) error {
 	// No complex validation needed for boolean flags
 	return nil
+}
+
+// SendConfig holds defaults for the send command.
+type SendConfig struct {
+	BasePrompt     string `toml:"base_prompt"`      // Text prepended to all prompts
+	BasePromptFile string `toml:"base_prompt_file"`  // File whose contents are prepended to all prompts
 }
 
 // ToRedactionLibConfig converts the config to the redaction library's Config type.

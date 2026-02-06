@@ -1169,3 +1169,143 @@ func TestFilterPanesForBatchAllUser(t *testing.T) {
 		t.Errorf("filterPanesForBatch(user panes, TargetAll) returned %d panes, want 2", len(got))
 	}
 }
+
+// --- Tests for base prompt feature (bd-3ejl) ---
+
+func TestApplyBasePrompt(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		base       string
+		user       string
+		want       string
+	}{
+		{
+			name: "empty base returns user unchanged",
+			base: "",
+			user: "do the thing",
+			want: "do the thing",
+		},
+		{
+			name: "empty user returns base",
+			base: "Always run tests",
+			user: "",
+			want: "Always run tests",
+		},
+		{
+			name: "both empty returns empty",
+			base: "",
+			user: "",
+			want: "",
+		},
+		{
+			name: "base prepended with separator",
+			base: "Follow coding standards",
+			user: "Implement feature X",
+			want: "Follow coding standards\n\nImplement feature X",
+		},
+		{
+			name: "multiline base",
+			base: "Rule 1: run tests\nRule 2: use br",
+			user: "Fix the bug",
+			want: "Rule 1: run tests\nRule 2: use br\n\nFix the bug",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := applyBasePrompt(tt.base, tt.user)
+			if got != tt.want {
+				t.Errorf("applyBasePrompt(%q, %q) = %q, want %q", tt.base, tt.user, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveBasePrompt_FlagPriority(t *testing.T) {
+	t.Parallel()
+	got, err := resolveBasePrompt("from flag", "", "from config", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "from flag" {
+		t.Errorf("expected flag value, got %q", got)
+	}
+}
+
+func TestResolveBasePrompt_FlagFilePriority(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "base.txt")
+	if err := os.WriteFile(path, []byte("from flag file\n"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := resolveBasePrompt("", path, "from config", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "from flag file" {
+		t.Errorf("expected flag file contents, got %q", got)
+	}
+}
+
+func TestResolveBasePrompt_ConfigValue(t *testing.T) {
+	t.Parallel()
+	got, err := resolveBasePrompt("", "", "from config", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "from config" {
+		t.Errorf("expected config value, got %q", got)
+	}
+}
+
+func TestResolveBasePrompt_ConfigFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "base_config.txt")
+	if err := os.WriteFile(path, []byte("  from config file  \n"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := resolveBasePrompt("", "", "", path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "from config file" {
+		t.Errorf("expected trimmed config file contents, got %q", got)
+	}
+}
+
+func TestResolveBasePrompt_AllEmpty(t *testing.T) {
+	t.Parallel()
+	got, err := resolveBasePrompt("", "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("expected empty, got %q", got)
+	}
+}
+
+func TestResolveBasePrompt_MissingFlagFile(t *testing.T) {
+	t.Parallel()
+	_, err := resolveBasePrompt("", "/nonexistent/base.txt", "", "")
+	if err == nil {
+		t.Fatal("expected error for missing flag file")
+	}
+	if !strings.Contains(err.Error(), "--base-prompt-file") {
+		t.Errorf("error should mention --base-prompt-file, got: %v", err)
+	}
+}
+
+func TestResolveBasePrompt_MissingConfigFile(t *testing.T) {
+	t.Parallel()
+	_, err := resolveBasePrompt("", "", "", "/nonexistent/base.txt")
+	if err == nil {
+		t.Fatal("expected error for missing config file")
+	}
+	if !strings.Contains(err.Error(), "send.base_prompt_file") {
+		t.Errorf("error should mention config, got: %v", err)
+	}
+}
