@@ -48,6 +48,19 @@ Note: `config.toml` has `[robot.output] format = "json|toon"`, but this is **not
 - `FormatAuto` currently returns JSON; future auto-detection can be layered without changing call sites.
 - On unsupported shapes or missing `tru`, TOON returns an error; callers typically propagate and exit non-zero.
 
+## 4.1) Go Integration Approach (subprocess, not CGO/WASM)
+Decision: call toon_rust via subprocess (`tru --encode`) from Go (see `internal/robot/toon.go`).
+
+Rationale:
+- Robot mode output is typically low frequency and human-paced (or low Hz automation).
+- Subprocess keeps the Go build pure (no CGO), avoids cross-platform Rust toolchain coupling, and makes upgrades easier.
+
+Quick local benchmark (this machine):
+- `tru --version`: `tru 0.1.1`
+- `tru --encode` (50 iterations, small JSON payload, includes process startup): avg ~3.45ms/call
+
+If we ever need higher throughput, prefer a long-lived worker process (stdin/stdout) before considering CGO.
+
 ## 5) Protocol Constraints
 - JSON remains the default and must stay backward compatible.
 - TOON is opt-in (`--robot-format=toon`).
