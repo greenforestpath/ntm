@@ -200,6 +200,7 @@ func TestNormalizeLanguage(t *testing.T) {
 		{"", "text"},
 		{"go", "go"},
 		{"rust", "rust"},
+		{"cobol", "cobol"}, // not in languageMap, fallback return
 	}
 
 	for _, tc := range tests {

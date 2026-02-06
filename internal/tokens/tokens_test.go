@@ -240,6 +240,9 @@ func TestMultiModelContextLimits(t *testing.T) {
 		{"gemini-flash", 1000000},
 		{"gemini-ultra", 1000000},
 
+		// Claude with "3.5" variant
+		{"claude-3.5-sonnet", 200000},
+
 		// Unknown models fallback
 		{"unknown-model-123", 128000},
 		{"some-new-model", 128000},

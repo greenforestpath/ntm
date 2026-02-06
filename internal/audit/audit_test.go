@@ -335,6 +335,33 @@ func TestSanitizeValue_ModeOff(t *testing.T) {
 	}
 }
 
+func TestSanitizeValue_DefaultCase(t *testing.T) {
+	SetRedactionConfig(&redaction.Config{Mode: redaction.ModeOff})
+	t.Cleanup(func() {
+		SetRedactionConfig(nil)
+	})
+
+	// Non-string, non-slice, non-map types should pass through unchanged
+	tests := []struct {
+		name  string
+		input interface{}
+	}{
+		{"int", 42},
+		{"float64", 3.14},
+		{"bool", true},
+		{"nil", nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeValue(tt.input)
+			if got != tt.input {
+				t.Errorf("sanitizeValue(%v) = %v, want %v", tt.input, got, tt.input)
+			}
+		})
+	}
+}
+
 func TestShouldSkipAudit(t *testing.T) {
 	oldArg0 := os.Args[0]
 	os.Args[0] = "ntm"
