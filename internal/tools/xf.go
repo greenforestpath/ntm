@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // XFAdapter provides integration with the XF (X Find) tool.
@@ -23,6 +26,8 @@ func NewXFAdapter() *XFAdapter {
 		BaseAdapter: NewBaseAdapter(ToolXF, "xf"),
 	}
 }
+
+const defaultXFArchivePath = "~/.xf/archive"
 
 // Detect checks if xf is installed
 func (a *XFAdapter) Detect() (string, bool) {
@@ -95,7 +100,7 @@ func (a *XFAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 	}
 
 	// Try to get version as a basic health check
-	_, err := a.Version(ctx)
+	ver, err := a.Version(ctx)
 	latency := time.Since(start)
 
 	if err != nil {
@@ -108,9 +113,43 @@ func (a *XFAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 		}, nil
 	}
 
+	// Version compatibility: require a parseable X.Y.Z substring.
+	// This avoids silently treating unparseable versions as "compatible".
+	versionOK := VersionRegex.MatchString(ver.Raw)
+
+	// Validate default archive location existence. This isn't guaranteed to be
+	// the only possible archive location, but it is the canonical default and
+	// the integration won't function usefully without *some* indexed archive.
+	archivePath := util.ExpandPath(defaultXFArchivePath)
+	archiveOK, archiveErr := isDir(archivePath)
+
+	// Check index validity via xf stats (best-effort).
+	// If stats returns empty, treat as "not indexed" rather than hard error.
+	stats, statsErr := a.GetStats(ctx)
+	indexValid := false
+	tweetCount := 0
+	indexStatus := ""
+	dbPath := ""
+	if stats != nil {
+		tweetCount = stats.TweetCount
+		indexStatus = stats.IndexStatus
+		dbPath = stats.DatabasePath
+		indexValid = xfIndexValid(*stats)
+	}
+
+	// If we have a database path, ensure it exists (tighten index validity).
+	if indexValid && dbPath != "" {
+		if _, err := os.Stat(util.ExpandPath(dbPath)); err != nil {
+			indexValid = false
+		}
+	}
+
+	healthy := versionOK && archiveOK && indexValid
+	msg := xfHealthMessage(ver, versionOK, archivePath, archiveOK, archiveErr, indexValid, indexStatus, tweetCount, statsErr)
+
 	return &HealthStatus{
-		Healthy:     true,
-		Message:     "xf is healthy",
+		Healthy:     healthy,
+		Message:     msg,
 		LastChecked: time.Now(),
 		Latency:     latency,
 	}, nil
@@ -244,4 +283,101 @@ func (a *XFAdapter) Doctor(ctx context.Context) (string, error) {
 	}
 
 	return stdout.String(), nil
+}
+
+func xfIndexValid(stats XFStats) bool {
+	// Conservative: require at least one strong signal of an index.
+	if stats.TweetCount > 0 || stats.LikeCount > 0 || stats.DMCount > 0 || stats.GrokCount > 0 {
+		return true
+	}
+	if stats.DatabasePath != "" {
+		return true
+	}
+	return xfIndexStatusHealthy(stats.IndexStatus)
+}
+
+func xfIndexStatusHealthy(status string) bool {
+	s := strings.ToLower(strings.TrimSpace(status))
+	if s == "" {
+		return false
+	}
+
+	// Explicitly unhealthy signals.
+	switch {
+	case strings.Contains(s, "missing"),
+		strings.Contains(s, "not indexed"),
+		strings.Contains(s, "invalid"),
+		strings.Contains(s, "corrupt"),
+		strings.Contains(s, "error"),
+		strings.Contains(s, "failed"):
+		return false
+	}
+
+	// Explicit healthy signals.
+	switch {
+	case strings.Contains(s, "ok"),
+		strings.Contains(s, "ready"),
+		strings.Contains(s, "indexed"),
+		strings.Contains(s, "healthy"),
+		strings.Contains(s, "up-to-date"):
+		return true
+	}
+
+	// Unknown status: keep conservative.
+	return false
+}
+
+func isDir(path string) (bool, error) {
+	if path == "" {
+		return false, fmt.Errorf("empty path")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	return info.IsDir(), nil
+}
+
+func xfHealthMessage(
+	ver Version,
+	versionOK bool,
+	archivePath string,
+	archiveOK bool,
+	archiveErr error,
+	indexValid bool,
+	indexStatus string,
+	tweetCount int,
+	statsErr error,
+) string {
+	parts := []string{"xf"}
+	if ver.Raw != "" {
+		parts = append(parts, strings.TrimSpace(ver.Raw))
+	} else {
+		parts = append(parts, ver.String())
+	}
+	parts = append(parts, fmt.Sprintf("version_ok=%t", versionOK))
+
+	parts = append(parts, fmt.Sprintf("archive=%s", archivePath))
+	if !archiveOK {
+		if archiveErr != nil {
+			parts = append(parts, fmt.Sprintf("archive_ok=false(%s)", archiveErr.Error()))
+		} else {
+			parts = append(parts, "archive_ok=false")
+		}
+	} else {
+		parts = append(parts, "archive_ok=true")
+	}
+
+	parts = append(parts, fmt.Sprintf("index_valid=%t", indexValid))
+	if strings.TrimSpace(indexStatus) != "" {
+		parts = append(parts, fmt.Sprintf("index_status=%q", strings.TrimSpace(indexStatus)))
+	}
+	if tweetCount > 0 {
+		parts = append(parts, fmt.Sprintf("tweet_count=%d", tweetCount))
+	}
+	if statsErr != nil {
+		parts = append(parts, fmt.Sprintf("stats_err=%q", statsErr.Error()))
+	}
+
+	return strings.Join(parts, " ")
 }
