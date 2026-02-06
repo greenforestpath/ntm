@@ -32,6 +32,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/pt"
+	"github.com/Dicklesworthstone/ntm/internal/integrations/rano"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
 	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
@@ -259,6 +260,12 @@ type RCHStatusUpdateMsg struct {
 	Gen  uint64
 }
 
+// RanoNetworkUpdateMsg is sent when rano network activity is fetched.
+type RanoNetworkUpdateMsg struct {
+	Data panels.RanoNetworkPanelData
+	Gen  uint64
+}
+
 // PendingRotationsUpdateMsg is sent when pending rotations data is fetched
 type PendingRotationsUpdateMsg struct {
 	Pending []*ctxmon.PendingRotation
@@ -315,6 +322,7 @@ const (
 	refreshAgentMailInbox
 	refreshRouting
 	refreshRCH
+	refreshRanoNetwork
 	refreshDCG
 	refreshPendingRotations
 	refreshPTHealth
@@ -483,6 +491,7 @@ type Model struct {
 	beadsPanel           *panels.BeadsPanel
 	alertsPanel          *panels.AlertsPanel
 	costPanel            *panels.CostPanel
+	ranoNetworkPanel     *panels.RanoNetworkPanel
 	rchPanel             *panels.RCHPanel
 	metricsPanel         *panels.MetricsPanel
 	historyPanel         *panels.HistoryPanel
@@ -564,6 +573,11 @@ type Model struct {
 	fetchingRCH        bool // Whether we're currently fetching RCH status
 	lastRCHFetch       time.Time
 	rchRefreshInterval time.Duration // How often to refresh RCH status
+
+	// Rano network activity (best-effort; used by the dashboard network panel).
+	fetchingRanoNetwork        bool
+	lastRanoNetworkFetch       time.Time
+	ranoNetworkRefreshInterval time.Duration
 
 	// Error tracking for data sources (displayed as badges)
 	beadsError       error
@@ -759,6 +773,7 @@ func New(session, projectDir string) Model {
 		beadsRefreshInterval:       BeadsRefreshInterval,
 		cassContextRefreshInterval: CassContextRefreshInterval,
 		scanRefreshInterval:        ScanRefreshInterval,
+		ranoNetworkRefreshInterval: 1 * time.Second,
 		rchRefreshInterval:         RCHIdleRefreshInterval,
 		dcgRefreshInterval:         DCGRefreshInterval,
 		checkpointRefreshInterval:  CheckpointRefreshInterval,
@@ -786,6 +801,7 @@ func New(session, projectDir string) Model {
 		beadsPanel:           panels.NewBeadsPanel(),
 		alertsPanel:          panels.NewAlertsPanel(),
 		costPanel:            panels.NewCostPanel(),
+		ranoNetworkPanel:     panels.NewRanoNetworkPanel(),
 		rchPanel:             panels.NewRCHPanel(),
 		metricsPanel:         panels.NewMetricsPanel(),
 		historyPanel:         panels.NewHistoryPanel(),
@@ -811,6 +827,7 @@ func New(session, projectDir string) Model {
 		fetchingCheckpoint:  true,
 		fetchingHandoff:     true,
 		fetchingMailInbox:   true,
+		fetchingRanoNetwork: true,
 		fetchingRCH:         true,
 		fetchingDCG:         true,
 	}
@@ -823,6 +840,7 @@ func New(session, projectDir string) Model {
 	m.lastBeadsFetch = now
 	m.lastCassContextFetch = now
 	m.lastScanFetch = now
+	m.lastRanoNetworkFetch = now
 	m.lastRCHFetch = now
 	m.lastDCGFetch = now
 	m.lastCheckpointFetch = now
@@ -897,6 +915,7 @@ func (m Model) Init() tea.Cmd {
 		m.fetchCASSContextCmd(),
 		m.fetchCheckpointStatus(),
 		m.fetchHandoffCmd(),
+		m.fetchRanoNetworkStats(),
 		m.fetchRCHStatus(),
 		m.fetchDCGStatus(),
 		m.fetchPendingRotations(),
@@ -1123,6 +1142,126 @@ func (m *Model) fetchScanStatusWithContext(ctx context.Context) tea.Cmd {
 			Gen:      gen,
 		}
 	}
+}
+
+// fetchRanoNetworkStats fetches per-agent network activity from rano (best-effort).
+func (m *Model) fetchRanoNetworkStats() tea.Cmd {
+	gen := m.nextGen(refreshRanoNetwork)
+	cfg := m.cfg
+	session := m.session
+
+	return func() tea.Msg {
+		data := panels.RanoNetworkPanelData{
+			Loaded: true,
+		}
+
+		enabled := true
+		pollInterval := 1 * time.Second
+		if cfg != nil {
+			enabled = cfg.Integrations.Rano.Enabled
+			if cfg.Integrations.Rano.PollIntervalMs > 0 {
+				pollInterval = time.Duration(cfg.Integrations.Rano.PollIntervalMs) * time.Millisecond
+			}
+		}
+		data.Enabled = enabled
+		data.PollInterval = pollInterval
+
+		if !enabled {
+			return RanoNetworkUpdateMsg{Data: data, Gen: gen}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		adapter := tools.NewRanoAdapter()
+		availability, err := adapter.GetAvailability(ctx)
+		if err != nil {
+			data.Error = err
+			return RanoNetworkUpdateMsg{Data: data, Gen: gen}
+		}
+
+		if availability != nil {
+			data.Available = availability.Available && availability.Compatible && availability.HasCapability && availability.CanReadProc
+			if availability.Version.Raw != "" {
+				data.Version = availability.Version.String()
+			}
+		}
+
+		if !data.Available {
+			return RanoNetworkUpdateMsg{Data: data, Gen: gen}
+		}
+
+		// Refresh PID mapping so we can attribute process stats to panes/agents.
+		pidMap := rano.NewPIDMap(session)
+		if err := pidMap.RefreshContext(ctx); err != nil {
+			data.Error = err
+			return RanoNetworkUpdateMsg{Data: data, Gen: gen}
+		}
+
+		allStats, err := adapter.GetAllProcessStats(ctx)
+		if err != nil {
+			data.Error = err
+			return RanoNetworkUpdateMsg{Data: data, Gen: gen}
+		}
+
+		byPane := make(map[string]*panels.RanoNetworkRow)
+		for i := range allStats {
+			st := allStats[i]
+
+			identity := pidMap.GetPaneForPID(st.PID)
+			if identity == nil {
+				continue
+			}
+			label := identity.PaneTitle
+			if label == "" {
+				label = identity.String()
+			}
+
+			row := byPane[label]
+			if row == nil {
+				row = &panels.RanoNetworkRow{
+					Label:     label,
+					AgentType: string(identity.AgentType),
+				}
+				byPane[label] = row
+			}
+
+			row.RequestCount += st.RequestCount
+			row.BytesOut += st.BytesOut
+			row.BytesIn += st.BytesIn
+
+			if ts := parseRanoTimestamp(st.LastRequest); !ts.IsZero() && ts.After(row.LastRequest) {
+				row.LastRequest = ts
+			}
+		}
+
+		for _, row := range byPane {
+			data.Rows = append(data.Rows, *row)
+			data.TotalRequests += row.RequestCount
+			data.TotalBytesOut += row.BytesOut
+			data.TotalBytesIn += row.BytesIn
+		}
+
+		// Stable ordering by label (the panel will still prioritize recency in View).
+		sort.Slice(data.Rows, func(i, j int) bool {
+			return data.Rows[i].Label < data.Rows[j].Label
+		})
+
+		return RanoNetworkUpdateMsg{Data: data, Gen: gen}
+	}
+}
+
+func parseRanoTimestamp(s string) time.Time {
+	if strings.TrimSpace(s) == "" {
+		return time.Time{}
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return ts
+	}
+	if ts, err := time.Parse(time.RFC3339, s); err == nil {
+		return ts
+	}
+	return time.Time{}
 }
 
 // fetchRCHStatus fetches the current RCH status.
@@ -2849,6 +2988,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Reload icons (if dependent on config in future, pass cfg)
 			m.icons = icons.Current()
 
+			// Follow integrations.rano.poll_interval_ms (default 1000ms).
+			if msg.Config.Integrations.Rano.PollIntervalMs > 0 {
+				m.ranoNetworkRefreshInterval = time.Duration(msg.Config.Integrations.Rano.PollIntervalMs) * time.Millisecond
+			}
+
 			// Re-initialize renderer with new theme colors
 			_, detailWidth := layout.SplitProportions(m.width)
 			contentWidth := detailWidth - 4
@@ -2972,6 +3116,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.checkpointStatus = msg.Status
 			m.checkpointError = nil
 			m.markUpdated(refreshCheckpoint, time.Now())
+		}
+		return m, nil
+
+	case RanoNetworkUpdateMsg:
+		if !m.acceptUpdate(refreshRanoNetwork, msg.Gen) {
+			return m, nil
+		}
+		m.fetchingRanoNetwork = false
+		m.lastRanoNetworkFetch = time.Now()
+		if m.ranoNetworkPanel != nil {
+			m.ranoNetworkPanel.SetData(msg.Data)
+		}
+		if msg.Data.Error == nil {
+			m.markUpdated(refreshRanoNetwork, time.Now())
 		}
 		return m, nil
 
@@ -5516,6 +5674,12 @@ func (m *Model) scheduleRefreshes(now time.Time) []tea.Cmd {
 		cmds = append(cmds, m.fetchHandoffCmd())
 	}
 
+	if refreshDue(m.lastRanoNetworkFetch, m.ranoNetworkRefreshInterval) && !m.fetchingRanoNetwork {
+		m.fetchingRanoNetwork = true
+		m.lastRanoNetworkFetch = now
+		cmds = append(cmds, m.fetchRanoNetworkStats())
+	}
+
 	if refreshDue(m.lastRCHFetch, m.rchRefreshInterval) && !m.fetchingRCH {
 		m.fetchingRCH = true
 		m.lastRCHFetch = now
@@ -5709,6 +5873,26 @@ func (m Model) renderSidebar(width, height int) string {
 	if m.scanStatus != "" && m.scanStatus != "unavailable" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(t.Blue).Bold(true).Render("Scan Status"))
 		lines = append(lines, m.renderScanBadge())
+	}
+
+	// Rano network activity (best-effort, height-gated)
+	if m.ranoNetworkPanel != nil && height > 0 && m.ranoNetworkPanel.HasData() {
+		used := lipgloss.Height(strings.Join(lines, "\n"))
+		spacer := 1
+		panelHeight := height - used - spacer
+		if panelHeight >= m.ranoNetworkPanel.Config().MinHeight {
+			if panelHeight > 16 {
+				panelHeight = 16
+			}
+
+			if m.focusedPanel == PanelSidebar {
+				m.ranoNetworkPanel.Focus()
+			} else {
+				m.ranoNetworkPanel.Blur()
+			}
+			m.ranoNetworkPanel.SetSize(width, panelHeight)
+			lines = append(lines, "", m.ranoNetworkPanel.View())
+		}
 	}
 
 	// RCH build offload status (best-effort, height-gated)
