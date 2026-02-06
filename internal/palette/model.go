@@ -16,6 +16,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/tools"
 	"github.com/Dicklesworthstone/ntm/internal/tui/components"
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
@@ -33,6 +34,8 @@ const (
 	PhaseCommand Phase = iota
 	PhaseTarget
 	PhaseConfirm
+	PhaseXFSearch
+	PhaseXFResults
 )
 
 // Target represents the send target
@@ -114,6 +117,13 @@ type Model struct {
 	// This is needed because items are grouped by category, so visual order differs from slice order.
 	visualOrder []int
 
+	// XF search state
+	xfQuery     textinput.Model
+	xfResults   []tools.XFSearchResult
+	xfCursor    int
+	xfSearching bool
+	xfErr       error
+
 	// Theme and styles
 	theme  theme.Theme
 	styles theme.Styles
@@ -146,6 +156,7 @@ type KeyMap struct {
 	Help           key.Binding
 	TogglePin      key.Binding
 	ToggleFavorite key.Binding
+	XFSearch       key.Binding
 	Target1        key.Binding
 	Target2        key.Binding
 	Target3        key.Binding
@@ -217,6 +228,10 @@ var keys = KeyMap{
 	ToggleFavorite: key.NewBinding(
 		key.WithKeys("ctrl+f"),
 		key.WithHelp("ctrl+f", "favorite"),
+	),
+	XFSearch: key.NewBinding(
+		key.WithKeys("ctrl+k"),
+		key.WithHelp("ctrl+k", "xf search"),
 	),
 	Target1: key.NewBinding(key.WithKeys("1")),
 	Target2: key.NewBinding(key.WithKeys("2")),
@@ -293,6 +308,7 @@ func NewWithOptions(session string, commands []config.PaletteCmd, opts Options) 
 
 	m.paletteState = opts.PaletteState
 	m.paletteStatePath = opts.PaletteStatePath
+	m.xfQuery = initXFQuery(t)
 
 	// Build initial visual order mapping
 	m.buildVisualOrder()
@@ -473,6 +489,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case XFSearchResultsMsg:
+		m.xfSearching = false
+		if msg.Err != nil {
+			m.xfErr = msg.Err
+			return m, nil
+		}
+		m.xfResults = msg.Results
+		m.xfCursor = 0
+		if len(msg.Results) > 0 {
+			m.phase = PhaseXFResults
+		} else {
+			m.xfErr = fmt.Errorf("no results found for %q", msg.Query)
+		}
+		return m, nil
+
 	case tea.MouseMsg:
 		// Handle mouse wheel scrolling in command phase
 		if m.phase == PhaseCommand && !m.showHelp {
@@ -500,6 +531,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCommandPhase(msg)
 		case PhaseTarget:
 			return m.updateTargetPhase(msg)
+		case PhaseXFSearch:
+			return m.updateXFSearchPhase(msg)
+		case PhaseXFResults:
+			return m.updateXFResultsPhase(msg)
 		}
 	}
 
@@ -508,6 +543,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.filter, cmd = m.filter.Update(msg)
 		m.updateFiltered()
+		return m, cmd
+	}
+
+	// Update xf query input
+	if m.phase == PhaseXFSearch {
+		var cmd tea.Cmd
+		m.xfQuery, cmd = m.xfQuery.Update(msg)
 		return m, cmd
 	}
 
@@ -648,8 +690,17 @@ func (m *Model) updateCommandPhase(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case key.Matches(msg, keys.XFSearch):
+		m.enterXFSearch()
+		return *m, nil
+
 	case key.Matches(msg, keys.Select):
 		if len(m.filtered) > 0 {
+			cmd := m.filtered[m.cursor]
+			if cmd.Key == "xf-search" {
+				m.enterXFSearch()
+				return *m, nil
+			}
 			m.selected = &m.filtered[m.cursor]
 			m.phase = PhaseTarget
 		}
@@ -1096,6 +1147,10 @@ func (m Model) View() string {
 		return m.viewCommandPhase()
 	case PhaseTarget:
 		return m.viewTargetPhase()
+	case PhaseXFSearch:
+		return m.viewXFSearchPhase()
+	case PhaseXFResults:
+		return m.viewXFResultsPhase()
 	}
 
 	return ""

@@ -327,6 +327,65 @@ func TestGetPromptContentFromFile(t *testing.T) {
 	}
 }
 
+func TestShuffledPermutation_DeterministicSeed(t *testing.T) {
+	t.Parallel()
+
+	seed := int64(12345)
+	seedUsed1, perm1 := shuffledPermutation(32, seed)
+	seedUsed2, perm2 := shuffledPermutation(32, seed)
+
+	if seedUsed1 != seed || seedUsed2 != seed {
+		t.Fatalf("expected seedUsed to match provided seed, got %d and %d", seedUsed1, seedUsed2)
+	}
+	if len(perm1) != len(perm2) {
+		t.Fatalf("perm length mismatch: %d vs %d", len(perm1), len(perm2))
+	}
+	for i := range perm1 {
+		if perm1[i] != perm2[i] {
+			t.Fatalf("expected identical permutations for same seed, mismatch at %d: %v vs %v", i, perm1, perm2)
+		}
+	}
+}
+
+func TestShuffledPermutation_IsPermutation(t *testing.T) {
+	t.Parallel()
+
+	_, perm := shuffledPermutation(100, 999)
+	seen := make(map[int]bool, len(perm))
+	for _, v := range perm {
+		if v < 0 || v >= 100 {
+			t.Fatalf("perm contains out-of-range value %d", v)
+		}
+		if seen[v] {
+			t.Fatalf("perm contains duplicate value %d", v)
+		}
+		seen[v] = true
+	}
+}
+
+func TestPermutePanes_AppliesPermutation(t *testing.T) {
+	t.Parallel()
+
+	panes := []tmux.Pane{
+		{Index: 10},
+		{Index: 11},
+		{Index: 12},
+		{Index: 13},
+	}
+	perm := []int{2, 0, 3, 1}
+	out := permutePanes(panes, perm)
+	if len(out) != len(panes) {
+		t.Fatalf("permutePanes length = %d, want %d", len(out), len(panes))
+	}
+	got := []int{out[0].Index, out[1].Index, out[2].Index, out[3].Index}
+	want := []int{12, 10, 13, 11}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("permutePanes[%d] = %d, want %d (got=%v)", i, got[i], want[i], got)
+		}
+	}
+}
+
 // TestBuildPrompt tests the buildPrompt helper function
 func TestBuildPrompt(t *testing.T) {
 	tests := []struct {

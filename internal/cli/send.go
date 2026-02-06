@@ -51,6 +51,8 @@ type SendResult struct {
 	Warnings      []string           `json:"warnings,omitempty"`
 	Blocked       bool               `json:"blocked,omitempty"`
 	ErrorCode     string             `json:"error_code,omitempty"`
+	Randomized    bool               `json:"randomized,omitempty"`
+	SeedUsed      int64              `json:"seed_used,omitempty"`
 	Targets       []int              `json:"targets"`
 	Delivered     int                `json:"delivered"`
 	Failed        int                `json:"failed"`
@@ -217,6 +219,8 @@ type SendOptions struct {
 	TemplateName   string
 	Tags           []string
 	DryRun         bool
+	Randomize      bool  // Randomize send order for individualized prompts
+	Seed           int64 // Deterministic seed (only used when Randomize=true)
 
 	// Smart routing options
 	SmartRoute    bool   // Use smart routing to select best agent
@@ -371,6 +375,80 @@ func intsToStrings(ints []int) []string {
 	return out
 }
 
+// shuffledPermutation returns a Fisher-Yates permutation of [0..n) using a deterministic PRNG.
+// If seed is 0, it uses a time-based seed and returns the chosen seed via seedUsed.
+func shuffledPermutation(n int, seed int64) (seedUsed int64, perm []int) {
+	perm = make([]int, n)
+	for i := 0; i < n; i++ {
+		perm[i] = i
+	}
+	if n <= 1 {
+		if seed == 0 {
+			return time.Now().UnixNano(), perm
+		}
+		return seed, perm
+	}
+
+	seedUsed = seed
+	if seedUsed == 0 {
+		seedUsed = time.Now().UnixNano()
+	}
+
+	// xorshift64 (deterministic, stable across Go versions)
+	var x uint64 = uint64(seedUsed)
+	if x == 0 {
+		x = 0x9e3779b97f4a7c15
+	}
+	next := func() uint64 {
+		x ^= x << 13
+		x ^= x >> 7
+		x ^= x << 17
+		return x
+	}
+
+	for i := n - 1; i > 0; i-- {
+		j := int(next() % uint64(i+1))
+		perm[i], perm[j] = perm[j], perm[i]
+	}
+
+	return seedUsed, perm
+}
+
+func permutePanes(panes []tmux.Pane, perm []int) []tmux.Pane {
+	if len(panes) != len(perm) {
+		return panes
+	}
+	out := make([]tmux.Pane, 0, len(panes))
+	for _, idx := range perm {
+		if idx < 0 || idx >= len(panes) {
+			continue
+		}
+		out = append(out, panes[idx])
+	}
+	// If perm was malformed, fall back to original ordering.
+	if len(out) != len(panes) {
+		return panes
+	}
+	return out
+}
+
+func permuteBatchPrompts(prompts []BatchPrompt, perm []int) []BatchPrompt {
+	if len(prompts) != len(perm) {
+		return prompts
+	}
+	out := make([]BatchPrompt, 0, len(prompts))
+	for _, idx := range perm {
+		if idx < 0 || idx >= len(prompts) {
+			continue
+		}
+		out = append(out, prompts[idx])
+	}
+	if len(out) != len(prompts) {
+		return prompts
+	}
+	return out
+}
+
 func newSendCmd() *cobra.Command {
 	var targets SendTargets
 	var targetAll, skipFirst bool
@@ -393,6 +471,8 @@ func newSendCmd() *cobra.Command {
 	var distributeStrategy string
 	var distributeLimit int
 	var distributeAuto bool
+	var randomize bool
+	var seed int64
 
 	// Batch mode variables
 	var batchFile string
@@ -466,7 +546,7 @@ func newSendCmd() *cobra.Command {
 				if dryRun && distributeAuto {
 					return fmt.Errorf("cannot use --dry-run with --dist-auto")
 				}
-				return runDistributeMode(session, distributeStrategy, distributeLimit, distributeAuto, dryRun)
+				return runDistributeMode(session, distributeStrategy, distributeLimit, distributeAuto, dryRun, randomize, seed)
 			}
 
 			// Handle --batch mode: send multiple prompts from file
@@ -499,6 +579,8 @@ func newSendCmd() *cobra.Command {
 					BatchStopOnErr:  batchStopOnErr,
 					BatchBroadcast:  batchBroadcast,
 					BatchAgentIndex: batchAgentIndex,
+					Randomize:       randomize,
+					Seed:            seed,
 				}
 				return runSendBatch(batchOpts)
 			}
@@ -532,6 +614,8 @@ func newSendCmd() *cobra.Command {
 				CassCheckDays:  cassCheckDays,
 				NoHooks:        noHooks,
 				DryRun:         dryRun,
+				Randomize:      randomize,
+				Seed:           seed,
 			}
 
 			// Handle template-based prompts
@@ -606,6 +690,10 @@ func newSendCmd() *cobra.Command {
 	cmd.Flags().IntVar(&cassCheckDays, "cass-check-days", 7, "Look back N days for duplicates")
 	cmd.Flags().BoolVar(&noHooks, "no-hooks", false, "Disable command hooks")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview what would be sent without sending")
+
+	// Randomization flags
+	cmd.Flags().BoolVar(&randomize, "randomize", false, "Randomize send order for individualized prompts (reduces thundering herd)")
+	cmd.Flags().Int64Var(&seed, "seed", 0, "Deterministic seed for --randomize (0 = time-based)")
 
 	// Batch mode flags - send multiple prompts from file
 	cmd.Flags().StringVar(&batchFile, "batch", "", "Read prompts from file (one per line or --- separated)")
@@ -846,6 +934,7 @@ func runSendInternal(opts SendOptions) (err error) {
 
 	delivered := 0
 	failed := 0
+	seedUsed := int64(0)
 
 	// Audit: send command start (redacted preview only)
 	_ = audit.LogEvent(session, audit.EventTypeSend, audit.ActorUser, "send", map[string]interface{}{
@@ -856,6 +945,8 @@ func runSendInternal(opts SendOptions) (err error) {
 		"template":       templateName,
 		"targets":        buildTargetDescription(targetCC, targetCod, targetGmi, targetAll, skipFirst, paneIndex, tags),
 		"dry_run":        dryRun,
+		"randomize":      opts.Randomize,
+		"seed":           opts.Seed,
 		"correlation_id": auditCorrelationID,
 	}, nil)
 
@@ -1226,11 +1317,21 @@ func runSendInternal(opts SendOptions) (err error) {
 	}
 
 	// Track results for JSON output
+	if opts.Randomize && len(selectedPanes) > 1 && paneIndex < 0 {
+		var perm []int
+		seedUsed, perm = shuffledPermutation(len(selectedPanes), opts.Seed)
+		selectedPanes = permutePanes(selectedPanes, perm)
+	}
+
 	targetPanes := make([]int, 0, len(selectedPanes))
 	for _, p := range selectedPanes {
 		targetPanes = append(targetPanes, p.Index)
 	}
 	histTargets = targetPanes
+
+	if opts.Randomize && len(targetPanes) > 1 && !jsonOutput {
+		fmt.Fprintf(os.Stderr, "Randomized send order (seed=%d): %v\n", seedUsed, targetPanes)
+	}
 
 	// Apply DCG safety check for non-Claude agents
 	if err := maybeBlockSendWithDCG(prompt, session, selectedPanes); err != nil {
@@ -1266,6 +1367,8 @@ func runSendInternal(opts SendOptions) (err error) {
 					PromptPreview: truncatePrompt(prompt, 50),
 					Redaction:     redactionSummary,
 					Warnings:      redactionWarnings,
+					Randomized:    opts.Randomize,
+					SeedUsed:      seedUsed,
 					Targets:       targetPanes,
 					Delivered:     delivered,
 					Failed:        failed,
@@ -1286,6 +1389,8 @@ func runSendInternal(opts SendOptions) (err error) {
 				PromptPreview: truncatePrompt(prompt, 50),
 				Redaction:     redactionSummary,
 				Warnings:      redactionWarnings,
+				Randomized:    opts.Randomize,
+				SeedUsed:      seedUsed,
 				Targets:       targetPanes,
 				Delivered:     delivered,
 				Failed:        failed,
@@ -1358,6 +1463,8 @@ func runSendInternal(opts SendOptions) (err error) {
 			PromptPreview: truncatePrompt(prompt, 50),
 			Redaction:     redactionSummary,
 			Warnings:      redactionWarnings,
+			Randomized:    opts.Randomize,
+			SeedUsed:      seedUsed,
 			Targets:       targetPanes,
 			Delivered:     delivered,
 			Failed:        failed,
@@ -2522,7 +2629,7 @@ func checkCassDuplicates(session, prompt string, threshold float64, days int) er
 
 // runDistributeMode implements the --distribute flag behavior.
 // It gets prioritized work from bv triage and distributes tasks to idle agents.
-func runDistributeMode(session, strategy string, limit int, autoExecute bool, dryRun bool) error {
+func runDistributeMode(session, strategy string, limit int, autoExecute bool, dryRun bool, randomize bool, seed int64) error {
 	th := theme.Current()
 
 	outputError := func(err error) error {
@@ -2592,6 +2699,29 @@ func runDistributeMode(session, strategy string, limit int, autoExecute bool, dr
 		recs = recs[:limit]
 	}
 
+	seedUsed := int64(0)
+	if randomize && len(recs) > 1 {
+		var perm []int
+		seedUsed, perm = shuffledPermutation(len(recs), seed)
+		shuffled := make([]robot.DistributeRecommendation, 0, len(recs))
+		for _, idx := range perm {
+			if idx < 0 || idx >= len(recs) {
+				continue
+			}
+			shuffled = append(shuffled, recs[idx])
+		}
+		if len(shuffled) == len(recs) {
+			recs = shuffled
+		}
+		if !jsonOutput {
+			order := make([]int, 0, len(recs))
+			for _, r := range recs {
+				order = append(order, r.PaneIndex)
+			}
+			fmt.Fprintf(os.Stderr, "Randomized distribute order (seed=%d): %v\n", seedUsed, order)
+		}
+	}
+
 	// Style helpers
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(th.Primary))
 	beadStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(th.Secondary))
@@ -2624,6 +2754,10 @@ func runDistributeMode(session, strategy string, limit int, autoExecute bool, dr
 			"strategy":        strategy,
 			"recommendations": recs,
 			"count":           len(recs),
+		}
+		if randomize {
+			result["randomized"] = true
+			result["seed_used"] = seedUsed
 		}
 		if dryRun {
 			result["dry_run"] = true
@@ -2710,14 +2844,17 @@ func runDistributeMode(session, strategy string, limit int, autoExecute bool, dr
 
 // BatchResult represents the JSON output for batch send operations
 type BatchResult struct {
-	Success   bool                `json:"success"`
-	Session   string              `json:"session"`
-	Total     int                 `json:"batch_total"`
-	Delivered int                 `json:"batch_delivered"`
-	Failed    int                 `json:"batch_failed"`
-	Skipped   int                 `json:"batch_skipped"`
-	Results   []BatchPromptResult `json:"results"`
-	Error     string              `json:"error,omitempty"`
+	Success    bool                `json:"success"`
+	Session    string              `json:"session"`
+	Randomized bool                `json:"randomized,omitempty"`
+	SeedUsed   int64               `json:"seed_used,omitempty"`
+	Order      []string            `json:"order,omitempty"` // BatchPrompt.Source in execution order (for debugging/tests)
+	Total      int                 `json:"batch_total"`
+	Delivered  int                 `json:"batch_delivered"`
+	Failed     int                 `json:"batch_failed"`
+	Skipped    int                 `json:"batch_skipped"`
+	Results    []BatchPromptResult `json:"results"`
+	Error      string              `json:"error,omitempty"`
 }
 
 // BatchPromptResult represents the result of sending a single prompt in a batch
@@ -2917,6 +3054,20 @@ func runSendBatch(opts SendOptions) error {
 
 	jsonOutput := IsJSONOutput()
 	total := len(prompts)
+
+	seedUsed := int64(0)
+	if opts.Randomize && total > 1 {
+		var perm []int
+		seedUsed, perm = shuffledPermutation(total, opts.Seed)
+		prompts = permuteBatchPrompts(prompts, perm)
+		if !jsonOutput {
+			order := make([]string, 0, len(prompts))
+			for _, p := range prompts {
+				order = append(order, p.Source)
+			}
+			fmt.Fprintf(os.Stderr, "Randomized batch order (seed=%d): %v\n", seedUsed, order)
+		}
+	}
 
 	// Get available panes for round-robin targeting
 	panes, err := tmux.GetPanes(opts.Session)
@@ -3160,8 +3311,20 @@ summary:
 	// Output results
 	if jsonOutput {
 		batchResult := BatchResult{
-			Success:   failed == 0 && !interrupted,
-			Session:   opts.Session,
+			Success:    failed == 0 && !interrupted,
+			Session:    opts.Session,
+			Randomized: opts.Randomize,
+			SeedUsed:   seedUsed,
+			Order: func() []string {
+				if !opts.Randomize {
+					return nil
+				}
+				out := make([]string, 0, len(prompts))
+				for _, p := range prompts {
+					out = append(out, p.Source)
+				}
+				return out
+			}(),
 			Total:     total,
 			Delivered: delivered,
 			Failed:    failed,
