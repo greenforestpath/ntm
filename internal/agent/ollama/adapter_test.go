@@ -397,9 +397,87 @@ func TestPullModel(t *testing.T) {
 	}
 }
 
+func TestPullModelWithProgress(t *testing.T) {
+	server := mockOllamaServer(t, map[string]http.HandlerFunc{
+		"/api/tags": func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(ollamaTagsResponse{})
+		},
+		"/api/pull": func(w http.ResponseWriter, r *http.Request) {
+			var req ollamaPullRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+
+			flusher, _ := w.(http.Flusher)
+			updates := []ollamaPullResponse{
+				{Status: "pulling manifest"},
+				{Status: "downloading", Total: 100, Completed: 50},
+				{Status: "success"},
+			}
+			for _, u := range updates {
+				_ = json.NewEncoder(w).Encode(u)
+				flusher.Flush()
+			}
+		},
+	})
+	defer server.Close()
+
+	a := NewAdapterWithHost(server.URL)
+
+	var progress []ModelPullProgress
+	err := a.PullModelWithProgress(context.Background(), "mistral:latest", func(p ModelPullProgress) {
+		progress = append(progress, p)
+	})
+	if err != nil {
+		t.Fatalf("PullModelWithProgress failed: %v", err)
+	}
+	if len(progress) < 3 {
+		t.Fatalf("expected at least 3 progress updates, got %d", len(progress))
+	}
+	if progress[1].Completed != 50 || progress[1].Total != 100 {
+		t.Fatalf("expected mid-progress 50/100, got %d/%d", progress[1].Completed, progress[1].Total)
+	}
+	if !progress[len(progress)-1].Done {
+		t.Fatalf("expected final progress update to be done")
+	}
+}
+
 func TestPullModel_NotConnected(t *testing.T) {
 	a := NewAdapter()
 	err := a.PullModel(context.Background(), "mistral:latest")
+	if err != ErrNotConnected {
+		t.Errorf("expected ErrNotConnected, got %v", err)
+	}
+}
+
+func TestDeleteModel(t *testing.T) {
+	server := mockOllamaServer(t, map[string]http.HandlerFunc{
+		"/api/tags": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(ollamaTagsResponse{})
+		},
+		"/api/delete": func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodDelete {
+				t.Fatalf("expected DELETE, got %s", r.Method)
+			}
+			var req ollamaDeleteRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("failed to decode request: %v", err)
+			}
+			if req.Name != "mistral:latest" {
+				t.Fatalf("expected model mistral:latest, got %q", req.Name)
+			}
+			w.WriteHeader(http.StatusOK)
+		},
+	})
+	defer server.Close()
+
+	a := NewAdapterWithHost(server.URL)
+	if err := a.DeleteModel(context.Background(), "mistral:latest"); err != nil {
+		t.Fatalf("DeleteModel failed: %v", err)
+	}
+}
+
+func TestDeleteModel_NotConnected(t *testing.T) {
+	a := NewAdapter()
+	err := a.DeleteModel(context.Background(), "mistral:latest")
 	if err != ErrNotConnected {
 		t.Errorf("expected ErrNotConnected, got %v", err)
 	}

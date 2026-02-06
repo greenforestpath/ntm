@@ -1133,6 +1133,23 @@ Shell Integration:
 			}
 			return
 		}
+		if robotHealthRestartStuck != "" {
+			threshold, err := robot.ParseStuckThreshold(robotStuckThreshold)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(3)
+			}
+			opts := robot.AutoRestartStuckOptions{
+				Session:   robotHealthRestartStuck,
+				Threshold: threshold,
+				DryRun:    robotDryRunEffective,
+			}
+			if err := robot.PrintAutoRestartStuck(opts); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if robotLogs != "" {
 			var panes []int
 			if robotLogsPanes != "" {
@@ -2028,8 +2045,10 @@ var (
 	robotBulkAssignTemplate string // prompt template file path
 
 	// Robot-health flag
-	robotHealth      string // session health or project health (empty = project)
-	robotHealthOAuth string // session OAuth/rate-limit status
+	robotHealth              string // session health or project health (empty = project)
+	robotHealthOAuth         string // session OAuth/rate-limit status
+	robotHealthRestartStuck  string // session name for auto-restart-stuck
+	robotStuckThreshold      string // duration before considering stuck (e.g. 5m)
 
 	// Robot-logs flags
 	robotLogs      string // session name for logs
@@ -2536,6 +2555,10 @@ func init() {
 	// Robot-health flag for session/project health summary
 	rootCmd.Flags().StringVar(&robotHealth, "robot-health", "", "Get session or project health (JSON). SESSION for per-agent health, empty for project health. Example: ntm --robot-health=myproject")
 	rootCmd.Flags().StringVar(&robotHealthOAuth, "robot-health-oauth", "", "Get per-agent OAuth and rate-limit status (JSON). Required: SESSION. Example: ntm --robot-health-oauth=myproject")
+
+	// Robot-health-restart-stuck flags for auto-restarting stuck agents
+	rootCmd.Flags().StringVar(&robotHealthRestartStuck, "robot-health-restart-stuck", "", "Detect and restart stuck agents (no output for N minutes). Required: SESSION. Example: ntm --robot-health-restart-stuck=myproject")
+	rootCmd.Flags().StringVar(&robotStuckThreshold, "stuck-threshold", "", "Duration before considering agent stuck (default 5m). Use with --robot-health-restart-stuck. Example: --stuck-threshold=10m")
 
 	// Robot-logs flags for aggregated agent logs
 	rootCmd.Flags().StringVar(&robotLogs, "robot-logs", "", "Get aggregated logs from all agent panes (JSON). Required: SESSION. Example: ntm --robot-logs=myproject")
@@ -3146,6 +3169,7 @@ func init() {
 		newMailCmd(),
 		newPluginsCmd(),
 		newAgentsCmd(),
+		newModelsCmd(),
 		newAssignCmd(),
 		newRebalanceCmd(),
 		newControllerCmd(),
@@ -3983,7 +4007,7 @@ func needsConfigLoading(cmdName string) bool {
 		if robotStatus || robotPlan || robotSnapshot || robotTail != "" || robotWatchBead != "" ||
 			robotSend != "" || robotAck != "" || robotSpawn != "" ||
 			robotInterrupt != "" || robotRestartPane != "" || robotProbe != "" || robotGraph || robotMail || robotHealth != "" ||
-			robotHealthOAuth != "" || robotLogs != "" || robotDiagnose != "" || robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
+			robotHealthOAuth != "" || robotHealthRestartStuck != "" || robotLogs != "" || robotDiagnose != "" || robotTerse || robotMarkdown || robotSave != "" || robotRestore != "" ||
 			robotContext != "" || robotEnsemble != "" || robotEnsembleSpawn != "" || robotEnsembleSuggest != "" || robotEnsembleStop != "" || robotAlerts || robotIsWorking != "" || robotAgentHealth != "" ||
 			robotSmartRestart != "" || robotMonitor != "" || robotEnv != "" || robotSupportBundle != "" {
 			return true

@@ -34,6 +34,7 @@ var (
 	ErrContextLengthExceeded = errors.New("context length exceeded")
 	ErrGPUMemoryExhausted    = errors.New("GPU memory exhausted")
 	ErrPullFailed            = errors.New("model pull failed")
+	ErrDeleteFailed          = errors.New("model delete failed")
 	ErrStreamClosed          = errors.New("response stream closed")
 )
 
@@ -54,6 +55,12 @@ type AgentBackend interface {
 
 	// PullModel downloads a model
 	PullModel(ctx context.Context, name string) error
+
+	// PullModelWithProgress downloads a model and streams progress updates.
+	PullModelWithProgress(ctx context.Context, name string, onProgress func(ModelPullProgress)) error
+
+	// DeleteModel removes a local model.
+	DeleteModel(ctx context.Context, name string) error
 
 	// Close releases any resources
 	Close() error
@@ -93,6 +100,15 @@ type ModelDetails struct {
 	Families          []string `json:"families,omitempty"`
 	ParameterSize     string   `json:"parameter_size,omitempty"`
 	QuantizationLevel string   `json:"quantization_level,omitempty"`
+}
+
+// ModelPullProgress represents a single pull progress update from Ollama.
+type ModelPullProgress struct {
+	Status    string `json:"status"`
+	Digest    string `json:"digest,omitempty"`
+	Total     int64  `json:"total,omitempty"`
+	Completed int64  `json:"completed,omitempty"`
+	Done      bool   `json:"done,omitempty"`
 }
 
 // Adapter implements AgentBackend for Ollama
@@ -249,6 +265,11 @@ type ollamaModel struct {
 type ollamaPullRequest struct {
 	Name   string `json:"name"`
 	Stream bool   `json:"stream"`
+}
+
+// ollamaDeleteRequest is the request body for /api/delete
+type ollamaDeleteRequest struct {
+	Name string `json:"name"`
 }
 
 // ollamaPullResponse is a streaming response from /api/pull
@@ -520,6 +541,11 @@ func (a *Adapter) ListModels(ctx context.Context) ([]Model, error) {
 
 // PullModel downloads a model from the Ollama registry
 func (a *Adapter) PullModel(ctx context.Context, name string) error {
+	return a.PullModelWithProgress(ctx, name, nil)
+}
+
+// PullModelWithProgress downloads a model from the Ollama registry and emits progress callbacks.
+func (a *Adapter) PullModelWithProgress(ctx context.Context, name string, onProgress func(ModelPullProgress)) error {
 	a.mu.RLock()
 	if !a.connected {
 		a.mu.RUnlock()
@@ -577,6 +603,18 @@ func (a *Adapter) PullModel(ctx context.Context, name string) error {
 		}
 
 		lastStatus = pullResp.Status
+		done := pullResp.Status == "success" ||
+			strings.Contains(strings.ToLower(pullResp.Status), "done") ||
+			strings.Contains(strings.ToLower(pullResp.Status), "complete")
+		if onProgress != nil {
+			onProgress(ModelPullProgress{
+				Status:    pullResp.Status,
+				Digest:    pullResp.Digest,
+				Total:     pullResp.Total,
+				Completed: pullResp.Completed,
+				Done:      done,
+			})
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -589,6 +627,41 @@ func (a *Adapter) PullModel(ctx context.Context, name string) error {
 			!strings.Contains(strings.ToLower(lastStatus), "complete") {
 			return fmt.Errorf("%w: %s", ErrPullFailed, lastStatus)
 		}
+	}
+
+	return nil
+}
+
+// DeleteModel removes a local model from Ollama.
+func (a *Adapter) DeleteModel(ctx context.Context, name string) error {
+	a.mu.RLock()
+	if !a.connected {
+		a.mu.RUnlock()
+		return ErrNotConnected
+	}
+	host := a.host
+	a.mu.RUnlock()
+
+	reqBody := ollamaDeleteRequest{Name: name}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "DELETE", host+"/api/delete", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrDeleteFailed, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return a.parseErrorResponse(resp)
 	}
 
 	return nil

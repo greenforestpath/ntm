@@ -2248,7 +2248,13 @@ func preflightOllamaSpawn(opts SpawnOptions) (string, error) {
 		}
 
 		pullCtx, pullCancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		pullErr := adapter.PullModel(pullCtx, model)
+		var pullErr error
+		if IsJSONOutput() {
+			pullErr = adapter.PullModel(pullCtx, model)
+		} else {
+			fmt.Printf("Pulling %s...\n", model)
+			pullErr = adapter.PullModelWithProgress(pullCtx, model, newOllamaPullProgressPrinter("  "))
+		}
 		pullCancel()
 		if pullErr != nil {
 			return "", pullErr
