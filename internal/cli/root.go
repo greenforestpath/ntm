@@ -2514,6 +2514,9 @@ func init() {
 
 	// Robot-format flag for output serialization format
 	rootCmd.Flags().StringVar(&robotFormat, "robot-format", "", "Output format for robot commands: json (default), toon (token-efficient), or auto. Env: NTM_ROBOT_FORMAT, NTM_OUTPUT_FORMAT, TOON_DEFAULT_FORMAT")
+	// Deprecated alias for compatibility with older automation/scripts.
+	// Keep the backing variable shared so precedence behavior is unchanged.
+	rootCmd.Flags().StringVar(&robotFormat, "robot-output-format", "", "DEPRECATED: alias for --robot-format. Output format for robot commands: json, toon, or auto. Env: NTM_ROBOT_FORMAT, NTM_OUTPUT_FORMAT, TOON_DEFAULT_FORMAT")
 
 	// Robot-markdown flags for token-efficient markdown output
 	rootCmd.Flags().BoolVar(&robotMarkdown, "robot-markdown", false, "System state as markdown tables. LLM-friendly, ~50% fewer tokens than JSON")

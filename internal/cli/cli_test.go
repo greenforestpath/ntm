@@ -144,6 +144,12 @@ func TestResolveRobotFormat_ConfigFallback(t *testing.T) {
 	}
 }
 
+func TestRobotOutputFormatFlagAliasRegistered(t *testing.T) {
+	if rootCmd.Flags().Lookup("robot-output-format") == nil {
+		t.Fatal("expected --robot-output-format flag to be registered (alias for --robot-format)")
+	}
+}
+
 // sessionAutoSelectPossible returns true if the CLI would auto-select a session.
 // This happens when exactly one tmux session is running.
 func sessionAutoSelectPossible() bool {
