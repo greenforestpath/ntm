@@ -164,6 +164,97 @@ func resolveSpawnAssignAgentType(agent string, ccOnly, codOnly, gmiOnly bool) st
 	return ""
 }
 
+func parseLocalFallbackProvider(raw string) (AgentType, error) {
+	provider := strings.ToLower(strings.TrimSpace(raw))
+	if provider == "" {
+		provider = "cod"
+	}
+	switch provider {
+	case "cc", "claude", "claude-code":
+		return AgentTypeClaude, nil
+	case "cod", "codex", "openai-codex":
+		return AgentTypeCodex, nil
+	case "gmi", "gemini", "google-gemini":
+		return AgentTypeGemini, nil
+	default:
+		return "", fmt.Errorf("invalid --local-fallback-provider %q (expected one of: cc|cod|gmi)", raw)
+	}
+}
+
+func recomputeSpawnAgentCounts(opts *SpawnOptions) {
+	opts.CCCount = 0
+	opts.CodCount = 0
+	opts.GmiCount = 0
+	opts.CursorCount = 0
+	opts.WindsurfCount = 0
+	opts.AiderCount = 0
+
+	for _, agent := range opts.Agents {
+		switch agent.Type {
+		case AgentTypeClaude:
+			opts.CCCount++
+		case AgentTypeCodex:
+			opts.CodCount++
+		case AgentTypeGemini:
+			opts.GmiCount++
+		case AgentTypeCursor:
+			opts.CursorCount++
+		case AgentTypeWindsurf:
+			opts.WindsurfCount++
+		case AgentTypeAider:
+			opts.AiderCount++
+		}
+	}
+}
+
+func applyLocalFallback(opts *SpawnOptions, provider AgentType) int {
+	if opts == nil || len(opts.Agents) == 0 {
+		return 0
+	}
+
+	replaced := 0
+	indices := make(map[AgentType]int)
+	for i := range opts.Agents {
+		if opts.Agents[i].Type == AgentTypeOllama {
+			opts.Agents[i].Type = provider
+			// Always use the provider default model on fallback.
+			opts.Agents[i].Model = ""
+			replaced++
+		}
+		indices[opts.Agents[i].Type]++
+		opts.Agents[i].Index = indices[opts.Agents[i].Type]
+	}
+
+	if replaced > 0 {
+		recomputeSpawnAgentCounts(opts)
+		opts.LocalHost = ""
+	}
+
+	return replaced
+}
+
+func handleOllamaPreflightError(opts *SpawnOptions, preflightErr error) (bool, string, error) {
+	if preflightErr == nil {
+		return false, "", nil
+	}
+	if opts == nil || !opts.LocalFallback {
+		return false, "", preflightErr
+	}
+
+	provider := opts.LocalFallbackProvider
+	if provider == "" {
+		provider = AgentTypeCodex
+	}
+
+	replaced := applyLocalFallback(opts, provider)
+	if replaced == 0 {
+		return false, "", preflightErr
+	}
+
+	msg := fmt.Sprintf("Ollama preflight failed (%v); falling back %d local agent(s) to %s", preflightErr, replaced, provider)
+	return true, msg, nil
+}
+
 func (v *optionalDurationValue) Type() string {
 	return "duration"
 }
@@ -273,12 +364,14 @@ type SpawnOptions struct {
 	ProfileList []*persona.Persona
 
 	// CASS Context
-	CassContextQuery string
-	NoCassContext    bool
-	Prompt           string
-	InitPrompt       string
-	LocalModel       string
-	LocalHost        string
+	CassContextQuery      string
+	NoCassContext         bool
+	Prompt                string
+	InitPrompt            string
+	LocalModel            string
+	LocalHost             string
+	LocalFallback         bool
+	LocalFallbackProvider AgentType
 
 	// Hooks
 	NoHooks bool
@@ -453,6 +546,8 @@ func newSpawnCmd() *cobra.Command {
 	var ollamaCount int
 	var localModel string
 	var localHost string
+	var localFallback bool
+	var localFallbackProvider string
 
 	// New stagger flags for bd-2wih
 	var staggerMode string         // smart, fixed, or none
@@ -562,6 +657,11 @@ Worktree isolation (--worktrees):
     ntm worktrees list                    # View created worktrees
     ntm worktrees merge claude_1          # Merge agent's work back to main
 
+Local fallback (--local-fallback):
+  If Ollama is unavailable or model preflight fails, local agents can be
+  converted to cloud agents instead of failing spawn.
+  --local-fallback-provider selects fallback target (cc, cod, gmi).
+
 Examples:
   ntm spawn myproject --cc=2 --cod=2           # 2 Claude, 2 Codex + user pane
   ntm spawn myproject --cc=3 --cod=3 --gmi=1   # 3 Claude, 3 Codex, 1 Gemini
@@ -575,7 +675,8 @@ Examples:
   ntm spawn myproject --cc=1 --prompt="fix auth" # Inject context about auth
   ntm spawn myproject --cc=3 --stagger --prompt="find bugs"  # Staggered prompts (legacy)
   ntm spawn myproject --cc=5 --stagger-mode=smart  # Adaptive rate limit avoidance
-  ntm spawn myproject --cc=4 --stagger-mode=fixed --stagger-delay=20s  # Fixed 20s delay`,
+  ntm spawn myproject --cc=4 --stagger-mode=fixed --stagger-delay=20s  # Fixed 20s delay
+  ntm spawn myproject --local=2 --local-fallback --local-fallback-provider=cod`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessionName := args[0]
@@ -677,6 +778,10 @@ Examples:
 			if err != nil {
 				return err
 			}
+			fallbackProvider, err := parseLocalFallbackProvider(localFallbackProvider)
+			if err != nil {
+				return err
+			}
 
 			// Extract simple counts
 			ccCount := agentSpecs.ByType(AgentTypeClaude).TotalCount()
@@ -768,42 +873,44 @@ Examples:
 
 			assignAgentFilter := resolveSpawnAssignAgentType(assignAgentType, assignCCOnly, assignCodOnly, assignGmiOnly)
 			opts := SpawnOptions{
-				Session:            sessionName,
-				Agents:             agentSpecs.Flatten(),
-				CCCount:            ccCount,
-				CodCount:           codCount,
-				GmiCount:           gmiCount,
-				UserPane:           !noUserPane,
-				AutoRestart:        autoRestart,
-				RecipeName:         recipeName,
-				PersonaMap:         personaMap,
-				PluginMap:          pluginMap,
-				CassContextQuery:   contextQuery,
-				NoCassContext:      noCassContext,
-				Prompt:             prompt,
-				InitPrompt:         initPrompt,
-				LocalModel:         localModel,
-				LocalHost:          localHost,
-				NoHooks:            noHooks,
-				Safety:             safety,
-				StaggerMode:        staggerMode,
-				StaggerDelay:       staggerDelay,
-				Stagger:            staggerDuration,
-				StaggerEnabled:     staggerEnabled,
-				ProfileList:        profileList,
-				Assign:             assignEnabled,
-				AssignStrategy:     assignStrategy,
-				AssignLimit:        assignLimit,
-				AssignReadyTimeout: assignReadyTimeout,
-				AssignVerbose:      assignVerbose,
-				AssignQuiet:        assignQuiet,
-				AssignTimeout:      assignTimeout,
-				AssignAgentType:    assignAgentFilter,
-				UseWorktrees:       useWorktrees,
-				PrivacyMode:        privacyMode,
-				AllowPersist:       allowPersist,
-				MarchingOrders:     marchingOrders,
-				DefaultPrompts:     cfg.Prompts,
+				Session:               sessionName,
+				Agents:                agentSpecs.Flatten(),
+				CCCount:               ccCount,
+				CodCount:              codCount,
+				GmiCount:              gmiCount,
+				UserPane:              !noUserPane,
+				AutoRestart:           autoRestart,
+				RecipeName:            recipeName,
+				PersonaMap:            personaMap,
+				PluginMap:             pluginMap,
+				CassContextQuery:      contextQuery,
+				NoCassContext:         noCassContext,
+				Prompt:                prompt,
+				InitPrompt:            initPrompt,
+				LocalModel:            localModel,
+				LocalHost:             localHost,
+				LocalFallback:         localFallback,
+				LocalFallbackProvider: fallbackProvider,
+				NoHooks:               noHooks,
+				Safety:                safety,
+				StaggerMode:           staggerMode,
+				StaggerDelay:          staggerDelay,
+				Stagger:               staggerDuration,
+				StaggerEnabled:        staggerEnabled,
+				ProfileList:           profileList,
+				Assign:                assignEnabled,
+				AssignStrategy:        assignStrategy,
+				AssignLimit:           assignLimit,
+				AssignReadyTimeout:    assignReadyTimeout,
+				AssignVerbose:         assignVerbose,
+				AssignQuiet:           assignQuiet,
+				AssignTimeout:         assignTimeout,
+				AssignAgentType:       assignAgentFilter,
+				UseWorktrees:          useWorktrees,
+				PrivacyMode:           privacyMode,
+				AllowPersist:          allowPersist,
+				MarchingOrders:        marchingOrders,
+				DefaultPrompts:        cfg.Prompts,
 			}
 
 			// Apply session profile if specified (bd-29kr).
@@ -828,6 +935,8 @@ Examples:
 	cmd.Flags().IntVar(&ollamaCount, "ollama", 0, "Alias for --local (explicit Ollama)")
 	cmd.Flags().StringVar(&localModel, "local-model", "codellama:latest", "Ollama model to run for --local/--ollama agents")
 	cmd.Flags().StringVar(&localHost, "local-host", "", "Ollama host URL for --local/--ollama agents (overrides OLLAMA_HOST/NTM_OLLAMA_HOST)")
+	cmd.Flags().BoolVar(&localFallback, "local-fallback", false, "Fallback local Ollama agents to cloud provider when preflight fails")
+	cmd.Flags().StringVar(&localFallbackProvider, "local-fallback-provider", "cod", "Provider for --local-fallback: cc|cod|gmi")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeCursor, &agentSpecs), "cursor", "Cursor agents (N or N:model)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeWindsurf, &agentSpecs), "windsurf", "Windsurf agents (N or N:model)")
 	cmd.Flags().Var(NewAgentSpecsValue(AgentTypeAider, &agentSpecs), "aider", "Aider agents (N or N:model)")
@@ -921,7 +1030,13 @@ func spawnSessionLogic(opts SpawnOptions) (err error) {
 
 	ollamaHost, err := preflightOllamaSpawn(opts)
 	if err != nil {
-		return outputError(err)
+		applied, fallbackMsg, fallbackErr := handleOllamaPreflightError(&opts, err)
+		if fallbackErr != nil {
+			return outputError(fallbackErr)
+		}
+		if applied && !IsJSONOutput() {
+			output.PrintWarning(fallbackMsg)
+		}
 	}
 
 	// Safety check: fail if session already exists (when --safety is enabled)

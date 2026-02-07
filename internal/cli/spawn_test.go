@@ -188,6 +188,139 @@ func TestAppendOllamaAgentSpecs(t *testing.T) {
 	})
 }
 
+func TestParseLocalFallbackProvider(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name    string
+		input   string
+		want    AgentType
+		wantErr bool
+	}{
+		{name: "default_empty", input: "", want: AgentTypeCodex},
+		{name: "cod", input: "cod", want: AgentTypeCodex},
+		{name: "codex", input: "codex", want: AgentTypeCodex},
+		{name: "cc", input: "cc", want: AgentTypeClaude},
+		{name: "claude", input: "claude", want: AgentTypeClaude},
+		{name: "gmi", input: "gmi", want: AgentTypeGemini},
+		{name: "gemini", input: "gemini", want: AgentTypeGemini},
+		{name: "invalid", input: "ollama", wantErr: true},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseLocalFallbackProvider(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil (provider=%q)", tc.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("provider=%q => %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandleOllamaPreflightError_FallbackDisabled(t *testing.T) {
+	t.Parallel()
+
+	opts := SpawnOptions{
+		Agents: []FlatAgent{{Type: AgentTypeOllama, Index: 1, Model: "codellama:latest"}},
+	}
+	expectedErr := fmt.Errorf("connect failed")
+	applied, msg, err := handleOllamaPreflightError(&opts, expectedErr)
+	if applied {
+		t.Fatal("expected fallback not applied")
+	}
+	if msg != "" {
+		t.Fatalf("msg=%q, want empty", msg)
+	}
+	if err == nil || !strings.Contains(err.Error(), "connect failed") {
+		t.Fatalf("unexpected err=%v", err)
+	}
+}
+
+func TestHandleOllamaPreflightError_FallbackEnabledReindexesAndRecounts(t *testing.T) {
+	t.Parallel()
+
+	opts := SpawnOptions{
+		Agents: []FlatAgent{
+			{Type: AgentTypeClaude, Index: 1, Model: "opus"},
+			{Type: AgentTypeOllama, Index: 1, Model: "codellama:latest"},
+			{Type: AgentTypeCodex, Index: 1, Model: "o3"},
+			{Type: AgentTypeOllama, Index: 2, Model: "deepseek-coder:6.7b"},
+		},
+		LocalHost:             "http://localhost:11434",
+		LocalFallback:         true,
+		LocalFallbackProvider: AgentTypeCodex,
+		CCCount:               1,
+		CodCount:              1,
+		GmiCount:              0,
+		CursorCount:           0,
+		WindsurfCount:         0,
+		AiderCount:            0,
+	}
+
+	applied, msg, err := handleOllamaPreflightError(&opts, fmt.Errorf("failed to connect to Ollama"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected fallback to be applied")
+	}
+	if !strings.Contains(msg, "falling back 2 local agent(s) to cod") {
+		t.Fatalf("unexpected message: %q", msg)
+	}
+	if opts.LocalHost != "" {
+		t.Fatalf("LocalHost=%q, want empty", opts.LocalHost)
+	}
+
+	if len(opts.Agents) != 4 {
+		t.Fatalf("agents len=%d, want 4", len(opts.Agents))
+	}
+	if opts.Agents[1].Type != AgentTypeCodex || opts.Agents[1].Index != 1 || opts.Agents[1].Model != "" {
+		t.Fatalf("agent[1]=%+v, want codex index=1 empty model", opts.Agents[1])
+	}
+	if opts.Agents[2].Type != AgentTypeCodex || opts.Agents[2].Index != 2 {
+		t.Fatalf("agent[2]=%+v, want codex index=2", opts.Agents[2])
+	}
+	if opts.Agents[3].Type != AgentTypeCodex || opts.Agents[3].Index != 3 || opts.Agents[3].Model != "" {
+		t.Fatalf("agent[3]=%+v, want codex index=3 empty model", opts.Agents[3])
+	}
+
+	if opts.CCCount != 1 || opts.CodCount != 3 || opts.GmiCount != 0 {
+		t.Fatalf("counts cc=%d cod=%d gmi=%d, want 1/3/0", opts.CCCount, opts.CodCount, opts.GmiCount)
+	}
+}
+
+func TestHandleOllamaPreflightError_NoOllamaAgentsStillFails(t *testing.T) {
+	t.Parallel()
+
+	opts := SpawnOptions{
+		Agents:                []FlatAgent{{Type: AgentTypeClaude, Index: 1, Model: "sonnet"}},
+		LocalFallback:         true,
+		LocalFallbackProvider: AgentTypeCodex,
+	}
+
+	applied, msg, err := handleOllamaPreflightError(&opts, fmt.Errorf("failed to connect to Ollama"))
+	if applied {
+		t.Fatal("expected fallback not applied")
+	}
+	if msg != "" {
+		t.Fatalf("msg=%q, want empty", msg)
+	}
+	if err == nil || !strings.Contains(err.Error(), "failed to connect to Ollama") {
+		t.Fatalf("unexpected err=%v", err)
+	}
+}
+
 func withStdinInput(t *testing.T, input string, fn func()) {
 	t.Helper()
 
