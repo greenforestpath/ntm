@@ -245,6 +245,91 @@ func TestExport_Zip(t *testing.T) {
 	}
 }
 
+func TestExport_Zip_WithScrollbackAndRedaction(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "ntm-export-zip-redact")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	storage := NewStorageWithDir(tmpDir)
+
+	sessionName := "test-session"
+	checkpointID := "20251210-143052-zip-redact"
+
+	cp := &Checkpoint{
+		Version:     CurrentVersion,
+		ID:          checkpointID,
+		SessionName: sessionName,
+		CreatedAt:   time.Now(),
+		Session: SessionState{
+			Panes: []PaneState{
+				{ID: "%0", Index: 0, ScrollbackFile: "panes/pane__0.txt"},
+			},
+		},
+		PaneCount: 1,
+	}
+
+	if err := storage.Save(cp); err != nil {
+		t.Fatalf("Failed to save checkpoint: %v", err)
+	}
+
+	// Create scrollback file with a secret
+	panesDir := storage.PanesDirPath(sessionName, checkpointID)
+	scrollbackPath := filepath.Join(panesDir, "pane__0.txt")
+	scrollbackContent := "normal output\nAKIAIOSFODNN7EXAMPLE secret in scrollback\nmore output"
+	if err := os.WriteFile(scrollbackPath, []byte(scrollbackContent), 0644); err != nil {
+		t.Fatalf("Failed to create scrollback file: %v", err)
+	}
+
+	// Enable redaction
+	SetRedactionConfig(&redaction.Config{Mode: redaction.ModeRedact})
+	t.Cleanup(func() { SetRedactionConfig(nil) })
+
+	outputPath := filepath.Join(tmpDir, "test-export-redact.zip")
+	opts := DefaultExportOptions()
+	opts.Format = FormatZip
+	opts.RedactSecrets = true
+
+	manifest, err := storage.Export(sessionName, checkpointID, outputPath, opts)
+	if err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+
+	if len(manifest.Files) < 2 {
+		t.Errorf("Expected at least 2 files (metadata + scrollback), got %d", len(manifest.Files))
+	}
+
+	// Open zip and check scrollback was redacted
+	r, err := zip.OpenReader(outputPath)
+	if err != nil {
+		t.Fatalf("Failed to open zip: %v", err)
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		if f.Name == "panes/pane__0.txt" {
+			rc, err := f.Open()
+			if err != nil {
+				t.Fatalf("Failed to open scrollback in zip: %v", err)
+			}
+			data := make([]byte, 1024)
+			n, _ := rc.Read(data)
+			rc.Close()
+			content := string(data[:n])
+
+			if strings.Contains(content, "AKIAIOSFODNN7EXAMPLE") {
+				t.Error("Expected AWS key to be redacted in exported scrollback")
+			}
+			if !strings.Contains(content, "normal output") {
+				t.Error("Expected normal output to be preserved in exported scrollback")
+			}
+			return
+		}
+	}
+	t.Error("Scrollback file not found in zip archive")
+}
+
 func TestImport_TarGz(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "ntm-import-test")
 	if err != nil {

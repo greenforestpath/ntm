@@ -1,6 +1,7 @@
 package context
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -178,24 +179,61 @@ func TestGenerateRecoveryPrompt(t *testing.T) {
 	trigger := NewCompactionTrigger(config, monitor, compactor, predictor)
 
 	tests := []struct {
-		agentType tmux.AgentType
-		wantEmpty bool
+		agentType    tmux.AgentType
+		wantContains string
 	}{
-		{tmux.AgentClaude, false},
-		{tmux.AgentCodex, false},
-		{tmux.AgentGemini, false},
-		{tmux.AgentUser, false},
+		{tmux.AgentClaude, "AGENTS.md"},
+		{tmux.AgentCodex, "AGENTS.md"},
+		{tmux.AgentGemini, "AGENTS.md"},
+		{tmux.AgentCursor, "AGENTS.md"},
+		{tmux.AgentWindsurf, "AGENTS.md"},
+		{tmux.AgentAider, "AGENTS.md"},
+		{tmux.AgentUser, "Continue"}, // default case
 	}
 
 	for _, tt := range tests {
 		prompt := trigger.generateRecoveryPrompt(tt.agentType)
-		if tt.wantEmpty && prompt != "" {
-			t.Errorf("Expected empty prompt for %s, got %q", tt.agentType, prompt)
-		}
-		if !tt.wantEmpty && prompt == "" {
+		if prompt == "" {
 			t.Errorf("Expected non-empty prompt for %s", tt.agentType)
 		}
+		if tt.wantContains != "" && !strings.Contains(prompt, tt.wantContains) {
+			t.Errorf("generateRecoveryPrompt(%s) = %q, want to contain %q", tt.agentType, prompt, tt.wantContains)
+		}
 	}
+}
+
+func TestCheckAllAgents_Disabled(t *testing.T) {
+	config := DefaultCompactionTriggerConfig()
+	config.AutoCompact = false // Disable auto-compact
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	compactor := NewCompactor(monitor, DefaultCompactorConfig())
+	predictor := NewContextPredictor(DefaultPredictorConfig())
+
+	trigger := NewCompactionTrigger(config, monitor, compactor, predictor)
+
+	// Register an agent with high usage
+	monitor.RegisterAgent("agent-1", "pane-1", "claude-opus-4")
+	state := monitor.GetState("agent-1")
+	state.cumulativeInputTokens = 150000
+	state.cumulativeOutputTokens = 150000
+
+	// checkAllAgents should return immediately due to disabled AutoCompact
+	trigger.checkAllAgents() // Should not panic or attempt compaction
+}
+
+func TestCheckAllAgents_NoAgents(t *testing.T) {
+	config := DefaultCompactionTriggerConfig()
+	config.AutoCompact = true
+
+	monitor := NewContextMonitor(DefaultMonitorConfig())
+	compactor := NewCompactor(monitor, DefaultCompactorConfig())
+	predictor := NewContextPredictor(DefaultPredictorConfig())
+
+	trigger := NewCompactionTrigger(config, monitor, compactor, predictor)
+
+	// No agents registered — should do nothing
+	trigger.checkAllAgents() // Should not panic
 }
 
 func TestTriggerCompactionNow_AgentNotFound(t *testing.T) {
