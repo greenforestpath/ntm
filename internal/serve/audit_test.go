@@ -623,6 +623,144 @@ func TestSetAuditAction_NilContext(t *testing.T) {
 	// No assertion needed - just verify no panic
 }
 
+func TestNewAuditStore_DefaultRetentionValues(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := AuditStoreConfig{
+		DBPath:          filepath.Join(tmpDir, "audit.db"),
+		Retention:       0,  // Should default to 90 days
+		CleanupInterval: -1, // Should default to 24h
+	}
+	store, err := NewAuditStore(cfg)
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+	defer store.Close()
+
+	if store.retention != 90*24*time.Hour {
+		t.Errorf("retention = %v, want 90 days", store.retention)
+	}
+}
+
+func TestNewAuditStore_DBOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := AuditStoreConfig{
+		DBPath:          filepath.Join(tmpDir, "audit.db"),
+		Retention:       24 * time.Hour,
+		CleanupInterval: time.Hour,
+		// No JSONLPath
+	}
+	store, err := NewAuditStore(cfg)
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+	defer store.Close()
+
+	if store.db == nil {
+		t.Error("db should not be nil")
+	}
+	if store.jsonlFile != nil {
+		t.Error("jsonlFile should be nil when no JSONLPath")
+	}
+
+	// Recording should still work (just DB, no JSONL)
+	rec := &AuditRecord{
+		RequestID:  "req-db-only",
+		UserID:     "user",
+		Role:       RoleViewer,
+		Action:     AuditActionExecute,
+		Resource:   "test",
+		Method:     "GET",
+		Path:       "/test",
+		StatusCode: 200,
+		RemoteAddr: "127.0.0.1",
+	}
+	if err := store.Record(rec); err != nil {
+		t.Fatalf("Record error: %v", err)
+	}
+	records, _ := store.Query(AuditFilter{RequestID: "req-db-only"})
+	if len(records) != 1 {
+		t.Errorf("expected 1 record, got %d", len(records))
+	}
+}
+
+func TestNewAuditStore_JSONLOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := AuditStoreConfig{
+		JSONLPath:       filepath.Join(tmpDir, "audit.jsonl"),
+		Retention:       24 * time.Hour,
+		CleanupInterval: time.Hour,
+		// No DBPath
+	}
+	store, err := NewAuditStore(cfg)
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+	defer store.Close()
+
+	if store.db != nil {
+		t.Error("db should be nil when no DBPath")
+	}
+	if store.jsonlFile == nil {
+		t.Error("jsonlFile should not be nil")
+	}
+
+	// Recording should still work (just JSONL, no DB)
+	rec := &AuditRecord{
+		RequestID:  "req-jsonl-only",
+		UserID:     "user",
+		Role:       RoleViewer,
+		Action:     AuditActionExecute,
+		Resource:   "test",
+		Method:     "GET",
+		Path:       "/test",
+		StatusCode: 200,
+		RemoteAddr: "127.0.0.1",
+	}
+	if err := store.Record(rec); err != nil {
+		t.Fatalf("Record error: %v", err)
+	}
+
+	data, _ := os.ReadFile(cfg.JSONLPath)
+	if len(data) == 0 {
+		t.Error("JSONL file should have content")
+	}
+}
+
+func TestAuditStore_CleanupNilDB(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := AuditStoreConfig{
+		JSONLPath:       filepath.Join(tmpDir, "audit.jsonl"),
+		Retention:       time.Millisecond,
+		CleanupInterval: time.Hour,
+	}
+	store, err := NewAuditStore(cfg)
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+	defer store.Close()
+
+	// cleanup with nil db should not panic
+	store.cleanup()
+}
+
+func TestAuditStore_Close_DBOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := AuditStoreConfig{
+		DBPath:          filepath.Join(tmpDir, "audit.db"),
+		Retention:       24 * time.Hour,
+		CleanupInterval: time.Hour,
+	}
+	store, err := NewAuditStore(cfg)
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+
+	// Close with only DB (no JSONL file)
+	if err := store.Close(); err != nil {
+		t.Errorf("Close error: %v", err)
+	}
+}
+
 func TestAuditContextFromRequest_NilContext(t *testing.T) {
 	req := httptest.NewRequest("GET", "/test", nil)
 

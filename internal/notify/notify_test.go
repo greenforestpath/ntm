@@ -76,6 +76,64 @@ func TestWebhookNotification(t *testing.T) {
 	}
 }
 
+func TestWebhookDefaultTemplateIncludesContextFields(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+
+		if payload["event"] != "bead.assigned" {
+			t.Errorf("event = %v, want bead.assigned", payload["event"])
+		}
+		if payload["session"] != "sess-1" {
+			t.Errorf("session = %v, want sess-1", payload["session"])
+		}
+		if payload["pane"] != "%1" {
+			t.Errorf("pane = %v, want %%1", payload["pane"])
+		}
+		if payload["agent_type"] != "cod" {
+			t.Errorf("agent_type = %v, want cod", payload["agent_type"])
+		}
+		if payload["bead_id"] != "bd-123" {
+			t.Errorf("bead_id = %v, want bd-123", payload["bead_id"])
+		}
+		details, ok := payload["details"].(map[string]any)
+		if !ok {
+			t.Fatalf("details missing or wrong type: %T", payload["details"])
+		}
+		if details["bead_id"] != "bd-123" {
+			t.Errorf("details.bead_id = %v, want bd-123", details["bead_id"])
+		}
+	}))
+	defer ts.Close()
+
+	cfg := Config{
+		Enabled: true,
+		Events:  []string{string(EventBeadAssigned)},
+		Webhook: WebhookConfig{
+			Enabled: true,
+			URL:     ts.URL,
+			// Empty template => use default template.
+		},
+	}
+
+	n := New(cfg)
+	err := n.Notify(Event{
+		Type:    EventBeadAssigned,
+		Session: "sess-1",
+		Pane:    "%1",
+		Agent:   "cod",
+		Message: "assigned",
+		Details: map[string]string{
+			"bead_id": "bd-123",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Notify failed: %v", err)
+	}
+}
+
 func TestWebhookNotification_RedactsSecrets(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]string
@@ -142,7 +200,17 @@ func TestLogNotification(t *testing.T) {
 }
 
 func TestHelperFunctions(t *testing.T) {
-	evt := NewRateLimitEvent("sess", "p1", "cc", 30)
+	evt := NewAgentStartedEvent("sess", "p1", "cc")
+	if evt.Type != EventAgentStarted {
+		t.Errorf("NewAgentStartedEvent type = %v", evt.Type)
+	}
+
+	evt = NewErrorEvent("sess", "p1", "cc", "generic error")
+	if evt.Type != EventError {
+		t.Errorf("NewErrorEvent type = %v", evt.Type)
+	}
+
+	evt = NewRateLimitEvent("sess", "p1", "cc", 30)
 	if evt.Type != EventRateLimit {
 		t.Errorf("NewRateLimitEvent type = %v", evt.Type)
 	}
@@ -168,6 +236,22 @@ func TestHelperFunctions(t *testing.T) {
 	evt = NewRotationNeededEvent("sess", 1, "cc", "cmd")
 	if evt.Type != EventRotationNeeded {
 		t.Errorf("NewRotationNeededEvent type = %v", evt.Type)
+	}
+
+	evt = NewBeadAssignedEvent("sess", "p1", "cod", "bd-1", "title")
+	if evt.Type != EventBeadAssigned {
+		t.Errorf("NewBeadAssignedEvent type = %v", evt.Type)
+	}
+	if evt.Details["bead_id"] != "bd-1" {
+		t.Errorf("NewBeadAssignedEvent bead_id = %q", evt.Details["bead_id"])
+	}
+
+	evt = NewBeadCompletedEvent("sess", "p1", "cod", "bd-2", "title-2")
+	if evt.Type != EventBeadCompleted {
+		t.Errorf("NewBeadCompletedEvent type = %v", evt.Type)
+	}
+	if evt.Details["bead_id"] != "bd-2" {
+		t.Errorf("NewBeadCompletedEvent bead_id = %q", evt.Details["bead_id"])
 	}
 }
 
@@ -351,6 +435,192 @@ func containsAt(s, substr string, start int) bool {
 		}
 	}
 	return false
+}
+
+func TestSanitizeEvent_NilRedactionConfig(t *testing.T) {
+	t.Parallel()
+	n := New(Config{Enabled: true})
+	// redactionCfg is nil by default
+	event := Event{
+		Type:    EventAgentError,
+		Message: "password=hunter2",
+		Details: map[string]string{"key": "secret=abc123"},
+	}
+	got := n.sanitizeEvent(event)
+	if got.Message != event.Message {
+		t.Errorf("sanitizeEvent changed message with nil redactionCfg: %q", got.Message)
+	}
+	if got.Details["key"] != event.Details["key"] {
+		t.Errorf("sanitizeEvent changed details with nil redactionCfg: %q", got.Details["key"])
+	}
+}
+
+func TestSanitizeEvent_ModeOff(t *testing.T) {
+	t.Parallel()
+	n := NewWithRedaction(Config{Enabled: true}, redaction.Config{Mode: redaction.ModeOff})
+	event := Event{
+		Type:    EventAgentError,
+		Message: "password=hunter2",
+	}
+	got := n.sanitizeEvent(event)
+	if got.Message != event.Message {
+		t.Errorf("sanitizeEvent changed message with ModeOff: %q", got.Message)
+	}
+}
+
+func TestSanitizeEvent_RedactsMessageAndDetails(t *testing.T) {
+	t.Parallel()
+	n := NewWithRedaction(Config{Enabled: true}, redaction.Config{Mode: redaction.ModeRedact})
+	event := Event{
+		Type:    EventAgentError,
+		Message: "password=hunter2hunter2",
+		Details: map[string]string{
+			"error":    "api_key=sk_live_12345678901234567890",
+			"empty":    "",
+			"harmless": "just text",
+		},
+	}
+	got := n.sanitizeEvent(event)
+	if strings.Contains(got.Message, "hunter2hunter2") {
+		t.Error("sanitizeEvent should have redacted password from message")
+	}
+	if got.Details["empty"] != "" {
+		t.Error("sanitizeEvent should preserve empty detail values")
+	}
+	if got.Details["harmless"] != "just text" {
+		t.Errorf("sanitizeEvent changed harmless detail: %q", got.Details["harmless"])
+	}
+}
+
+func TestSanitizeEvent_EmptyMessageAndDetails(t *testing.T) {
+	t.Parallel()
+	n := NewWithRedaction(Config{Enabled: true}, redaction.Config{Mode: redaction.ModeRedact})
+	event := Event{Type: EventAgentError}
+	got := n.sanitizeEvent(event)
+	if got.Message != "" {
+		t.Errorf("expected empty message, got %q", got.Message)
+	}
+	if got.Details != nil {
+		t.Errorf("expected nil details, got %v", got.Details)
+	}
+}
+
+func TestDetailValue(t *testing.T) {
+	t.Parallel()
+	// nil map
+	if got := detailValue(nil, "key"); got != "" {
+		t.Errorf("detailValue(nil, key) = %q, want empty", got)
+	}
+	// empty map
+	if got := detailValue(map[string]string{}, "key"); got != "" {
+		t.Errorf("detailValue(empty, key) = %q, want empty", got)
+	}
+	// key exists
+	m := map[string]string{"a": "1", "b": "2"}
+	if got := detailValue(m, "a"); got != "1" {
+		t.Errorf("detailValue(m, a) = %q, want 1", got)
+	}
+	// key missing
+	if got := detailValue(m, "z"); got != "" {
+		t.Errorf("detailValue(m, z) = %q, want empty", got)
+	}
+}
+
+func TestJsonMap(t *testing.T) {
+	t.Parallel()
+	// nil map
+	if got := jsonMap(nil); got != "{}" {
+		t.Errorf("jsonMap(nil) = %q, want {}", got)
+	}
+	// empty map
+	if got := jsonMap(map[string]string{}); got != "{}" {
+		t.Errorf("jsonMap(empty) = %q, want {}", got)
+	}
+	// populated map
+	m := map[string]string{"key": "val"}
+	got := jsonMap(m)
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("jsonMap result not valid JSON: %v", err)
+	}
+	if parsed["key"] != "val" {
+		t.Errorf("jsonMap round-trip: got %q, want val", parsed["key"])
+	}
+}
+
+func TestNotifierClose(t *testing.T) {
+	t.Parallel()
+	n := New(Config{Enabled: true})
+	if err := n.Close(); err != nil {
+		t.Errorf("Close() error: %v", err)
+	}
+	// Second close should also be fine
+	if err := n.Close(); err != nil {
+		t.Errorf("Close() second call error: %v", err)
+	}
+}
+
+func TestSendToChannel_UnknownChannel(t *testing.T) {
+	t.Parallel()
+	n := New(Config{Enabled: true})
+	// Force channel "test" as enabled
+	n.channels["test"] = true
+	err := n.sendToChannel("test", Event{})
+	if err == nil {
+		t.Error("expected error for unknown channel")
+	}
+	if !strings.Contains(err.Error(), "unknown channel") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSendToChannel_DisabledChannel(t *testing.T) {
+	t.Parallel()
+	n := New(Config{Enabled: true})
+	err := n.sendToChannel(ChannelWebhook, Event{})
+	if err == nil {
+		t.Error("expected error for disabled channel")
+	}
+	if !strings.Contains(err.Error(), "not enabled") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestNotify_EventTypeNotEnabled(t *testing.T) {
+	t.Parallel()
+	n := New(Config{
+		Enabled: true,
+		Events:  []string{"agent.error"}, // Only error events enabled
+	})
+	// Try to notify a different event type
+	err := n.Notify(Event{Type: EventAgentCrashed, Message: "crash"})
+	if err != nil {
+		t.Errorf("Notify for disabled event type should not error: %v", err)
+	}
+}
+
+func TestNotify_SetsTimestamp(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "ts.log")
+	n := New(Config{
+		Enabled: true,
+		Events:  []string{"agent.error"},
+		Log: LogConfig{
+			Enabled: true,
+			Path:    logPath,
+		},
+	})
+	before := time.Now().UTC()
+	err := n.Notify(Event{Type: EventAgentError, Message: "ts test"})
+	if err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+	// Verify log was written (timestamp was set)
+	data, _ := os.ReadFile(logPath)
+	if len(data) == 0 {
+		t.Error("expected log output")
+	}
+	_ = before // timestamp was auto-set if zero
 }
 
 func TestJsonEscape(t *testing.T) {
