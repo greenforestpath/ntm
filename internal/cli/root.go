@@ -1531,6 +1531,85 @@ Shell Integration:
 			}
 			return
 		}
+		if robotContextInject != "" {
+			session := robotContextInject
+			projectDir := ""
+			if cfg != nil {
+				projectDir = cfg.GetProjectDir(session)
+			}
+			if projectDir == "" {
+				dir, _ := os.Getwd()
+				projectDir = dir
+			}
+			files := defaultContextFiles()
+			if robotContextInjectFiles != "" {
+				files = strings.Split(robotContextInjectFiles, ",")
+				for i := range files {
+					files[i] = strings.TrimSpace(files[i])
+				}
+			}
+			content, injected, truncated, err := formatContextInjectContent(projectDir, files, robotContextInjectMax)
+			if err != nil {
+				output.PrintJSON(ContextInjectResult{Success: false, Session: session, Error: err.Error(), InjectedFiles: []string{}, PanesInjected: []int{}})
+				os.Exit(1)
+				return
+			}
+			var injectedPanes []int
+			if len(injected) > 0 {
+				panes, pErr := tmux.GetPanes(session)
+				if pErr != nil {
+					output.PrintJSON(ContextInjectResult{Success: false, Session: session, Error: fmt.Sprintf("get panes: %s", pErr), InjectedFiles: []string{}, PanesInjected: []int{}})
+					os.Exit(1)
+					return
+				}
+				var targets []tmux.Pane
+				if robotContextInjectPane >= 0 {
+					for _, p := range panes {
+						if p.Index == robotContextInjectPane {
+							targets = append(targets, p)
+							break
+						}
+					}
+				} else if robotContextInjectAll {
+					targets = panes
+				} else {
+					for _, p := range panes {
+						if p.Index > 0 {
+							targets = append(targets, p)
+						}
+					}
+				}
+				if !robotContextInjectDry {
+					for _, p := range targets {
+						target := fmt.Sprintf("%s:%d", session, p.Index)
+						if sErr := tmux.SendKeys(target, content, true); sErr != nil {
+							continue
+						}
+						injectedPanes = append(injectedPanes, p.Index)
+					}
+				} else {
+					for _, p := range targets {
+						injectedPanes = append(injectedPanes, p.Index)
+					}
+				}
+			}
+			result := ContextInjectResult{
+				Success:       true,
+				Session:       session,
+				InjectedFiles: injected,
+				TotalBytes:    len(content),
+				Truncated:     truncated,
+				PanesInjected: injectedPanes,
+			}
+			if result.InjectedFiles == nil {
+				result.InjectedFiles = []string{}
+			}
+			if result.PanesInjected == nil {
+				result.PanesInjected = []int{}
+			}
+			output.PrintJSON(result)
+			return
+		}
 		if robotMetrics != "" {
 			opts := robot.MetricsOptions{
 				Session: robotMetrics,
@@ -2437,6 +2516,14 @@ var (
 	robotRCHWorkers  bool   // --robot-rch-workers flag
 	robotRCHWorker   string // --worker filter for --robot-rch-workers
 
+	// Robot-context-inject flags for context file injection (bd-972v)
+	robotContextInject      string // --robot-context-inject flag (session name)
+	robotContextInjectFiles string // --inject-files flag (comma-separated file list)
+	robotContextInjectMax   int    // --inject-max-bytes flag (max content size)
+	robotContextInjectAll   bool   // --inject-all flag (include user pane)
+	robotContextInjectPane  int    // --inject-pane flag (specific pane, -1 = all agents)
+	robotContextInjectDry   bool   // --inject-dry-run flag (preview without sending)
+
 	// Robot-mail-check flags for Agent Mail inbox integration (bd-adgv)
 	robotMailCheck    bool   // --robot-mail-check flag
 	mailProject       string // --project for mail check (required)
@@ -2906,6 +2993,14 @@ func init() {
 	rootCmd.Flags().BoolVar(&robotProxyStatus, "robot-proxy-status", false, "Get rust_proxy daemon + route status (JSON). Example: ntm --robot-proxy-status")
 	rootCmd.Flags().BoolVar(&robotRCHWorkers, "robot-rch-workers", false, "List RCH workers (JSON). Example: ntm --robot-rch-workers")
 	rootCmd.Flags().StringVar(&robotRCHWorker, "worker", "", "Filter to a specific RCH worker by name. Optional with --robot-rch-workers")
+
+	// Robot-context-inject flags for context file injection (bd-972v)
+	rootCmd.Flags().StringVar(&robotContextInject, "robot-context-inject", "", "Inject project context files (AGENTS.md, README.md) into agent panes. Required: SESSION. Example: ntm --robot-context-inject=myproject")
+	rootCmd.Flags().StringVar(&robotContextInjectFiles, "inject-files", "", "Comma-separated files to inject. Optional with --robot-context-inject. Example: --inject-files=AGENTS.md,README.md")
+	rootCmd.Flags().IntVar(&robotContextInjectMax, "inject-max-bytes", 0, "Max content size in bytes (0=unlimited). Optional with --robot-context-inject")
+	rootCmd.Flags().BoolVar(&robotContextInjectAll, "inject-all", false, "Include user pane. Optional with --robot-context-inject")
+	rootCmd.Flags().IntVar(&robotContextInjectPane, "inject-pane", -1, "Specific pane index to inject. Optional with --robot-context-inject")
+	rootCmd.Flags().BoolVar(&robotContextInjectDry, "inject-dry-run", false, "Preview without sending. Optional with --robot-context-inject")
 
 	// Robot-mail-check flags for Agent Mail inbox integration (bd-adgv)
 	rootCmd.Flags().BoolVar(&robotMailCheck, "robot-mail-check", false, "Check agent inboxes via Agent Mail. Requires --mail-project. JSON output. Example: ntm --robot-mail-check --mail-project=myproject")
