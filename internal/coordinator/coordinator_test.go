@@ -474,6 +474,119 @@ func TestFormatDigestMarkdown_WithErrors(t *testing.T) {
 	}
 }
 
+func TestEmitEvent_AgentBusy(t *testing.T) {
+	c := New("test-session", "/tmp/test", nil, "TestAgent")
+
+	var (
+		mu    sync.Mutex
+		found bool
+	)
+	unsub := events.Subscribe("agent.busy", func(e events.BusEvent) {
+		mu.Lock()
+		found = true
+		mu.Unlock()
+	})
+	defer unsub()
+
+	agent := &AgentState{
+		PaneID:    "%0",
+		PaneIndex: 1,
+		AgentType: "cc",
+		Status:    robot.StateGenerating,
+	}
+	c.emitEvent(agent, robot.StateWaiting)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		done := found
+		mu.Unlock()
+		if done {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timeout waiting for agent.busy bus event")
+}
+
+func TestEmitEvent_AgentError(t *testing.T) {
+	c := New("test-session", "/tmp/test", nil, "TestAgent")
+
+	agent := &AgentState{
+		PaneID:    "%0",
+		PaneIndex: 1,
+		AgentType: "cc",
+		Status:    robot.StateError,
+	}
+	// Should emit agent.error event (channel event)
+	c.emitEvent(agent, robot.StateWaiting)
+
+	select {
+	case ev := <-c.Events():
+		if ev.Type != EventAgentError {
+			t.Errorf("expected EventAgentError, got %v", ev.Type)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for error event")
+	}
+}
+
+func TestEmitEvent_AgentRecovered(t *testing.T) {
+	c := New("test-session", "/tmp/test", nil, "TestAgent")
+
+	var (
+		mu    sync.Mutex
+		found bool
+	)
+	unsub := events.Subscribe("agent.recovered", func(e events.BusEvent) {
+		mu.Lock()
+		found = true
+		mu.Unlock()
+	})
+	defer unsub()
+
+	agent := &AgentState{
+		PaneID:    "%0",
+		PaneIndex: 1,
+		AgentType: "cc",
+		Status:    robot.StateWaiting,
+	}
+	// Previous was error, now waiting → recovery
+	c.emitEvent(agent, robot.StateError)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		done := found
+		mu.Unlock()
+		if done {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timeout waiting for agent.recovered bus event")
+}
+
+func TestEmitEvent_NoEventForSameStatus(t *testing.T) {
+	c := New("test-session", "/tmp/test", nil, "TestAgent")
+
+	agent := &AgentState{
+		PaneID:    "%0",
+		PaneIndex: 1,
+		AgentType: "cc",
+		Status:    robot.StateWaiting,
+	}
+	// Same status → default case → no event
+	c.emitEvent(agent, robot.StateWaiting)
+
+	select {
+	case <-c.Events():
+		t.Error("should not emit event for same status")
+	case <-time.After(50 * time.Millisecond):
+		// Expected: no event
+	}
+}
+
 func TestFormatDigestMarkdown_IdleForDash(t *testing.T) {
 	t.Parallel()
 

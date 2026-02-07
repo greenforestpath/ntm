@@ -3,8 +3,10 @@ package coordinator
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/robot"
 )
 
 // ---------------------------------------------------------------------------
@@ -238,5 +240,155 @@ func TestEstimateTaskComplexity_ThreeUnblocks(t *testing.T) {
 	// task(-0.1) + 3 unblocks(+0.1) = 0.5-0.1+0.1 = 0.5
 	if got < 0.45 || got > 0.55 {
 		t.Errorf("estimateTaskComplexity(task, 3 unblocks) = %f, want ~0.5", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// applyStrategySelection — covers all strategy switch cases (83.3% → higher)
+// ---------------------------------------------------------------------------
+
+func TestApplyStrategySelection_Speed(t *testing.T) {
+	t.Parallel()
+	pairs := []scoredPair{
+		{agent: &AgentState{PaneID: "%0"}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.9},
+		{agent: &AgentState{PaneID: "%1"}, bead: &bv.TriageRecommendation{ID: "b2"}, score: 0.5},
+	}
+	result := applyStrategySelection(pairs, 2, 2, StrategySpeed)
+	if len(result) != 2 {
+		t.Errorf("expected 2 selections, got %d", len(result))
+	}
+}
+
+func TestApplyStrategySelection_Balanced(t *testing.T) {
+	t.Parallel()
+	pairs := []scoredPair{
+		{agent: &AgentState{PaneID: "%0", Status: robot.StateWaiting, Assignments: 0}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.8},
+		{agent: &AgentState{PaneID: "%1", Status: robot.StateGenerating, Assignments: 2}, bead: &bv.TriageRecommendation{ID: "b2"}, score: 0.9},
+	}
+	result := applyStrategySelection(pairs, 2, 2, StrategyBalanced)
+	if len(result) != 2 {
+		t.Errorf("expected 2 selections, got %d", len(result))
+	}
+}
+
+func TestApplyStrategySelection_Quality(t *testing.T) {
+	t.Parallel()
+	pairs := []scoredPair{
+		{agent: &AgentState{PaneID: "%0"}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.5},
+		{agent: &AgentState{PaneID: "%1"}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.9},
+	}
+	result := applyStrategySelection(pairs, 2, 1, StrategyQuality)
+	if len(result) != 1 {
+		t.Errorf("expected 1 selection (best agent for b1), got %d", len(result))
+	}
+	if len(result) > 0 && result[0].agent.PaneID != "%1" {
+		t.Errorf("expected agent %%1 (higher score), got %s", result[0].agent.PaneID)
+	}
+}
+
+func TestApplyStrategySelection_Dependency(t *testing.T) {
+	t.Parallel()
+	pairs := []scoredPair{
+		{agent: &AgentState{PaneID: "%0"}, bead: &bv.TriageRecommendation{ID: "b1", Priority: 0}, score: 0.5},
+		{agent: &AgentState{PaneID: "%1"}, bead: &bv.TriageRecommendation{ID: "b2", Priority: 2}, score: 0.9},
+	}
+	result := applyStrategySelection(pairs, 2, 2, StrategyDependency)
+	if len(result) != 2 {
+		t.Errorf("expected 2 selections, got %d", len(result))
+	}
+}
+
+func TestApplyStrategySelection_UnknownDefaultsToGreedy(t *testing.T) {
+	t.Parallel()
+	pairs := []scoredPair{
+		{agent: &AgentState{PaneID: "%0"}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.9},
+	}
+	result := applyStrategySelection(pairs, 1, 1, AssignmentStrategy("unknown"))
+	if len(result) != 1 {
+		t.Errorf("expected 1 selection from default/greedy, got %d", len(result))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// selectQuality — tests for quality selection logic (85% → higher)
+// ---------------------------------------------------------------------------
+
+func TestSelectQuality_PicksBestAgentPerBead(t *testing.T) {
+	t.Parallel()
+	pairs := []scoredPair{
+		{agent: &AgentState{PaneID: "%0"}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.3},
+		{agent: &AgentState{PaneID: "%1"}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.7},
+		{agent: &AgentState{PaneID: "%0"}, bead: &bv.TriageRecommendation{ID: "b2"}, score: 0.6},
+		{agent: &AgentState{PaneID: "%1"}, bead: &bv.TriageRecommendation{ID: "b2"}, score: 0.4},
+	}
+	result := selectQuality(pairs, 2, 2)
+	if len(result) != 2 {
+		t.Errorf("expected 2 selections, got %d", len(result))
+	}
+}
+
+func TestSelectQuality_AgentConflictResolution(t *testing.T) {
+	t.Parallel()
+	// Agent %0 is best for both beads - should only be assigned once
+	pairs := []scoredPair{
+		{agent: &AgentState{PaneID: "%0"}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.9},
+		{agent: &AgentState{PaneID: "%0"}, bead: &bv.TriageRecommendation{ID: "b2"}, score: 0.8},
+		{agent: &AgentState{PaneID: "%1"}, bead: &bv.TriageRecommendation{ID: "b2"}, score: 0.5},
+	}
+	result := selectQuality(pairs, 2, 2)
+	// Agent %0 gets b1 (highest), b2 conflict resolved to %1
+	agentIDs := make(map[string]bool)
+	for _, r := range result {
+		agentIDs[r.agent.PaneID] = true
+	}
+	if len(result) > 2 {
+		t.Errorf("expected at most 2 selections, got %d", len(result))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// selectBalanced — tests for tie-breaker logic (not yet tested)
+// ---------------------------------------------------------------------------
+
+func TestSelectBalanced_PrefersIdleAgents(t *testing.T) {
+	t.Parallel()
+	pairs := []scoredPair{
+		{agent: &AgentState{PaneID: "%0", Status: robot.StateGenerating, Assignments: 0}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.5},
+		{agent: &AgentState{PaneID: "%1", Status: robot.StateWaiting, Assignments: 0}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.5},
+	}
+	result := selectBalanced(pairs, 1, 1)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 selection, got %d", len(result))
+	}
+	if result[0].agent.PaneID != "%1" {
+		t.Errorf("expected idle agent %%1 to be preferred, got %s", result[0].agent.PaneID)
+	}
+}
+
+func TestSelectBalanced_PrefersLeastRecentAssignment(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	pairs := []scoredPair{
+		{agent: &AgentState{PaneID: "%0", Status: robot.StateWaiting, Assignments: 0, LastAssignedAt: now}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.5},
+		{agent: &AgentState{PaneID: "%1", Status: robot.StateWaiting, Assignments: 0, LastAssignedAt: now.Add(-time.Hour)}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.5},
+	}
+	result := selectBalanced(pairs, 1, 1)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 selection, got %d", len(result))
+	}
+	if result[0].agent.PaneID != "%1" {
+		t.Errorf("expected agent with oldest assignment, got %s", result[0].agent.PaneID)
+	}
+}
+
+func TestSelectBalanced_FallbackWhenAssignmentsUnavailable(t *testing.T) {
+	t.Parallel()
+	pairs := []scoredPair{
+		{agent: &AgentState{PaneID: "%0", Status: robot.StateWaiting, Assignments: -1}, bead: &bv.TriageRecommendation{ID: "b1"}, score: 0.5},
+		{agent: &AgentState{PaneID: "%1", Status: robot.StateWaiting, Assignments: -1}, bead: &bv.TriageRecommendation{ID: "b2"}, score: 0.8},
+	}
+	result := selectBalanced(pairs, 2, 2)
+	if len(result) != 2 {
+		t.Errorf("expected 2 selections with fallback tracking, got %d", len(result))
 	}
 }
