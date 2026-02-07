@@ -423,6 +423,48 @@ func TestBuildModeOutputFingerprint_NilMode(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// NewModeOutputCache (convenience constructor) coverage
+// =============================================================================
+
+func TestNewModeOutputCache_Valid(t *testing.T) {
+	t.Parallel()
+	projectDir := t.TempDir()
+	cfg := ModeOutputCacheConfig{Enabled: true, TTL: time.Minute, MaxEntries: 10}
+
+	cache, err := NewModeOutputCache(projectDir, cfg, nil)
+	if err != nil {
+		t.Fatalf("NewModeOutputCache: %v", err)
+	}
+	if cache == nil {
+		t.Fatal("expected non-nil cache")
+	}
+
+	// Verify the cache directory was created under the project dir
+	expectedDir := projectDir + "/.ntm/ensemble-cache"
+	info, err := os.Stat(expectedDir)
+	if err != nil {
+		t.Fatalf("cache dir not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("cache path is not a directory")
+	}
+}
+
+func TestNewModeOutputCache_EmptyProjectDir(t *testing.T) {
+	t.Parallel()
+	cfg := ModeOutputCacheConfig{Enabled: true}
+
+	// Empty projectDir should use cwd-based path (still works)
+	cache, err := NewModeOutputCache("", cfg, nil)
+	if err != nil {
+		t.Fatalf("NewModeOutputCache with empty projectDir: %v", err)
+	}
+	if cache == nil {
+		t.Fatal("expected non-nil cache")
+	}
+}
+
 func TestBuildModeOutputFingerprint_EmptyContextHash(t *testing.T) {
 	t.Parallel()
 	mode := &ReasoningMode{ID: "test-mode"}

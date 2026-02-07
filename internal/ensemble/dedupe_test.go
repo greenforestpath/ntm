@@ -538,3 +538,80 @@ func TestTruncateDedupText(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// DedupeFindingsWithProvenance coverage
+// =============================================================================
+
+func TestDedupeFindingsWithProvenance_Basic(t *testing.T) {
+	t.Parallel()
+
+	outputs := []ModeOutput{
+		{
+			ModeID: "mode-a",
+			TopFindings: []Finding{
+				{Finding: "Shared issue in auth", Impact: ImpactHigh, Confidence: 0.9},
+				{Finding: "Unique to mode-a", Impact: ImpactLow, Confidence: 0.5},
+			},
+		},
+		{
+			ModeID: "mode-b",
+			TopFindings: []Finding{
+				{Finding: "Shared issue in auth", Impact: ImpactHigh, Confidence: 0.8},
+				{Finding: "Unique to mode-b", Impact: ImpactMedium, Confidence: 0.7},
+			},
+		},
+	}
+
+	tracker := NewProvenanceTracker("test question", []string{"mode-a", "mode-b"})
+	cfg := DefaultDedupeConfig()
+
+	result := DedupeFindingsWithProvenance(outputs, cfg, tracker)
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Stats.InputFindings != 4 {
+		t.Errorf("InputFindings = %d, want 4", result.Stats.InputFindings)
+	}
+	if len(result.Clusters) == 0 {
+		t.Error("expected at least one cluster")
+	}
+	if result.Stats.DuplicatesFound < 1 {
+		t.Error("expected at least 1 duplicate found")
+	}
+}
+
+func TestDedupeFindingsWithProvenance_Empty(t *testing.T) {
+	t.Parallel()
+
+	tracker := NewProvenanceTracker("empty test", nil)
+	cfg := DefaultDedupeConfig()
+
+	result := DedupeFindingsWithProvenance(nil, cfg, tracker)
+
+	if result == nil {
+		t.Fatal("expected non-nil result for empty input")
+	}
+	if len(result.Clusters) != 0 {
+		t.Errorf("expected 0 clusters, got %d", len(result.Clusters))
+	}
+}
+
+func TestDedupeFindingsWithProvenance_NilTracker(t *testing.T) {
+	t.Parallel()
+
+	outputs := []ModeOutput{
+		{ModeID: "mode-x", TopFindings: []Finding{{Finding: "test", Impact: ImpactLow, Confidence: 0.5}}},
+	}
+
+	cfg := DefaultDedupeConfig()
+	result := DedupeFindingsWithProvenance(outputs, cfg, nil)
+
+	if result == nil {
+		t.Fatal("expected non-nil result with nil tracker")
+	}
+	if result.Stats.InputFindings != 1 {
+		t.Errorf("InputFindings = %d, want 1", result.Stats.InputFindings)
+	}
+}

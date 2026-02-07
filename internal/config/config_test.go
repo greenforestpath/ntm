@@ -4272,3 +4272,180 @@ func TestValidateEncryptionConfig(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// UpsertPaletteState tests
+// =============================================================================
+
+func TestUpsertPaletteState_NewFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+
+	// Create a minimal TOML file
+	initial := "[general]\nverbosity = 1\n"
+	if err := os.WriteFile(configPath, []byte(initial), 0644); err != nil {
+		t.Fatalf("write initial: %v", err)
+	}
+
+	state := PaletteState{
+		Pinned:    []string{"spawn", "send"},
+		Favorites: []string{"status"},
+	}
+
+	if err := UpsertPaletteState(configPath, state); err != nil {
+		t.Fatalf("UpsertPaletteState: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, "[palette_state]") {
+		t.Error("expected [palette_state] section")
+	}
+	if !strings.Contains(content, "spawn") {
+		t.Error("expected 'spawn' in pinned")
+	}
+	if !strings.Contains(content, "status") {
+		t.Error("expected 'status' in favorites")
+	}
+	// Original content should be preserved
+	if !strings.Contains(content, "[general]") {
+		t.Error("expected [general] section preserved")
+	}
+}
+
+func TestUpsertPaletteState_Update(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+
+	initial := "[general]\nverbosity = 1\n\n[palette_state]\npinned = [\"old\"]\nfavorites = []\n"
+	if err := os.WriteFile(configPath, []byte(initial), 0644); err != nil {
+		t.Fatalf("write initial: %v", err)
+	}
+
+	state := PaletteState{
+		Pinned:    []string{"new1", "new2"},
+		Favorites: []string{"fav1"},
+	}
+
+	if err := UpsertPaletteState(configPath, state); err != nil {
+		t.Fatalf("UpsertPaletteState: %v", err)
+	}
+
+	data, _ := os.ReadFile(configPath)
+	content := string(data)
+
+	if strings.Contains(content, "old") {
+		t.Error("old pinned value should be replaced")
+	}
+	if !strings.Contains(content, "new1") {
+		t.Error("expected new1 in pinned")
+	}
+}
+
+func TestUpsertPaletteState_EmptyPath(t *testing.T) {
+	err := UpsertPaletteState("", PaletteState{})
+	if err == nil {
+		t.Error("expected error for empty path")
+	}
+}
+
+// =============================================================================
+// SetProjectsBase tests
+// =============================================================================
+
+func TestSetProjectsBase_Valid(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_CONFIG_HOME", tmpDir)
+	defer os.Unsetenv("XDG_CONFIG_HOME")
+
+	projectsDir := filepath.Join(tmpDir, "projects")
+
+	if err := SetProjectsBase(projectsDir); err != nil {
+		t.Fatalf("SetProjectsBase: %v", err)
+	}
+
+	// Verify directory was created
+	info, err := os.Stat(projectsDir)
+	if err != nil {
+		t.Fatalf("projects dir not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("projects path is not a directory")
+	}
+
+	// Verify config file was updated
+	configPath := DefaultPath()
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(data), projectsDir) {
+		t.Errorf("config should contain projects path %q", projectsDir)
+	}
+}
+
+func TestSetProjectsBase_RelativePath(t *testing.T) {
+	err := SetProjectsBase("relative/path")
+	if err == nil {
+		t.Error("expected error for relative path")
+	}
+}
+
+// =============================================================================
+// Config Reset tests
+// =============================================================================
+
+func TestConfigReset(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_CONFIG_HOME", tmpDir)
+	defer os.Unsetenv("XDG_CONFIG_HOME")
+
+	// Create a modified config first
+	configPath := DefaultPath()
+	configDir := filepath.Dir(configPath)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("projects_base = \"/custom/path\"\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Reset should recreate with defaults
+	if err := Reset(); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+
+	// Config file should still exist (recreated with defaults)
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("config file should exist after reset: %v", err)
+	}
+
+	// Load and verify it's a valid default config
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load after reset: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config after reset")
+	}
+}
+
+func TestConfigReset_NoExistingFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_CONFIG_HOME", tmpDir)
+	defer os.Unsetenv("XDG_CONFIG_HOME")
+
+	// Reset without existing file should create defaults
+	if err := Reset(); err != nil {
+		t.Fatalf("Reset (no file): %v", err)
+	}
+
+	configPath := DefaultPath()
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("config file should exist after reset: %v", err)
+	}
+}

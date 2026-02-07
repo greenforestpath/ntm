@@ -352,3 +352,111 @@ func TestProficiencyDaysActive(t *testing.T) {
 		t.Errorf("expected 2 days active after new day, got %d", stats.DaysActive)
 	}
 }
+
+// =============================================================================
+// IncrementCommand / IncrementSession / IncrementPrompt coverage
+// =============================================================================
+
+func TestIncrementCommand(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_CONFIG_HOME", tmpDir)
+	defer os.Unsetenv("XDG_CONFIG_HOME")
+
+	cfg, err := LoadProficiency()
+	if err != nil {
+		t.Fatalf("LoadProficiency: %v", err)
+	}
+
+	if err := cfg.IncrementCommand(); err != nil {
+		t.Fatalf("IncrementCommand: %v", err)
+	}
+	if err := cfg.IncrementCommand(); err != nil {
+		t.Fatalf("IncrementCommand (2nd): %v", err)
+	}
+
+	stats := cfg.GetUsageStats()
+	if stats.CommandsRun != 2 {
+		t.Errorf("CommandsRun = %d, want 2", stats.CommandsRun)
+	}
+	if stats.SessionsCreated != 0 {
+		t.Errorf("SessionsCreated = %d, want 0", stats.SessionsCreated)
+	}
+	if stats.PromptsSent != 0 {
+		t.Errorf("PromptsSent = %d, want 0", stats.PromptsSent)
+	}
+}
+
+func TestIncrementSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_CONFIG_HOME", tmpDir)
+	defer os.Unsetenv("XDG_CONFIG_HOME")
+
+	cfg, _ := LoadProficiency()
+
+	if err := cfg.IncrementSession(); err != nil {
+		t.Fatalf("IncrementSession: %v", err)
+	}
+
+	stats := cfg.GetUsageStats()
+	if stats.SessionsCreated != 1 {
+		t.Errorf("SessionsCreated = %d, want 1", stats.SessionsCreated)
+	}
+	if stats.CommandsRun != 0 {
+		t.Errorf("CommandsRun = %d, want 0", stats.CommandsRun)
+	}
+}
+
+func TestIncrementPrompt(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_CONFIG_HOME", tmpDir)
+	defer os.Unsetenv("XDG_CONFIG_HOME")
+
+	cfg, _ := LoadProficiency()
+
+	if err := cfg.IncrementPrompt(); err != nil {
+		t.Fatalf("IncrementPrompt: %v", err)
+	}
+	if err := cfg.IncrementPrompt(); err != nil {
+		t.Fatalf("IncrementPrompt (2nd): %v", err)
+	}
+	if err := cfg.IncrementPrompt(); err != nil {
+		t.Fatalf("IncrementPrompt (3rd): %v", err)
+	}
+
+	stats := cfg.GetUsageStats()
+	if stats.PromptsSent != 3 {
+		t.Errorf("PromptsSent = %d, want 3", stats.PromptsSent)
+	}
+	if stats.CommandsRun != 0 {
+		t.Errorf("CommandsRun = %d, want 0", stats.CommandsRun)
+	}
+}
+
+// =============================================================================
+// ProficiencyConfigPath coverage
+// =============================================================================
+
+func TestProficiencyConfigPath(t *testing.T) {
+	path := ProficiencyConfigPath()
+	if path == "" {
+		t.Error("ProficiencyConfigPath returned empty string")
+	}
+	if !filepath.IsAbs(path) {
+		t.Errorf("ProficiencyConfigPath returned relative path: %s", path)
+	}
+	if filepath.Ext(path) != ".json" {
+		t.Errorf("ProficiencyConfigPath ext = %q, want .json", filepath.Ext(path))
+	}
+}
+
+func TestProficiencyConfigPath_XDGOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_CONFIG_HOME", tmpDir)
+	defer os.Unsetenv("XDG_CONFIG_HOME")
+
+	path := ProficiencyConfigPath()
+	expected := filepath.Join(tmpDir, "ntm", "proficiency.json")
+	if path != expected {
+		t.Errorf("ProficiencyConfigPath = %q, want %q", path, expected)
+	}
+}
