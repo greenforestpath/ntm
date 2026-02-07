@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -659,6 +661,76 @@ func TestSwitchToNextAccountNotInstalled(t *testing.T) {
 
 	if err != ErrToolNotInstalled {
 		t.Errorf("Expected ErrToolNotInstalled, got %v", err)
+	}
+}
+
+func TestSwitchToNextAccountReturnsSchemaErrorOnInvalidJSONSuccess(t *testing.T) {
+	dir := t.TempDir()
+	fakeCAAM := filepath.Join(dir, "caam")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then\n" +
+		"  echo \"caam 1.2.3\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"switch\" ]; then\n" +
+		"  echo \"not-json\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"echo \"[]\"\n"
+	if err := os.WriteFile(fakeCAAM, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write fake caam: %v", err)
+	}
+
+	t.Setenv("PATH", dir)
+	adapter := NewCAAMAdapter()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := adapter.SwitchToNextAccount(ctx, "claude")
+	if err == nil {
+		t.Fatal("expected schema validation error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), ErrSchemaValidation.Error()) {
+		t.Fatalf("error = %v, want schema validation error", err)
+	}
+}
+
+func TestSwitchToNextAccountReturnsSchemaErrorOnSuccessFalseWithoutError(t *testing.T) {
+	dir := t.TempDir()
+	fakeCAAM := filepath.Join(dir, "caam")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then\n" +
+		"  echo \"caam 1.2.3\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"switch\" ]; then\n" +
+		"  echo '{\"success\":false,\"provider\":\"claude\"}'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"echo \"[]\"\n"
+	if err := os.WriteFile(fakeCAAM, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write fake caam: %v", err)
+	}
+
+	t.Setenv("PATH", dir)
+	adapter := NewCAAMAdapter()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := adapter.SwitchToNextAccount(ctx, "claude")
+	if err == nil {
+		t.Fatal("expected error for success=false without error details")
+	}
+	if result == nil {
+		t.Fatal("expected parsed result payload")
+	}
+	if result.Success {
+		t.Fatal("expected success=false in parsed result")
+	}
+	if !strings.Contains(err.Error(), ErrSchemaValidation.Error()) {
+		t.Fatalf("error = %v, want schema validation error", err)
 	}
 }
 

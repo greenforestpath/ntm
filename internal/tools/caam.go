@@ -467,14 +467,24 @@ func (a *CAAMAdapter) SwitchToNextAccount(ctx context.Context, provider string) 
 
 	err := cmd.Run()
 
-	// Parse JSON response even on error (caam may return valid JSON with error details)
-	output := stdout.Bytes()
+	// Parse JSON response even on error (caam may return valid JSON with error details).
+	output := bytes.TrimSpace(stdout.Bytes())
 	if len(output) == 0 {
-		output = stderr.Bytes()
+		output = bytes.TrimSpace(stderr.Bytes())
 	}
 
 	var result SwitchResult
-	if len(output) > 0 && json.Valid(output) {
+	if len(output) > 0 {
+		if !json.Valid(output) {
+			if err != nil {
+				if ctx.Err() == context.DeadlineExceeded {
+					return nil, ErrTimeout
+				}
+				return nil, fmt.Errorf("failed to switch account: %w: %s", err, stderr.String())
+			}
+			return nil, fmt.Errorf("%w: invalid JSON from caam switch", ErrSchemaValidation)
+		}
+
 		if jsonErr := json.Unmarshal(output, &result); jsonErr != nil {
 			// If JSON parsing fails, wrap the original error
 			if err != nil {
@@ -483,14 +493,17 @@ func (a *CAAMAdapter) SwitchToNextAccount(ctx context.Context, provider string) 
 				}
 				return nil, fmt.Errorf("failed to switch account: %w: %s", err, stderr.String())
 			}
-			return nil, fmt.Errorf("failed to parse caam response: %w", jsonErr)
+			return nil, fmt.Errorf("%w: failed to parse caam switch response: %v", ErrSchemaValidation, jsonErr)
 		}
 	} else if err != nil {
-		// No valid JSON and command failed
+		// No output and command failed
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, ErrTimeout
 		}
 		return nil, fmt.Errorf("failed to switch account: %w: %s", err, stderr.String())
+	} else {
+		// Command succeeded but returned no output. Treat this as invalid schema.
+		return nil, fmt.Errorf("%w: empty response from caam switch", ErrSchemaValidation)
 	}
 
 	// Invalidate cache after switch attempt
@@ -498,9 +511,23 @@ func (a *CAAMAdapter) SwitchToNextAccount(ctx context.Context, provider string) 
 	caamStatusExpiry = time.Time{}
 	caamStatusMutex.Unlock()
 
+	// Command failures should still surface as errors even if JSON was parseable.
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, ErrTimeout
+		}
+		if result.Error != "" {
+			return &result, fmt.Errorf("caam switch failed: %s", result.Error)
+		}
+		return &result, fmt.Errorf("failed to switch account: %w", err)
+	}
+
 	// Return error if switch was not successful
-	if !result.Success && result.Error != "" {
-		return &result, fmt.Errorf("caam switch failed: %s", result.Error)
+	if !result.Success {
+		if result.Error != "" {
+			return &result, fmt.Errorf("caam switch failed: %s", result.Error)
+		}
+		return &result, fmt.Errorf("%w: caam switch returned success=false without error details", ErrSchemaValidation)
 	}
 
 	return &result, nil
