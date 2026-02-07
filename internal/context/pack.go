@@ -56,14 +56,15 @@ type ContextPackFull struct {
 
 // BuildOptions configures how a context pack is built
 type BuildOptions struct {
-	BeadID        string
-	AgentType     string // cc, cod, gmi
-	RepoRev       string
-	Task          string   // Task description for CM context
-	Files         []string // Files for S2P context
-	CorrelationID string
-	ProjectDir    string
-	SessionID     string // For CM client connection
+	BeadID          string
+	AgentType       string // cc, cod, gmi
+	RepoRev         string
+	Task            string   // Task description for CM context
+	Files           []string // Files for S2P context
+	CorrelationID   string
+	ProjectDir      string
+	SessionID       string // For CM client connection
+	IncludeMSSkills bool   // Include Meta Skill suggestions as an optional component
 }
 
 // Package-level cache shared across all builders
@@ -77,6 +78,7 @@ type ContextPackBuilder struct {
 	bvAdapter   *tools.BVAdapter
 	cmAdapter   *tools.CMAdapter
 	cassAdapter *tools.CASSAdapter
+	msAdapter   *tools.MSAdapter
 	s2pAdapter  *tools.S2PAdapter
 	store       *state.Store
 	allocation  BudgetAllocation
@@ -88,6 +90,7 @@ func NewContextPackBuilder(store *state.Store) *ContextPackBuilder {
 		bvAdapter:   tools.NewBVAdapter(),
 		cmAdapter:   tools.NewCMAdapter(),
 		cassAdapter: tools.NewCASSAdapter(),
+		msAdapter:   tools.NewMSAdapter(),
 		s2pAdapter:  tools.NewS2PAdapter(),
 		store:       store,
 		allocation:  DefaultBudgetAllocation(),
@@ -138,6 +141,23 @@ func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*Con
 		Components: make(map[string]*PackComponent),
 	}
 
+	triageBudget := budget * b.allocation.Triage / 100
+	cmBudget := budget * b.allocation.CM / 100
+	cassBudget := budget * b.allocation.CASS / 100
+	s2pBudget := budget * b.allocation.S2P / 100
+	msBudget := 0
+	if opts.IncludeMSSkills {
+		// Reserve a small slice for optional MS hints by borrowing from S2P.
+		msBudget = budget * 5 / 100
+		if msBudget < 200 {
+			msBudget = 200
+		}
+		if msBudget > s2pBudget {
+			msBudget = s2pBudget
+		}
+		s2pBudget -= msBudget
+	}
+
 	// Build components in parallel
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -146,7 +166,7 @@ func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*Con
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		component := b.buildTriageComponent(ctx, opts.ProjectDir, budget*b.allocation.Triage/100)
+		component := b.buildTriageComponent(ctx, opts.ProjectDir, triageBudget)
 		mu.Lock()
 		pack.Components["triage"] = component
 		mu.Unlock()
@@ -156,17 +176,33 @@ func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*Con
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		component := b.buildCMComponent(ctx, opts, budget*b.allocation.CM/100)
+		component := b.buildCMComponent(ctx, opts, cmBudget)
 		mu.Lock()
 		pack.Components["cm"] = component
 		mu.Unlock()
 	}()
 
+	// Optional Meta Skill suggestions (5% from S2P budget)
+	if opts.IncludeMSSkills && msBudget > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			query := strings.TrimSpace(opts.Task)
+			if query == "" {
+				query = strings.TrimSpace(opts.BeadID)
+			}
+			component := b.buildMSComponent(ctx, query, msBudget)
+			mu.Lock()
+			pack.Components["ms"] = component
+			mu.Unlock()
+		}()
+	}
+
 	// CASS History (15%)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		component := b.buildCASSComponent(ctx, opts.Task, budget*b.allocation.CASS/100)
+		component := b.buildCASSComponent(ctx, opts.Task, cassBudget)
 		mu.Lock()
 		pack.Components["cass"] = component
 		mu.Unlock()
@@ -176,7 +212,7 @@ func (b *ContextPackBuilder) Build(ctx context.Context, opts BuildOptions) (*Con
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		component := b.buildS2PComponent(ctx, opts.ProjectDir, opts.Files, budget*b.allocation.S2P/100)
+		component := b.buildS2PComponent(ctx, opts.ProjectDir, opts.Files, s2pBudget)
 		mu.Lock()
 		pack.Components["s2p"] = component
 		mu.Unlock()
@@ -292,6 +328,134 @@ func (b *ContextPackBuilder) buildCASSComponent(ctx context.Context, query strin
 	return component
 }
 
+func extractTopMSSkills(data json.RawMessage, limit int) ([]map[string]interface{}, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+
+	normalize := func(skill map[string]interface{}) map[string]interface{} {
+		getString := func(keys ...string) string {
+			for _, key := range keys {
+				val, ok := skill[key]
+				if !ok {
+					continue
+				}
+				s, ok := val.(string)
+				if ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+			return ""
+		}
+
+		entry := map[string]interface{}{}
+		if id := getString("id", "skill_id", "key"); id != "" {
+			entry["id"] = id
+		}
+		if name := getString("name", "title"); name != "" {
+			entry["name"] = name
+		}
+		if summary := getString("summary", "description"); summary != "" {
+			entry["summary"] = summary
+		}
+		if relevance, ok := skill["relevance"].(float64); ok {
+			entry["relevance"] = relevance
+		}
+		return entry
+	}
+
+	var rawArray []map[string]interface{}
+	if err := json.Unmarshal(data, &rawArray); err == nil {
+		out := make([]map[string]interface{}, 0, limit)
+		for _, skill := range rawArray {
+			entry := normalize(skill)
+			if _, ok := entry["id"]; !ok {
+				continue
+			}
+			out = append(out, entry)
+			if len(out) >= limit {
+				break
+			}
+		}
+		if len(out) == 0 {
+			return nil, fmt.Errorf("ms search returned no skills with IDs")
+		}
+		return out, nil
+	}
+
+	var envelope struct {
+		Skills []map[string]interface{} `json:"skills"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil, fmt.Errorf("unexpected ms search response format")
+	}
+	if len(envelope.Skills) == 0 {
+		return nil, fmt.Errorf("ms search returned an empty skills list")
+	}
+	out := make([]map[string]interface{}, 0, limit)
+	for _, skill := range envelope.Skills {
+		entry := normalize(skill)
+		if _, ok := entry["id"]; !ok {
+			continue
+		}
+		out = append(out, entry)
+		if len(out) >= limit {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("ms search returned no skills with IDs")
+	}
+	return out, nil
+}
+
+func (b *ContextPackBuilder) buildMSComponent(ctx context.Context, query string, tokenBudget int) *PackComponent {
+	component := &PackComponent{Type: "ms"}
+
+	if tokenBudget <= 0 {
+		component.Error = "insufficient token budget"
+		return component
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		component.Error = "no query provided"
+		return component
+	}
+
+	_, installed := b.msAdapter.Detect()
+	if !installed {
+		component.Error = "ms not installed"
+		return component
+	}
+
+	data, err := b.msAdapter.Search(ctx, query)
+	if err != nil {
+		component.Error = err.Error()
+		return component
+	}
+
+	topSkills, err := extractTopMSSkills(data, 5)
+	if err != nil {
+		component.Error = err.Error()
+		return component
+	}
+
+	payload := map[string]interface{}{
+		"source": "ms",
+		"query":  query,
+		"skills": topSkills,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		component.Error = err.Error()
+		return component
+	}
+
+	component.Data = truncateJSON(raw, tokenBudget)
+	component.TokenCount = estimateTokens(string(component.Data))
+	return component
+}
+
 // buildS2PComponent generates S2P context with agent-aware budget enforcement
 func (b *ContextPackBuilder) buildS2PComponent(ctx context.Context, dir string, files []string, tokenBudget int) *PackComponent {
 	component := &PackComponent{Type: "s2p"}
@@ -344,7 +508,7 @@ func (b *ContextPackBuilder) renderXML(pack *ContextPackFull) string {
 	sb.WriteString(fmt.Sprintf("  <repo_rev>%s</repo_rev>\n", pack.RepoRev))
 
 	// Use consistent ordering (same as renderMarkdown)
-	order := []string{"triage", "cm", "cass", "s2p"}
+	order := []string{"triage", "cm", "ms", "cass", "s2p"}
 	for _, name := range order {
 		comp, ok := pack.Components[name]
 		if !ok {
@@ -374,7 +538,7 @@ func (b *ContextPackBuilder) renderMarkdown(pack *ContextPackFull) string {
 	sb.WriteString(fmt.Sprintf("- **Bead**: %s\n", pack.BeadID))
 	sb.WriteString(fmt.Sprintf("- **Repo Rev**: %s\n\n", pack.RepoRev))
 
-	order := []string{"triage", "cm", "cass", "s2p"}
+	order := []string{"triage", "cm", "ms", "cass", "s2p"}
 	for _, name := range order {
 		comp, ok := pack.Components[name]
 		if !ok {
@@ -418,6 +582,8 @@ func componentTitle(name string) string {
 		return "BV Triage (Priority & Planning)"
 	case "cm":
 		return "CM Rules (Learned Guidelines)"
+	case "ms":
+		return "Meta Skill Suggestions (source: ms)"
 	case "cass":
 		return "CASS History (Prior Solutions)"
 	case "s2p":
@@ -438,6 +604,10 @@ func (b *ContextPackBuilder) truncateOverflow(pack *ContextPackFull, budget int)
 	if cass, ok := pack.Components["cass"]; ok && cass.Data != nil {
 		cass.Data = truncateJSON(cass.Data, len(cass.Data)/2)
 		cass.TokenCount = estimateTokens(string(cass.Data))
+	}
+	if ms, ok := pack.Components["ms"]; ok && ms.Data != nil {
+		ms.Data = truncateJSON(ms.Data, len(ms.Data)/2)
+		ms.TokenCount = estimateTokens(string(ms.Data))
 	}
 
 	pack.RenderedPrompt = b.render(pack)

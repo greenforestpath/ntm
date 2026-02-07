@@ -78,6 +78,7 @@ type Config struct {
 	Accounts           AccountsConfig        `toml:"accounts"`         // Multi-account management
 	Rotation           RotationConfig        `toml:"rotation"`         // Account rotation configuration
 	GeminiSetup        GeminiSetupConfig     `toml:"gemini_setup"`     // Gemini post-spawn setup
+	Context            ContextConfig         `toml:"context"`          // Context pack options
 	ContextRotation    ContextRotationConfig `toml:"context_rotation"` // Context window rotation
 	SessionRecovery    SessionRecoveryConfig `toml:"recovery"`         // Smart session recovery
 	Cleanup            CleanupConfig         `toml:"cleanup"`          // Temp file cleanup configuration
@@ -477,6 +478,18 @@ type AgentConfig struct {
 	Aider        string            `toml:"aider"`
 	Plugins      map[string]string `toml:"plugins"` // Custom agent commands keyed by type
 	DefaultCount int               `toml:"default_count"`
+}
+
+// ContextConfig holds options for context-pack composition.
+type ContextConfig struct {
+	MSSkills bool `toml:"ms_skills"` // Include Meta Skill suggestions in context packs
+}
+
+// DefaultContextConfig returns sensible defaults for context-pack options.
+func DefaultContextConfig() ContextConfig {
+	return ContextConfig{
+		MSSkills: false, // Disabled by default; opt-in only
+	}
 }
 
 // ContextRotationConfig holds configuration for automatic context window rotation
@@ -1941,6 +1954,7 @@ func Default() *Config {
 		Accounts:        DefaultAccountsConfig(),
 		Rotation:        DefaultRotationConfig(),
 		GeminiSetup:     DefaultGeminiSetupConfig(),
+		Context:         DefaultContextConfig(),
 		ContextRotation: DefaultContextRotationConfig(),
 		SessionRecovery: DefaultSessionRecoveryConfig(),
 		Cleanup:         DefaultCleanupConfig(),
@@ -2827,6 +2841,12 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "verbose = %t                     # Show debug output during setup\n", cfg.GeminiSetup.Verbose)
 	fmt.Fprintln(w)
 
+	// Write context pack options
+	fmt.Fprintln(w, "[context]")
+	fmt.Fprintln(w, "# Context pack composition options")
+	fmt.Fprintf(w, "ms_skills = %t                  # Include Meta Skill suggestions in context packs\n", cfg.Context.MSSkills)
+	fmt.Fprintln(w)
+
 	// Write context rotation configuration
 	fmt.Fprintln(w, "[context_rotation]")
 	fmt.Fprintln(w, "# Context window rotation configuration")
@@ -3187,6 +3207,14 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 		case "rotate_threshold":
 			return cfg.ContextRotation.RotateThreshold, nil
 		}
+	case "context":
+		if len(parts) < 2 {
+			return cfg.Context, nil
+		}
+		switch parts[1] {
+		case "ms_skills":
+			return cfg.Context.MSSkills, nil
+		}
 	case "ensemble":
 		if len(parts) < 2 {
 			return cfg.Ensemble, nil
@@ -3407,6 +3435,9 @@ func Diff(cfg *Config) []ConfigDiff {
 	// Resilience
 	addDiff("resilience.auto_restart", defaults.Resilience.AutoRestart, cfg.Resilience.AutoRestart)
 	addDiff("resilience.max_restarts", defaults.Resilience.MaxRestarts, cfg.Resilience.MaxRestarts)
+
+	// Context pack options
+	addDiff("context.ms_skills", defaults.Context.MSSkills, cfg.Context.MSSkills)
 
 	// Context Rotation
 	addDiff("context_rotation.enabled", defaults.ContextRotation.Enabled, cfg.ContextRotation.Enabled)

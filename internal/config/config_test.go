@@ -1872,6 +1872,7 @@ func TestCASSContextGetValue(t *testing.T) {
 		{"cass.context.min_relevance", 0.5},
 		{"cass.context.skip_if_context_above", float64(80)},
 		{"cass.context.prefer_same_project", true},
+		{"context.ms_skills", false},
 	}
 
 	for _, tt := range tests {
@@ -1884,6 +1885,28 @@ func TestCASSContextGetValue(t *testing.T) {
 				t.Errorf("GetValue(%q) = %v (%T), want %v (%T)", tt.path, got, got, tt.want, tt.want)
 			}
 		})
+	}
+}
+
+func TestContextPackOptionsDefaults(t *testing.T) {
+	cfg := Default()
+	if cfg.Context.MSSkills {
+		t.Error("Context.MSSkills should default to false")
+	}
+}
+
+func TestContextPackOptionsFromTOML(t *testing.T) {
+	configContent := `
+[context]
+ms_skills = true
+`
+	configPath := createTempConfig(t, configContent)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+	if !cfg.Context.MSSkills {
+		t.Error("Expected context.ms_skills = true")
 	}
 }
 
@@ -1908,6 +1931,12 @@ func TestCASSContextPrintOutput(t *testing.T) {
 	}
 	if !strings.Contains(output, "prefer_same_project") {
 		t.Error("Expected output to contain prefer_same_project")
+	}
+	if !strings.Contains(output, "[context]") {
+		t.Error("Expected output to contain [context]")
+	}
+	if !strings.Contains(output, "ms_skills") {
+		t.Error("Expected output to contain context.ms_skills")
 	}
 }
 

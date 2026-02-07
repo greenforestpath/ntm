@@ -97,6 +97,7 @@ func TestComponentTitle(t *testing.T) {
 	}{
 		{"triage", "BV Triage (Priority & Planning)"},
 		{"cm", "CM Rules (Learned Guidelines)"},
+		{"ms", "Meta Skill Suggestions (source: ms)"},
 		{"cass", "CASS History (Prior Solutions)"},
 		{"s2p", "File Context"},
 		{"custom", "Custom"},
@@ -110,6 +111,65 @@ func TestComponentTitle(t *testing.T) {
 				t.Errorf("componentTitle(%q) = %q, want %q", tc.name, result, tc.expected)
 			}
 		})
+	}
+}
+
+func TestExtractTopMSSkills_Array(t *testing.T) {
+	t.Parallel()
+
+	raw := json.RawMessage(`[
+		{"id":"commit-and-release","name":"Commit and Release","summary":"Batch commits"},
+		{"id":"codebase-archaeology","name":"Codebase Archaeology","summary":"Deep repo understanding"},
+		{"id":"agent-mail","name":"Agent Mail","summary":"Coordination"}
+	]`)
+
+	skills, err := extractTopMSSkills(raw, 2)
+	if err != nil {
+		t.Fatalf("extractTopMSSkills returned error: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Fatalf("len(skills)=%d, want 2", len(skills))
+	}
+	if skills[0]["id"] != "commit-and-release" {
+		t.Fatalf("skills[0].id=%v, want commit-and-release", skills[0]["id"])
+	}
+	if skills[1]["id"] != "codebase-archaeology" {
+		t.Fatalf("skills[1].id=%v, want codebase-archaeology", skills[1]["id"])
+	}
+}
+
+func TestExtractTopMSSkills_Envelope(t *testing.T) {
+	t.Parallel()
+
+	raw := json.RawMessage(`{
+		"skills":[
+			{"id":"a","name":"A","description":"desc A"},
+			{"id":"b","name":"B","summary":"desc B"}
+		]
+	}`)
+
+	skills, err := extractTopMSSkills(raw, 5)
+	if err != nil {
+		t.Fatalf("extractTopMSSkills returned error: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Fatalf("len(skills)=%d, want 2", len(skills))
+	}
+	if skills[0]["id"] != "a" {
+		t.Fatalf("skills[0].id=%v, want a", skills[0]["id"])
+	}
+	if skills[0]["summary"] != "desc A" {
+		t.Fatalf("skills[0].summary=%v, want desc A", skills[0]["summary"])
+	}
+}
+
+func TestExtractTopMSSkills_RequiresID(t *testing.T) {
+	t.Parallel()
+
+	raw := json.RawMessage(`[{"name":"no-id"}]`)
+	_, err := extractTopMSSkills(raw, 5)
+	if err == nil {
+		t.Fatal("expected error for missing IDs, got nil")
 	}
 }
 
@@ -309,7 +369,7 @@ func TestIntelligentTruncate_Long(t *testing.T) {
 
 	// Truncate to small budget
 	result := b.intelligentTruncate(text, 50) // 200 chars
-	if len(result) > 250 { // some slack for truncation message
+	if len(result) > 250 {                    // some slack for truncation message
 		t.Errorf("truncated text too long: %d chars", len(result))
 	}
 	if !strings.Contains(result, "truncated") {
@@ -356,11 +416,11 @@ func TestOptimizeFilesForBudget_PriorityOrder(t *testing.T) {
 	b := &ContextPackBuilder{}
 
 	files := []string{
-		"tests/unit_test.go",   // low priority
-		"cmd/main.go",          // high priority
-		"internal/handler.go",  // medium-high priority
-		"examples/demo.go",     // low priority
-		"internal/service.go",  // medium-high priority
+		"tests/unit_test.go",    // low priority
+		"cmd/main.go",           // high priority
+		"internal/handler.go",   // medium-high priority
+		"examples/demo.go",      // low priority
+		"internal/service.go",   // medium-high priority
 		"internal/core/core.go", // medium-high priority
 	}
 
@@ -448,6 +508,7 @@ func TestRenderMarkdown(t *testing.T) {
 		},
 		Components: map[string]*PackComponent{
 			"triage": {Type: "triage", Data: json.RawMessage(`{"picks":[]}`), TokenCount: 10},
+			"ms":     {Type: "ms", Data: json.RawMessage(`{"source":"ms","skills":[{"id":"agent-mail"}]}`), TokenCount: 10},
 			"cass":   {Type: "cass", Error: "cass not installed"},
 		},
 	}
@@ -462,6 +523,9 @@ func TestRenderMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(result, "```json") {
 		t.Error("markdown should contain JSON code block for triage")
+	}
+	if !strings.Contains(result, "Meta Skill Suggestions (source: ms)") {
+		t.Error("markdown should include MS component title with source attribution")
 	}
 	if !strings.Contains(result, "*Unavailable: cass not installed*") {
 		t.Error("markdown should show cass as unavailable")

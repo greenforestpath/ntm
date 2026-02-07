@@ -79,13 +79,14 @@ The context is rendered in agent-appropriate format:
 			builder := ntmctx.NewContextPackBuilder(store)
 
 			opts := ntmctx.BuildOptions{
-				BeadID:     beadID,
-				AgentType:  agentType,
-				RepoRev:    repoRev,
-				Task:       task,
-				Files:      files,
-				ProjectDir: dir,
-				SessionID:  session,
+				BeadID:          beadID,
+				AgentType:       agentType,
+				RepoRev:         repoRev,
+				Task:            task,
+				Files:           files,
+				ProjectDir:      dir,
+				SessionID:       session,
+				IncludeMSSkills: cfg != nil && cfg.Context.MSSkills,
 			}
 
 			pack, err := builder.Build(cmd.Context(), opts)
