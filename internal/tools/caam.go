@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -321,6 +322,7 @@ func (s *CAAMStatus) applyAccounts(accounts []CAAMAccount) {
 	for p := range providerSet {
 		s.Providers = append(s.Providers, p)
 	}
+	sort.Strings(s.Providers)
 }
 
 // GetAccounts returns the list of configured accounts

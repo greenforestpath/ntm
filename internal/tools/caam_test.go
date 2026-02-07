@@ -90,8 +90,8 @@ func TestCAAMAccountStruct(t *testing.T) {
 func TestCAAMStatusApplyAccountsTracksActiveAccountIdentity(t *testing.T) {
 	status := &CAAMStatus{}
 	accounts := []CAAMAccount{
-		{ID: "acc-1", Provider: "claude", Active: true, Name: "Primary"},
-		{ID: "acc-2", Provider: "openai", Active: false, Name: "Secondary"},
+		{ID: "acc-1", Provider: "openai", Active: true, Name: "Primary"},
+		{ID: "acc-2", Provider: "claude", Active: false, Name: "Secondary"},
 	}
 
 	status.applyAccounts(accounts)
@@ -107,6 +107,12 @@ func TestCAAMStatusApplyAccountsTracksActiveAccountIdentity(t *testing.T) {
 	}
 	if status.ActiveAccount.ID != "acc-1" {
 		t.Fatalf("ActiveAccount.ID = %q, want %q", status.ActiveAccount.ID, "acc-1")
+	}
+	if len(status.Providers) != 2 {
+		t.Fatalf("Providers len = %d, want 2", len(status.Providers))
+	}
+	if status.Providers[0] != "claude" || status.Providers[1] != "openai" {
+		t.Fatalf("Providers = %v, want [claude openai] (deterministic order)", status.Providers)
 	}
 
 	// Regression check: active account must not be a detached range-loop copy.

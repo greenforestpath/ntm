@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 )
 
 func TestCMAdapterConnectSetsDiscoveredServerPort(t *testing.T) {
@@ -62,6 +63,33 @@ func TestCMAdapterIsDaemonRunningFallsBackToConfiguredPort(t *testing.T) {
 
 	if !adapter.isDaemonRunning(context.Background()) {
 		t.Fatal("isDaemonRunning() = false, want true via configured port fallback")
+	}
+}
+
+func TestCMAdapterIsDaemonRunningFallbackAfterClientTimeout(t *testing.T) {
+	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(3 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer slowServer.Close()
+
+	fastServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer fastServer.Close()
+
+	tmpDir := t.TempDir()
+	writeCMPIDFile(t, tmpDir, "sess-c", mustServerPort(t, slowServer.URL))
+
+	adapter := NewCMAdapter()
+	if err := adapter.Connect(tmpDir, "sess-c"); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+
+	adapter.SetServerPort(mustServerPort(t, fastServer.URL))
+
+	if !adapter.isDaemonRunning(context.Background()) {
+		t.Fatal("isDaemonRunning() = false, want true via configured fallback after client timeout")
 	}
 }
 

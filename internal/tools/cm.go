@@ -130,18 +130,22 @@ func (a *CMAdapter) Health(ctx context.Context) (*HealthStatus, error) {
 
 // isDaemonRunning checks if the cm daemon is responding
 func (a *CMAdapter) isDaemonRunning(ctx context.Context) bool {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
 	// If connected to a session-specific daemon, probe that endpoint first.
 	if a.client != nil {
-		if err := a.client.Health(ctx); err == nil {
+		if func() bool {
+			clientCtx, clientCancel := context.WithTimeout(ctx, 2*time.Second)
+			defer clientCancel()
+			return a.client.Health(clientCtx) == nil
+		}() {
 			return true
 		}
 	}
 
+	directCtx, directCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer directCancel()
+
 	url := fmt.Sprintf("http://127.0.0.1:%d/health", a.serverPort)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(directCtx, "GET", url, nil)
 	if err != nil {
 		return false
 	}
