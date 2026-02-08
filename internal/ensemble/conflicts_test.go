@@ -86,3 +86,33 @@ func TestConflictTracker_GetDensity(t *testing.T) {
 		t.Errorf("unexpected HighConflictPairs: %v", density.HighConflictPairs)
 	}
 }
+
+// =============================================================================
+// normalizePair
+// =============================================================================
+
+func TestNormalizePair(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		a, b       string
+		wantA      string
+		wantB      string
+	}{
+		{"already ordered", "alpha", "beta", "alpha", "beta"},
+		{"reversed", "beta", "alpha", "alpha", "beta"},
+		{"equal", "same", "same", "same", "same"},
+		{"empty first", "", "beta", "", "beta"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gotA, gotB := normalizePair(tc.a, tc.b)
+			if gotA != tc.wantA || gotB != tc.wantB {
+				t.Errorf("normalizePair(%q, %q) = (%q, %q), want (%q, %q)", tc.a, tc.b, gotA, gotB, tc.wantA, tc.wantB)
+			}
+		})
+	}
+}

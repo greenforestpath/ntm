@@ -669,3 +669,433 @@ func TestWriterFilePermissions(t *testing.T) {
 		t.Errorf("expected permissions 0644, got %o", perm)
 	}
 }
+
+// =============================================================================
+// SetTokenInfo edge-case tests
+// =============================================================================
+
+func TestSetTokenInfo_NegativeValues(t *testing.T) {
+	t.Parallel()
+
+	h := New("test").WithGoalAndNow("Goal", "Now")
+
+	// Negative used gets clamped to 0
+	h.SetTokenInfo(-100, 200000)
+	if h.TokensUsed != 0 {
+		t.Errorf("negative used should clamp to 0, got %d", h.TokensUsed)
+	}
+	if h.TokensPct != 0 {
+		t.Errorf("expected 0%% with clamped used, got %.2f", h.TokensPct)
+	}
+
+	// Negative max gets clamped to 0
+	h.SetTokenInfo(100, -500)
+	if h.TokensMax != 0 {
+		t.Errorf("negative max should clamp to 0, got %d", h.TokensMax)
+	}
+	if h.TokensPct != 0 {
+		t.Errorf("expected 0%% with zero max, got %.2f", h.TokensPct)
+	}
+
+	// Both negative
+	h.SetTokenInfo(-10, -20)
+	if h.TokensUsed != 0 || h.TokensMax != 0 {
+		t.Errorf("both negative should clamp to 0, got used=%d max=%d", h.TokensUsed, h.TokensMax)
+	}
+}
+
+func TestSetTokenInfo_OverflowClamping(t *testing.T) {
+	t.Parallel()
+
+	h := New("test").WithGoalAndNow("Goal", "Now")
+
+	// used > max gets clamped to max
+	h.SetTokenInfo(250000, 200000)
+	if h.TokensUsed != 200000 {
+		t.Errorf("used should clamp to max, got %d", h.TokensUsed)
+	}
+	if h.TokensPct != 100.0 {
+		t.Errorf("expected 100%% when clamped, got %.2f", h.TokensPct)
+	}
+}
+
+func TestSetTokenInfo_ZeroMax(t *testing.T) {
+	t.Parallel()
+
+	h := New("test").WithGoalAndNow("Goal", "Now")
+
+	h.SetTokenInfo(0, 0)
+	if h.TokensPct != 0 {
+		t.Errorf("expected 0%% with zero max, got %.2f", h.TokensPct)
+	}
+}
+
+// =============================================================================
+// formatLedgerEntry tests
+// =============================================================================
+
+func TestFormatLedgerEntry_AllFields(t *testing.T) {
+	t.Parallel()
+
+	h := New("test-session").
+		WithGoalAndNow("Build the thing", "Deploy next").
+		WithStatus(StatusComplete, OutcomeSucceeded).
+		SetTokenInfo(80000, 100000)
+	h.Test = "go test ./..."
+	h.Blockers = []string{"blocker-1", "blocker-2"}
+	h.Next = []string{"next-1", "next-2"}
+	h.ActiveBeads = []string{"bd-abc", "bd-xyz"}
+
+	now := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	entry := formatLedgerEntry(h, "/tmp/handoff.yaml", false, now)
+
+	checks := []string{
+		"(manual)",
+		"- file: handoff.yaml",
+		"- status: complete",
+		"- outcome: SUCCEEDED",
+		"- goal: Build the thing",
+		"- now: Deploy next",
+		"- test: go test ./...",
+		"- blockers: blocker-1, blocker-2",
+		"- next: next-1, next-2",
+		"- beads: bd-abc, bd-xyz",
+		"- tokens_pct: 80.00",
+	}
+	for _, check := range checks {
+		if !strings.Contains(entry, check) {
+			t.Errorf("formatLedgerEntry missing %q in:\n%s", check, entry)
+		}
+	}
+}
+
+func TestFormatLedgerEntry_MinimalFields(t *testing.T) {
+	t.Parallel()
+
+	h := &Handoff{} // No optional fields set
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	entry := formatLedgerEntry(h, "/tmp/min.yaml", true, now)
+
+	if !strings.Contains(entry, "(auto)") {
+		t.Error("expected (auto) marker")
+	}
+	// Should NOT contain optional fields
+	for _, absent := range []string{"- status:", "- outcome:", "- test:", "- blockers:", "- next:", "- beads:", "- tokens_pct:"} {
+		if strings.Contains(entry, absent) {
+			t.Errorf("minimal entry should not contain %q", absent)
+		}
+	}
+}
+
+// =============================================================================
+// Delete / Archive edge-case tests
+// =============================================================================
+
+func TestWriterDeleteNonexistentFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	w := NewWriter(tmpDir)
+
+	// Ensure the session dir exists so path is within base dir
+	w.EnsureDir("test")
+	fakePath := filepath.Join(tmpDir, ".ntm", "handoffs", "test", "does-not-exist.yaml")
+
+	err := w.Delete(fakePath)
+	if err == nil {
+		t.Error("expected error when deleting nonexistent file")
+	}
+	if !strings.Contains(err.Error(), "delete failed") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestWriterArchiveOutsideBaseDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	w := NewWriter(tmpDir)
+
+	err := w.Archive("/tmp/some-other-dir/file.yaml")
+	if err == nil {
+		t.Error("expected error when archiving outside base dir")
+	}
+	if !strings.Contains(err.Error(), "not within handoff directory") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestWriterArchiveNonexistentFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	w := NewWriter(tmpDir)
+
+	// Within base dir but file doesn't exist
+	w.EnsureDir("test")
+	fakePath := filepath.Join(tmpDir, ".ntm", "handoffs", "test", "ghost.yaml")
+
+	err := w.Archive(fakePath)
+	if err == nil {
+		t.Error("expected error when archiving nonexistent file")
+	}
+	if !strings.Contains(err.Error(), "archive failed") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// =============================================================================
+// WriteAuto edge-case tests
+// =============================================================================
+
+func TestWriterWriteAutoValidationFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	w := NewWriter(tmpDir)
+
+	// Missing required fields
+	h := &Handoff{Session: "test"}
+	_, err := w.WriteAuto(h)
+	if err == nil {
+		t.Error("expected validation error for invalid handoff")
+	}
+	if !strings.Contains(err.Error(), "validation failed") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestWriterWriteAutoWithAllFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	w := NewWriter(tmpDir)
+
+	h := New("auto-full").
+		WithGoalAndNow("Full auto goal", "Full auto now").
+		WithStatus(StatusPartial, OutcomePartialPlus).
+		SetTokenInfo(150000, 200000)
+	h.Test = "go test ./internal/..."
+	h.Blockers = []string{"upstream API down"}
+	h.Next = []string{"retry after fix"}
+	h.ActiveBeads = []string{"bd-test1"}
+
+	path, err := w.WriteAuto(h)
+	if err != nil {
+		t.Fatalf("WriteAuto failed: %v", err)
+	}
+
+	// Verify ledger has all the extra fields
+	ledgerPath := filepath.Join(tmpDir, ".ntm", "ledgers", "CONTINUITY_auto-full.md")
+	data, err := os.ReadFile(ledgerPath)
+	if err != nil {
+		t.Fatalf("failed to read ledger: %v", err)
+	}
+
+	content := string(data)
+	for _, expected := range []string{"(auto)", "test: go test", "blockers:", "next:", "beads: bd-test1", "tokens_pct: 75.00"} {
+		if !strings.Contains(content, expected) {
+			t.Errorf("ledger missing %q in:\n%s", expected, content)
+		}
+	}
+
+	// Verify written file
+	fileData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read handoff: %v", err)
+	}
+	var parsed Handoff
+	if err := yaml.Unmarshal(fileData, &parsed); err != nil {
+		t.Fatalf("invalid YAML: %v", err)
+	}
+	if parsed.TokensPct != 75.0 {
+		t.Errorf("expected 75%% tokens, got %.2f", parsed.TokensPct)
+	}
+}
+
+// =============================================================================
+// appendLedgerEntry tests
+// =============================================================================
+
+func TestAppendLedgerEntry_EmptySession(t *testing.T) {
+	tmpDir := t.TempDir()
+	w := NewWriter(tmpDir)
+
+	h := &Handoff{Goal: "test goal", Now: "test now"}
+	err := w.appendLedgerEntry(h, "/tmp/handoff.yaml", false)
+	if err != nil {
+		t.Fatalf("appendLedgerEntry failed: %v", err)
+	}
+
+	// Empty session → "general"
+	ledgerPath := filepath.Join(tmpDir, ".ntm", "ledgers", "CONTINUITY_general.md")
+	if _, err := os.Stat(ledgerPath); err != nil {
+		t.Errorf("expected general ledger file, got error: %v", err)
+	}
+}
+
+// =============================================================================
+// Pure-function tests for coverage improvement
+// =============================================================================
+
+func TestSingleLine(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"simple", "hello", "hello"},
+		{"with spaces", "hello  world", "hello world"},
+		{"with newlines", "hello\nworld", "hello world"},
+		{"with tabs", "hello\t\tworld", "hello world"},
+		{"empty", "", ""},
+		{"only whitespace", "   \n\t  ", ""},
+		{"leading trailing", "  hello  ", "hello"},
+		{"mixed whitespace", "  hello \n world  ", "hello world"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := singleLine(tc.input)
+			if got != tc.expected {
+				t.Errorf("singleLine(%q) = %q, want %q", tc.input, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestCompactList(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		items    []string
+		maxItems int
+		expected string
+	}{
+		{"empty list", []string{}, 5, ""},
+		{"single item", []string{"item1"}, 5, "item1"},
+		{"multiple items", []string{"a", "b", "c"}, 5, "a, b, c"},
+		{"limited items", []string{"a", "b", "c", "d", "e"}, 3, "a, b, c +2 more"},
+		{"max zero uses all", []string{"a", "b"}, 0, "a, b"},
+		{"max negative uses all", []string{"a", "b"}, -1, "a, b"},
+		{"empty strings filtered", []string{"a", "", "b"}, 5, "a, b"},
+		{"whitespace only filtered", []string{"a", "   ", "b"}, 5, "a, b"},
+		{"newlines collapsed", []string{"hello\nworld", "foo"}, 5, "hello world, foo"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := compactList(tc.items, tc.maxItems)
+			if got != tc.expected {
+				t.Errorf("compactList(%v, %d) = %q, want %q", tc.items, tc.maxItems, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestMarshalYAML(t *testing.T) {
+	t.Parallel()
+
+	h := New("test-session").
+		WithGoalAndNow("Test goal", "Test now").
+		WithStatus(StatusComplete, OutcomeSucceeded)
+
+	data, err := MarshalYAML(h)
+	if err != nil {
+		t.Fatalf("MarshalYAML failed: %v", err)
+	}
+
+	if len(data) == 0 {
+		t.Error("MarshalYAML returned empty data")
+	}
+
+	// Verify it's valid YAML by unmarshaling
+	var parsed Handoff
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("MarshalYAML output is invalid YAML: %v", err)
+	}
+
+	if parsed.Goal != "Test goal" {
+		t.Errorf("Goal mismatch: got %q", parsed.Goal)
+	}
+	if parsed.Now != "Test now" {
+		t.Errorf("Now mismatch: got %q", parsed.Now)
+	}
+
+	t.Logf("HANDOFF_TEST: MarshalYAML | Session=%s | YAMLSize=%d", h.Session, len(data))
+}
+
+func TestWriteToPath(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	w := NewWriter(tmpDir)
+
+	h := New("test").
+		WithGoalAndNow("Test goal", "Test now").
+		WithStatus(StatusPartial, OutcomePartialPlus)
+
+	targetPath := filepath.Join(tmpDir, "custom-handoff.yaml")
+
+	err := w.WriteToPath(h, targetPath)
+	if err != nil {
+		t.Fatalf("WriteToPath failed: %v", err)
+	}
+
+	// Verify file exists
+	if _, err := os.Stat(targetPath); err != nil {
+		t.Fatalf("file not created at target path: %v", err)
+	}
+
+	// Verify content is valid
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+
+	var parsed Handoff
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("invalid YAML in file: %v", err)
+	}
+
+	if parsed.Goal != "Test goal" {
+		t.Errorf("Goal mismatch: got %q", parsed.Goal)
+	}
+
+	t.Logf("HANDOFF_TEST: WriteToPath | Path=%s | FileSize=%d", targetPath, len(data))
+}
+
+func TestWriteToPath_ValidationError(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	w := NewWriter(tmpDir)
+
+	// Invalid handoff (missing required fields)
+	h := &Handoff{Session: "test"}
+
+	targetPath := filepath.Join(tmpDir, "invalid.yaml")
+
+	err := w.WriteToPath(h, targetPath)
+	if err == nil {
+		t.Error("expected validation error for invalid handoff")
+	}
+	if !strings.Contains(err.Error(), "validation failed") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestWriteToPath_CreatesParentDirs(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	w := NewWriter(tmpDir)
+
+	h := New("test").WithGoalAndNow("Goal", "Now")
+
+	// WriteToPath should create parent directories
+	targetPath := filepath.Join(tmpDir, "nested", "subdir", "handoff.yaml")
+
+	err := w.WriteToPath(h, targetPath)
+	if err != nil {
+		t.Fatalf("WriteToPath should create parent dirs: %v", err)
+	}
+
+	// Verify file exists
+	if _, err := os.Stat(targetPath); err != nil {
+		t.Errorf("file should exist at nested path: %v", err)
+	}
+}

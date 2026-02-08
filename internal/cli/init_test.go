@@ -2,7 +2,9 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -11,8 +13,6 @@ import (
 
 // TestInitCmd_NoArgs verifies ntm init with no arguments uses current working directory
 func TestInitCmd_NoArgs(t *testing.T) {
-	t.Parallel()
-
 	// Create temp directory
 	tmpDir := t.TempDir()
 
@@ -126,6 +126,122 @@ func TestInitCmd_Force(t *testing.T) {
 	}
 
 	t.Logf("TEST: InitCmd_Force | Input: Force=%v | Expected: overwrite | Got: success", opts.Force)
+}
+
+func TestInitCmd_ForceRecoversFromCorruptConfig(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	ntmDir := filepath.Join(tmpDir, ".ntm")
+	if err := os.MkdirAll(ntmDir, 0755); err != nil {
+		t.Fatalf("create .ntm: %v", err)
+	}
+
+	// Write a config that TOML parser will reject.
+	configPath := filepath.Join(ntmDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("this is not valid toml = ="), 0644); err != nil {
+		t.Fatalf("write corrupt config.toml: %v", err)
+	}
+
+	opts := initOptions{
+		TargetDir:      tmpDir,
+		NonInteractive: true,
+		NoHooks:        true,
+		Force:          true,
+	}
+	if err := runProjectInit(opts); err != nil {
+		t.Fatalf("runProjectInit failed: %v", err)
+	}
+
+	if _, err := config.LoadProjectConfig(configPath); err != nil {
+		t.Fatalf("expected init to recover by overwriting corrupt config.toml, got load error: %v", err)
+	}
+}
+
+func TestInitCmd_PartialInitCanBeResumed(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	ntmDir := filepath.Join(tmpDir, ".ntm")
+	if err := os.MkdirAll(ntmDir, 0755); err != nil {
+		t.Fatalf("create .ntm: %v", err)
+	}
+
+	// Simulate a partial/failed init: .ntm exists, but config.toml is missing.
+	customPalette := "# My Custom Palette\n## Custom Section\n"
+	palettePath := filepath.Join(ntmDir, "palette.md")
+	if err := os.WriteFile(palettePath, []byte(customPalette), 0644); err != nil {
+		t.Fatalf("write custom palette: %v", err)
+	}
+
+	opts := initOptions{
+		TargetDir:      tmpDir,
+		NonInteractive: true,
+		NoHooks:        true,
+	}
+	if err := runProjectInit(opts); err != nil {
+		t.Fatalf("runProjectInit failed: %v", err)
+	}
+
+	// Verify init completed by creating config.toml.
+	configPath := filepath.Join(ntmDir, "config.toml")
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		t.Fatalf("config.toml not created during resumed init")
+	}
+
+	// Verify it did not clobber existing palette.md when resuming.
+	gotPalette, err := os.ReadFile(palettePath)
+	if err != nil {
+		t.Fatalf("read palette.md: %v", err)
+	}
+	if string(gotPalette) != customPalette {
+		t.Fatalf("palette.md was overwritten on resume; got %q", string(gotPalette))
+	}
+}
+
+func TestInitCmd_ReadOnlyTargetDirDoesNotCreateNtmDir(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based permission tests are not portable on Windows")
+	}
+
+	tmpDir := t.TempDir()
+	if err := os.Chmod(tmpDir, 0555); err != nil {
+		t.Skipf("chmod not supported: %v", err)
+	}
+	defer os.Chmod(tmpDir, 0755)
+
+	opts := initOptions{
+		TargetDir:      tmpDir,
+		NonInteractive: true,
+		NoHooks:        true,
+	}
+	err := runProjectInit(opts)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "creating .ntm directory") {
+		t.Fatalf("expected .ntm creation error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(tmpDir, ".ntm")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected .ntm not to be created, stat err=%v", statErr)
+	}
+}
+
+func TestInitCmd_NotGitRepoStillSucceedsWithHooksEnabled(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	opts := initOptions{
+		TargetDir:      tmpDir,
+		NonInteractive: true,
+		NoHooks:        false, // exercise the graceful "not a git repo" path
+	}
+	if err := runProjectInit(opts); err != nil {
+		t.Fatalf("runProjectInit failed: %v", err)
+	}
 }
 
 // TestInitCmd_NonExistentDir verifies error for non-existent target directory
@@ -396,6 +512,11 @@ func TestGenerateZsh(t *testing.T) {
 		"alias sat='ntm spawn'",
 		"_ntm()",
 		"compdef _ntm ntm",
+		"ensemble:Manage reasoning ensembles",
+		"_ntm_complete_ensemble_presets",
+		"_ntm_complete_mode_ids",
+		"_ntm_complete_tiers",
+		"--robot-ensemble-modes",
 		"bindkey",
 	}
 
@@ -422,6 +543,10 @@ func TestGenerateBash(t *testing.T) {
 		"alias gmi=",
 		"alias cnt='ntm create'",
 		"_ntm_completions()",
+		"_ntm_list_ensemble_presets()",
+		"_ntm_list_mode_ids()",
+		"--robot-ensemble-modes",
+		"ensemble",
 		"complete -F _ntm_completions ntm",
 	}
 
@@ -449,6 +574,10 @@ func TestGenerateFish(t *testing.T) {
 		"abbr -a cnt",
 		"complete -c ntm",
 		"__fish_ntm_sessions",
+		"__fish_ntm_ensemble_presets",
+		"__fish_ntm_mode_ids",
+		"robot-ensemble-modes",
+		"ensemble",
 	}
 
 	for _, check := range checks {
@@ -458,6 +587,35 @@ func TestGenerateFish(t *testing.T) {
 	}
 
 	t.Logf("TEST: GenerateFish | Output length: %d | All checks: passed", len(output))
+}
+
+func TestCompletionSources_EnsemblePresetsAndModesNonEmpty(t *testing.T) {
+	t.Parallel()
+
+	presets := listEnsemblePresetNames()
+	if len(presets) == 0 {
+		t.Fatalf("expected embedded/user ensemble presets to be non-empty")
+	}
+	modes := listReasoningModeIDs()
+	if len(modes) == 0 {
+		t.Fatalf("expected reasoning mode catalog to be non-empty")
+	}
+
+	// Sanity: tier completion must include "core" and "all".
+	values, _ := completeTierValues(nil, nil, "")
+	hasCore := false
+	hasAll := false
+	for _, v := range values {
+		switch v {
+		case "core":
+			hasCore = true
+		case "all":
+			hasAll = true
+		}
+	}
+	if !hasCore || !hasAll {
+		t.Fatalf("expected tier completion to include core+all; got=%v", values)
+	}
 }
 
 // TestRunShellInit_InvalidShell verifies error for unsupported shell
@@ -473,4 +631,127 @@ func TestRunShellInit_InvalidShell(t *testing.T) {
 	}
 
 	t.Logf("TEST: RunShellInit_InvalidShell | Input: powershell | Expected: error | Got: %v", err)
+}
+
+// TestInstallGitHooks_NotGitRepo verifies hooks installation skips non-git directories
+func TestInstallGitHooks_NotGitRepo(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	installed, warning := installGitHooks(tmpDir, false)
+
+	if len(installed) != 0 {
+		t.Errorf("expected no hooks installed, got %v", installed)
+	}
+
+	if warning == "" {
+		t.Error("expected warning for non-git repo")
+	}
+
+	if !strings.Contains(warning, "not a git repository") {
+		t.Errorf("expected 'not a git repository' warning, got: %s", warning)
+	}
+
+	t.Logf("TEST: InstallGitHooks_NotGitRepo | Input: %s | Expected: warning | Got: %s", tmpDir, warning)
+}
+
+// TestInstallGitHooks_GitRepo verifies hooks installation in a git repo
+func TestInstallGitHooks_GitRepo(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Initialize a real git repo using git init
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tmpDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v, output: %s", err, out)
+	}
+
+	installed, warning := installGitHooks(tmpDir, false)
+
+	// Should install hooks successfully without warning
+	if warning != "" {
+		t.Errorf("unexpected warning in valid git repo: %s", warning)
+	}
+
+	// Verify hooks were installed (at least pre-commit should be installed)
+	if len(installed) == 0 {
+		t.Error("expected at least one hook to be installed")
+	}
+
+	// Verify hook files exist on disk
+	hooksDir := filepath.Join(tmpDir, ".git", "hooks")
+	for _, hookName := range installed {
+		hookPath := filepath.Join(hooksDir, hookName)
+		if _, err := os.Stat(hookPath); err != nil {
+			t.Errorf("hook %s not found on disk: %v", hookName, err)
+		}
+	}
+
+	t.Logf("TEST: InstallGitHooks_GitRepo | Installed: %v | Warning: %s", installed, warning)
+}
+
+// TestInstallGitHooks_Force verifies force flag behavior
+func TestInstallGitHooks_Force(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+
+	// Initialize a real git repo using git init
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tmpDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v, output: %s", err, out)
+	}
+
+	hooksDir := filepath.Join(tmpDir, ".git", "hooks")
+	existingContent := "#!/bin/sh\nexit 0\n"
+
+	// Create existing hook with known content
+	preCommitPath := filepath.Join(hooksDir, "pre-commit")
+	if err := os.WriteFile(preCommitPath, []byte(existingContent), 0755); err != nil {
+		t.Fatalf("create existing hook: %v", err)
+	}
+
+	// Install without force - should skip existing hook
+	installed1, _ := installGitHooks(tmpDir, false)
+
+	// Read content after non-force install - should be unchanged
+	content1, err := os.ReadFile(preCommitPath)
+	if err != nil {
+		t.Fatalf("read hook after non-force: %v", err)
+	}
+	if string(content1) != existingContent {
+		t.Errorf("non-force install should not modify existing hook")
+	}
+
+	// Install with force - should overwrite existing hook
+	installed2, _ := installGitHooks(tmpDir, true)
+
+	// Read content after force install - should be different (our hook content)
+	content2, err := os.ReadFile(preCommitPath)
+	if err != nil {
+		t.Fatalf("read hook after force: %v", err)
+	}
+
+	// With force, pre-commit should be in installed list (overwritten)
+	foundPreCommit := false
+	for _, h := range installed2 {
+		if h == "pre-commit" {
+			foundPreCommit = true
+			break
+		}
+	}
+	if !foundPreCommit {
+		t.Error("force install should include pre-commit in installed list")
+	}
+
+	// Content should have changed from the original
+	if string(content2) == existingContent {
+		t.Error("force install should overwrite existing hook content")
+	}
+
+	t.Logf("TEST: InstallGitHooks_Force | Without force: %v | With force: %v", installed1, installed2)
 }

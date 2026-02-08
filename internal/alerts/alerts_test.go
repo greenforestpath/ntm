@@ -1,8 +1,15 @@
 package alerts
 
 import (
+	"encoding/json"
+	"io"
+	"os"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -644,4 +651,327 @@ func TestGlobalTracker(t *testing.T) {
 	if tracker.pruneAfter != 30*time.Minute {
 		t.Errorf("expected pruneAfter 30m, got %v", tracker.pruneAfter)
 	}
+}
+
+func TestGeneratorDetectErrorState_Last20Lines(t *testing.T) {
+	t.Parallel()
+
+	gen := NewGenerator(DefaultConfig())
+	pane := tmux.Pane{ID: "pane-1"}
+
+	lines := make([]string, 25)
+	for i := range lines {
+		lines[i] = "ok"
+	}
+	lines[0] = "fatal: outside window"
+	lines[len(lines)-1] = "error: inside window"
+
+	alert := gen.detectErrorState("sess", pane, lines)
+	if alert == nil {
+		t.Fatal("expected alert, got nil")
+	}
+	if alert.Type != AlertAgentError {
+		t.Errorf("Type = %q, want %q", alert.Type, AlertAgentError)
+	}
+	if alert.Severity != SeverityError {
+		t.Errorf("Severity = %q, want %q", alert.Severity, SeverityError)
+	}
+	if alert.Message != "Error detected in agent output" {
+		t.Errorf("Message = %q, want %q", alert.Message, "Error detected in agent output")
+	}
+	if alert.Session != "sess" {
+		t.Errorf("Session = %q, want %q", alert.Session, "sess")
+	}
+	if alert.Pane != "pane-1" {
+		t.Errorf("Pane = %q, want %q", alert.Pane, "pane-1")
+	}
+	matched, ok := alert.Context["matched_line"].(string)
+	if !ok || matched == "" {
+		t.Fatalf("expected matched_line string in context, got %T (%v)", alert.Context["matched_line"], alert.Context["matched_line"])
+	}
+	if !strings.Contains(matched, "error:") {
+		t.Errorf("matched_line = %q, want it to include %q", matched, "error:")
+	}
+}
+
+func TestGeneratorDetectErrorState_SeverityClassification(t *testing.T) {
+	t.Parallel()
+
+	gen := NewGenerator(DefaultConfig())
+	pane := tmux.Pane{ID: "pane-1"}
+
+	tests := []struct {
+		name       string
+		line       string
+		wantSev    Severity
+		wantMsg    string
+		wantSubstr string
+	}{
+		{
+			name:       "fatal",
+			line:       "FATAL: something bad happened",
+			wantSev:    SeverityCritical,
+			wantMsg:    "Fatal error in agent",
+			wantSubstr: "FATAL:",
+		},
+		{
+			name:       "failed",
+			line:       "failed: operation did not complete",
+			wantSev:    SeverityWarning,
+			wantMsg:    "Operation failed in agent",
+			wantSubstr: "failed:",
+		},
+		{
+			name:       "timeout",
+			line:       "Timeout while waiting for response",
+			wantSev:    SeverityWarning,
+			wantMsg:    "Timeout detected",
+			wantSubstr: "Timeout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			alert := gen.detectErrorState("sess", pane, []string{tt.line})
+			if alert == nil {
+				t.Fatalf("expected alert for line %q, got nil", tt.line)
+			}
+			if alert.Type != AlertAgentError {
+				t.Errorf("Type = %q, want %q", alert.Type, AlertAgentError)
+			}
+			if alert.Severity != tt.wantSev {
+				t.Errorf("Severity = %q, want %q", alert.Severity, tt.wantSev)
+			}
+			if alert.Message != tt.wantMsg {
+				t.Errorf("Message = %q, want %q", alert.Message, tt.wantMsg)
+			}
+			matched, ok := alert.Context["matched_line"].(string)
+			if !ok || matched == "" {
+				t.Fatalf("expected matched_line string in context, got %T (%v)", alert.Context["matched_line"], alert.Context["matched_line"])
+			}
+			if !strings.Contains(matched, tt.wantSubstr) {
+				t.Errorf("matched_line = %q, want it to include %q", matched, tt.wantSubstr)
+			}
+		})
+	}
+}
+
+func TestGeneratorDetectRateLimit_Last20Lines(t *testing.T) {
+	t.Parallel()
+
+	gen := NewGenerator(DefaultConfig())
+	pane := tmux.Pane{ID: "pane-1"}
+
+	lines := make([]string, 25)
+	for i := range lines {
+		lines[i] = "ok"
+	}
+	lines[0] = "rate limit exceeded (outside window)"
+
+	alert := gen.detectRateLimit("sess", pane, lines)
+	if alert != nil {
+		t.Fatalf("expected nil alert for rate limit outside last 20 lines, got %+v", alert)
+	}
+
+	lines[len(lines)-1] = "429 too many requests (inside window)"
+	alert = gen.detectRateLimit("sess", pane, lines)
+	if alert == nil {
+		t.Fatal("expected rate limit alert, got nil")
+	}
+	if alert.Type != AlertRateLimit {
+		t.Errorf("Type = %q, want %q", alert.Type, AlertRateLimit)
+	}
+	if alert.Severity != SeverityWarning {
+		t.Errorf("Severity = %q, want %q", alert.Severity, SeverityWarning)
+	}
+	if alert.Message != "Rate limiting detected" {
+		t.Errorf("Message = %q, want %q", alert.Message, "Rate limiting detected")
+	}
+	matched, ok := alert.Context["matched_line"].(string)
+	if !ok || matched == "" {
+		t.Fatalf("expected matched_line string in context, got %T (%v)", alert.Context["matched_line"], alert.Context["matched_line"])
+	}
+	if !strings.Contains(matched, "429") {
+		t.Errorf("matched_line = %q, want it to include %q", matched, "429")
+	}
+}
+
+func TestGeneratorCheckDiskSpace_ThresholdAndFallbackPath(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" || runtime.GOOS == "js" || runtime.GOOS == "wasip1" {
+		t.Skip("disk space checks are unix-only")
+	}
+
+	cfg := DefaultConfig()
+	cfg.DiskLowThresholdGB = 0
+	gen := NewGenerator(cfg)
+
+	alert, err := gen.checkDiskSpace()
+	if err != nil {
+		t.Fatalf("checkDiskSpace error: %v", err)
+	}
+	if alert != nil {
+		t.Fatalf("expected nil alert with threshold 0, got %+v", *alert)
+	}
+
+	cfg = DefaultConfig()
+	cfg.ProjectsDir = "/__ntm_should_not_exist__bd37e3k"
+	cfg.DiskLowThresholdGB = 1e9 // should always trigger on real systems
+	gen = NewGenerator(cfg)
+
+	alert, err = gen.checkDiskSpace()
+	if err != nil {
+		t.Fatalf("checkDiskSpace error: %v", err)
+	}
+	if alert == nil {
+		t.Fatal("expected alert with huge threshold, got nil")
+	}
+	path, ok := alert.Context["path"].(string)
+	if !ok {
+		t.Fatalf("expected context path string, got %T (%v)", alert.Context["path"], alert.Context["path"])
+	}
+	if path != "/" {
+		t.Errorf("context path = %q, want %q (should reflect fallback statfs path)", path, "/")
+	}
+	if !strings.Contains(alert.Message, " on /") {
+		t.Errorf("Message = %q, want it to include %q", alert.Message, " on /")
+	}
+}
+
+func TestFormatAlertString(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		alert Alert
+		want  string
+	}{
+		{
+			name:  "message only",
+			alert: Alert{Message: "hello"},
+			want:  "hello",
+		},
+		{
+			name:  "session prefix",
+			alert: Alert{Session: "sess", Message: "hello"},
+			want:  "sess: hello",
+		},
+		{
+			name:  "pane suffix",
+			alert: Alert{Pane: "3", Message: "hello"},
+			want:  "hello (pane 3)",
+		},
+		{
+			name:  "session and pane",
+			alert: Alert{Session: "sess", Pane: "3", Message: "hello"},
+			want:  "sess: hello (pane 3)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := formatAlertString(tt.alert); got != tt.want {
+				t.Errorf("formatAlertString() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGenerateAndTrack_DisabledResolvesExisting(t *testing.T) {
+	tracker := GetGlobalTracker()
+	tracker.Clear()
+
+	tracker.AddAlert(Alert{
+		ID:       "seed",
+		Type:     AlertAgentError,
+		Severity: SeverityWarning,
+		Source:   "agents",
+		Message:  "seed",
+	})
+
+	cfg := DefaultConfig()
+	cfg.Enabled = false
+
+	got := GenerateAndTrack(cfg)
+	if got != tracker {
+		t.Error("expected GenerateAndTrack to return the global tracker instance")
+	}
+
+	active, resolved := tracker.GetAll()
+	if len(active) != 0 {
+		t.Errorf("expected 0 active alerts, got %d", len(active))
+	}
+	if len(resolved) != 1 {
+		t.Fatalf("expected 1 resolved alert, got %d", len(resolved))
+	}
+	if resolved[0].ID != "seed" {
+		t.Errorf("resolved[0].ID = %q, want %q", resolved[0].ID, "seed")
+	}
+}
+
+func TestGetAlertStrings_DisabledReturnsEmpty(t *testing.T) {
+	tracker := GetGlobalTracker()
+	tracker.Clear()
+
+	cfg := DefaultConfig()
+	cfg.Enabled = false
+
+	msgs := GetAlertStrings(cfg)
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 alert strings, got %d", len(msgs))
+	}
+}
+
+func TestPrintAlerts_DisabledConfig(t *testing.T) {
+	tracker := GetGlobalTracker()
+	tracker.Clear()
+
+	cfg := DefaultConfig()
+	cfg.Enabled = false
+
+	out, err := captureStdout(t, func() error {
+		return PrintAlerts(cfg, false)
+	})
+	if err != nil {
+		t.Fatalf("PrintAlerts error: %v", err)
+	}
+
+	var got AlertsOutput
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("json.Unmarshal error: %v\noutput:\n%s", err, string(out))
+	}
+	if got.Config.Enabled {
+		t.Errorf("Config.Enabled = true, want false")
+	}
+	if len(got.Active) != 0 {
+		t.Errorf("Active count = %d, want 0", len(got.Active))
+	}
+	if got.Summary.TotalActive != 0 {
+		t.Errorf("Summary.TotalActive = %d, want 0", got.Summary.TotalActive)
+	}
+}
+
+func captureStdout(t *testing.T, fn func() error) ([]byte, error) {
+	t.Helper()
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe error: %v", err)
+	}
+	os.Stdout = w
+
+	fnErr := fn()
+	_ = w.Close()
+	os.Stdout = oldStdout
+
+	out, readErr := io.ReadAll(r)
+	_ = r.Close()
+	if readErr != nil {
+		t.Fatalf("io.ReadAll error: %v", readErr)
+	}
+	return out, fnErr
 }

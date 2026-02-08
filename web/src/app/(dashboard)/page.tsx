@@ -6,10 +6,13 @@
  * Displays list of tmux sessions with their status and agents.
  */
 
+import Link from "next/link";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getClient } from "@/lib/api/client";
 
 export default function SessionsPage() {
+  const [filter, setFilter] = useState("");
   const {
     data: sessions,
     isLoading,
@@ -46,6 +49,18 @@ export default function SessionsPage() {
   }
 
   const sessionList = sessions?.sessions || [];
+  const filteredSessions = useMemo(() => {
+    if (!filter) return sessionList;
+    const query = filter.toLowerCase();
+    return sessionList.filter((session: Record<string, unknown>) => {
+      const name = (session.name as string) || "";
+      const tags = (session.tags as string[]) || [];
+      return (
+        name.toLowerCase().includes(query) ||
+        tags.some((tag) => tag.toLowerCase().includes(query))
+      );
+    });
+  }, [filter, sessionList]);
 
   return (
     <div className="space-y-6">
@@ -54,11 +69,24 @@ export default function SessionsPage() {
           Sessions
         </h1>
         <span className="text-sm text-gray-500 dark:text-gray-400">
-          {sessionList.length} session{sessionList.length !== 1 ? "s" : ""}
+          {filteredSessions.length} session
+          {filteredSessions.length !== 1 ? "s" : ""}
         </span>
       </div>
 
-      {sessionList.length === 0 ? (
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-sm text-gray-500 dark:text-gray-400">
+          Filter by session name or tags.
+        </div>
+        <input
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder="Search sessions..."
+          className="w-full sm:w-64 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-white shadow-sm focus:border-blue-500 focus:outline-none"
+        />
+      </div>
+
+      {filteredSessions.length === 0 ? (
         <div className="text-center py-12">
           <p className="text-gray-500 dark:text-gray-400">
             No sessions found. Create one with{" "}
@@ -69,7 +97,7 @@ export default function SessionsPage() {
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {sessionList.map((session: Record<string, unknown>) => (
+          {filteredSessions.map((session: Record<string, unknown>) => (
             <SessionCard key={session.name as string} session={session} />
           ))}
         </div>
@@ -83,6 +111,7 @@ function SessionCard({ session }: { session: Record<string, unknown> }) {
   const panes = (session.panes as unknown[]) || [];
   const tags = (session.tags as string[]) || [];
   const created = session.created_at as string;
+  const sessionName = session.name as string;
 
   // Count agents by type
   const agentCounts = panes.reduce<Record<string, number>>((acc, pane) => {
@@ -94,7 +123,10 @@ function SessionCard({ session }: { session: Record<string, unknown> }) {
   }, {});
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:border-gray-300 dark:hover:border-gray-600 transition-colors">
+    <Link
+      href={`/sessions/${encodeURIComponent(sessionName)}`}
+      className="group bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:border-blue-300 dark:hover:border-blue-500 transition-colors"
+    >
       <div className="flex items-start justify-between">
         <h3 className="font-medium text-gray-900 dark:text-white truncate">
           {name}
@@ -130,12 +162,13 @@ function SessionCard({ session }: { session: Record<string, unknown> }) {
         </div>
       )}
 
-      {created && (
-        <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">
-          Created {new Date(created).toLocaleDateString()}
-        </p>
-      )}
-    </div>
+      <div className="mt-3 flex items-center justify-between text-xs text-gray-400 dark:text-gray-500">
+        <span>{created && `Created ${new Date(created).toLocaleDateString()}`}</span>
+        <span className="text-blue-600 dark:text-blue-400 group-hover:underline">
+          View →
+        </span>
+      </div>
+    </Link>
   );
 }
 

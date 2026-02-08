@@ -17,6 +17,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
@@ -24,11 +25,15 @@ import (
 type EventType string
 
 const (
+	EventError          EventType = "error"            // Generic error event
+	EventAgentStarted   EventType = "agent.started"    // Agent process started
 	EventAgentError     EventType = "agent.error"      // Agent hit error state
 	EventAgentCrashed   EventType = "agent.crashed"    // Agent process exited
 	EventAgentRestarted EventType = "agent.restarted"  // Agent was auto-restarted
 	EventAgentIdle      EventType = "agent.idle"       // Agent waiting for input
 	EventRateLimit      EventType = "agent.rate_limit" // Agent hit rate limit
+	EventBeadAssigned   EventType = "bead.assigned"    // Bead assigned to an agent
+	EventBeadCompleted  EventType = "bead.completed"   // Bead completed by an agent
 	EventRotationNeeded EventType = "rotation.needed"  // Account rotation recommended
 	EventSessionCreated EventType = "session.created"  // New session spawned
 	EventSessionKilled  EventType = "session.killed"   // Session terminated
@@ -112,7 +117,7 @@ func DefaultConfig() Config {
 		Webhook: WebhookConfig{
 			Enabled:  false,
 			Method:   "POST",
-			Template: `{"text": "NTM: {{.Type}} - {{jsonEscape .Message}}"}`,
+			Template: `{"event":"{{.Type}}","message":"{{jsonEscape .Message}}","session":"{{jsonEscape .Session}}","pane":"{{jsonEscape .Pane}}","agent":"{{jsonEscape .Agent}}","agent_type":"{{jsonEscape .Agent}}","bead_id":"{{jsonEscape (detail .Details "bead_id")}}","timestamp":"{{.Timestamp}}","details":{{jsonMap .Details}}}`,
 		},
 		Shell: ShellConfig{
 			Enabled:  false,
@@ -147,6 +152,8 @@ type Notifier struct {
 	channels   map[ChannelName]bool // Which channels are enabled
 	mu         sync.Mutex
 	httpClient *http.Client
+
+	redactionCfg *redaction.Config
 }
 
 // expandEnvVars expands environment variables in a string (${VAR} or $VAR format)
@@ -194,6 +201,15 @@ func New(cfg Config) *Notifier {
 		n.channels[ChannelFileBox] = true
 	}
 
+	return n
+}
+
+// NewWithRedaction creates a notifier that redacts event content (message + details)
+// before emitting it to any channel.
+func NewWithRedaction(cfg Config, redactionCfg redaction.Config) *Notifier {
+	n := New(cfg)
+	cfgCopy := redactionCfg
+	n.redactionCfg = &cfgCopy
 	return n
 }
 
@@ -265,6 +281,8 @@ func (n *Notifier) Notify(event Event) error {
 		event.Timestamp = time.Now().UTC()
 	}
 
+	event = n.sanitizeEvent(event)
+
 	// Get channels for this event type
 	channels := n.getChannelsForEvent(event.Type)
 	if len(channels) == 0 {
@@ -324,6 +342,36 @@ func (n *Notifier) Notify(event Event) error {
 	return nil
 }
 
+func (n *Notifier) sanitizeEvent(event Event) Event {
+	if n.redactionCfg == nil || n.redactionCfg.Mode == redaction.ModeOff {
+		return event
+	}
+
+	cfg := *n.redactionCfg
+	if cfg.Mode != redaction.ModeOff {
+		// Notifications/webhooks are an outbound channel; always redact content to
+		// prevent accidental secret leakage regardless of "warn"/"block" modes.
+		cfg.Mode = redaction.ModeRedact
+	}
+
+	out := event
+	if out.Message != "" {
+		out.Message = redaction.ScanAndRedact(out.Message, cfg).Output
+	}
+	if len(out.Details) > 0 {
+		redactedDetails := make(map[string]string, len(out.Details))
+		for k, v := range out.Details {
+			if v == "" {
+				redactedDetails[k] = v
+				continue
+			}
+			redactedDetails[k] = redaction.ScanAndRedact(v, cfg).Output
+		}
+		out.Details = redactedDetails
+	}
+	return out
+}
+
 // sendDesktop sends a desktop notification
 func (n *Notifier) sendDesktop(event Event) error {
 	title := n.config.Desktop.Title
@@ -376,17 +424,37 @@ func jsonEscape(s string) string {
 	return string(b[1 : len(b)-1])
 }
 
+func detailValue(details map[string]string, key string) string {
+	if len(details) == 0 {
+		return ""
+	}
+	return details[key]
+}
+
+func jsonMap(details map[string]string) string {
+	if len(details) == 0 {
+		return "{}"
+	}
+	b, err := json.Marshal(details)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
 // sendWebhook sends a webhook notification
 func (n *Notifier) sendWebhook(event Event) error {
 	// Parse and execute template with JSON escape function
 	tmplStr := n.config.Webhook.Template
 	if tmplStr == "" {
 		// Default JSON template using jsonEscape for user-controlled fields
-		tmplStr = `{"event":"{{.Type}}","message":"{{jsonEscape .Message}}","session":"{{jsonEscape .Session}}","timestamp":"{{.Timestamp}}"}`
+		tmplStr = `{"event":"{{.Type}}","message":"{{jsonEscape .Message}}","session":"{{jsonEscape .Session}}","pane":"{{jsonEscape .Pane}}","agent":"{{jsonEscape .Agent}}","agent_type":"{{jsonEscape .Agent}}","bead_id":"{{jsonEscape (detail .Details "bead_id")}}","timestamp":"{{.Timestamp}}","details":{{jsonMap .Details}}}`
 	}
 
 	funcMap := template.FuncMap{
 		"jsonEscape": jsonEscape,
+		"detail":     detailValue,
+		"jsonMap":    jsonMap,
 	}
 
 	tmpl, err := template.New("webhook").Funcs(funcMap).Parse(tmplStr)
@@ -434,14 +502,7 @@ func (n *Notifier) sendWebhook(event Event) error {
 // sendShell executes a shell command notification
 func (n *Notifier) sendShell(event Event) error {
 	cmdStr := n.config.Shell.Command
-
-	// Expand ~ in path
-	if strings.HasPrefix(cmdStr, "~") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			cmdStr = filepath.Join(home, cmdStr[1:])
-		}
-	}
+	cmdStr = util.ExpandPath(cmdStr)
 
 	cmd := exec.Command("sh", "-c", cmdStr)
 
@@ -472,13 +533,7 @@ func (n *Notifier) sendLog(event Event) error {
 	defer n.mu.Unlock()
 
 	path := n.config.Log.Path
-	// Expand ~ in path
-	if strings.HasPrefix(path, "~") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			path = filepath.Join(home, path[1:])
-		}
-	}
+	path = util.ExpandPath(path)
 
 	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -523,14 +578,7 @@ func (n *Notifier) sendFileBox(event Event) error {
 	if path == "" {
 		path = ".ntm/human_inbox"
 	}
-
-	// Expand ~ in path
-	if strings.HasPrefix(path, "~") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			path = filepath.Join(home, path[1:])
-		}
-	}
+	path = util.ExpandPath(path)
 
 	// Ensure directory exists
 	if err := os.MkdirAll(path, 0755); err != nil {
@@ -622,6 +670,28 @@ func NewAgentErrorEvent(session, pane, agent, message string) Event {
 	}
 }
 
+// NewErrorEvent creates a generic error notification event
+func NewErrorEvent(session, pane, agent, message string) Event {
+	return Event{
+		Type:    EventError,
+		Session: session,
+		Pane:    pane,
+		Agent:   agent,
+		Message: message,
+	}
+}
+
+// NewAgentStartedEvent creates an agent started notification event
+func NewAgentStartedEvent(session, pane, agent string) Event {
+	return Event{
+		Type:    EventAgentStarted,
+		Session: session,
+		Pane:    pane,
+		Agent:   agent,
+		Message: fmt.Sprintf("Agent %s started", agent),
+	}
+}
+
 // NewAgentCrashedEvent creates an agent crashed notification event
 func NewAgentCrashedEvent(session, pane, agent string) Event {
 	return Event{
@@ -643,6 +713,44 @@ func NewRateLimitEvent(session, pane, agent string, waitSeconds int) Event {
 		Message: fmt.Sprintf("Agent %s hit rate limit (wait %ds)", agent, waitSeconds),
 		Details: map[string]string{
 			"wait_seconds": fmt.Sprintf("%d", waitSeconds),
+		},
+	}
+}
+
+// NewBeadAssignedEvent creates a bead assigned notification event
+func NewBeadAssignedEvent(session, pane, agent, beadID, beadTitle string) Event {
+	message := fmt.Sprintf("Bead assigned: %s", beadID)
+	if strings.TrimSpace(beadTitle) != "" {
+		message = fmt.Sprintf("Bead assigned: %s (%s)", beadID, strings.TrimSpace(beadTitle))
+	}
+	return Event{
+		Type:    EventBeadAssigned,
+		Session: session,
+		Pane:    pane,
+		Agent:   agent,
+		Message: message,
+		Details: map[string]string{
+			"bead_id":    beadID,
+			"bead_title": beadTitle,
+		},
+	}
+}
+
+// NewBeadCompletedEvent creates a bead completed notification event
+func NewBeadCompletedEvent(session, pane, agent, beadID, beadTitle string) Event {
+	message := fmt.Sprintf("Bead completed: %s", beadID)
+	if strings.TrimSpace(beadTitle) != "" {
+		message = fmt.Sprintf("Bead completed: %s (%s)", beadID, strings.TrimSpace(beadTitle))
+	}
+	return Event{
+		Type:    EventBeadCompleted,
+		Session: session,
+		Pane:    pane,
+		Agent:   agent,
+		Message: message,
+		Details: map[string]string{
+			"bead_id":    beadID,
+			"bead_title": beadTitle,
 		},
 	}
 }

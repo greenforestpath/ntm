@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/privacy"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
@@ -48,7 +51,21 @@ func StoragePath() string {
 
 // Append adds an entry to the history file.
 // Thread-safe and process-safe.
+// If redaction is configured via SetRedactionConfig, prompts are redacted before storage.
 func Append(entry *HistoryEntry) error {
+	if entry == nil {
+		return nil
+	}
+	if entry.Session != "" {
+		if err := privacy.GetDefaultManager().CanPersist(entry.Session, privacy.OpPromptHistory); err != nil {
+			// Silently skip persistence in privacy mode (don't propagate error)
+			if privacy.IsPrivacyError(err) {
+				return nil
+			}
+			return err
+		}
+	}
+
 	unlock, err := acquireLock()
 	if err != nil {
 		return err
@@ -68,7 +85,16 @@ func Append(entry *HistoryEntry) error {
 	}
 	defer f.Close()
 
-	data, err := json.Marshal(entry)
+	// Apply redaction if configured
+	entryToWrite := RedactEntry(entry)
+
+	data, err := json.Marshal(entryToWrite)
+	if err != nil {
+		return err
+	}
+
+	// Encrypt if configured (after redaction, before write)
+	data, err = encryptJSONLine(data)
 	if err != nil {
 		return err
 	}
@@ -79,8 +105,29 @@ func Append(entry *HistoryEntry) error {
 }
 
 // BatchAppend adds multiple entries to the history file atomically.
+// If redaction is configured via SetRedactionConfig, prompts are redacted before storage.
 func BatchAppend(entries []*HistoryEntry) error {
 	if len(entries) == 0 {
+		return nil
+	}
+
+	// Apply privacy gating before taking any locks or touching the filesystem.
+	toWrite := make([]*HistoryEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		if entry.Session != "" {
+			if err := privacy.GetDefaultManager().CanPersist(entry.Session, privacy.OpPromptHistory); err != nil {
+				if privacy.IsPrivacyError(err) {
+					continue
+				}
+				return err
+			}
+		}
+		toWrite = append(toWrite, entry)
+	}
+	if len(toWrite) == 0 {
 		return nil
 	}
 
@@ -104,8 +151,16 @@ func BatchAppend(entries []*HistoryEntry) error {
 	defer f.Close()
 
 	writer := bufio.NewWriter(f)
-	for _, entry := range entries {
-		data, err := json.Marshal(entry)
+	for _, entry := range toWrite {
+		// Apply redaction if configured
+		entryToWrite := RedactEntry(entry)
+
+		data, err := json.Marshal(entryToWrite)
+		if err != nil {
+			return err
+		}
+		// Encrypt if configured
+		data, err = encryptJSONLine(data)
 		if err != nil {
 			return err
 		}
@@ -151,9 +206,16 @@ func readAllLocked() ([]HistoryEntry, error) {
 	scanner.Buffer(make([]byte, 64*1024), 5*1024*1024)
 
 	for scanner.Scan() {
+		line := scanner.Bytes()
+		// Decrypt if encrypted
+		plain, err := decryptJSONLine(line)
+		if err != nil {
+			slog.Warn("history: skipping unreadable line", "error", err)
+			continue
+		}
 		var entry HistoryEntry
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			// Skip malformed lines
+		if err := json.Unmarshal(plain, &entry); err != nil {
+			slog.Warn("history: skipping malformed line", "error", err)
 			continue
 		}
 		entries = append(entries, entry)
@@ -250,8 +312,13 @@ ReadEntries:
 	scanner.Buffer(make([]byte, 64*1024), 5*1024*1024)
 
 	for scanner.Scan() {
+		line := scanner.Bytes()
+		plain, err := decryptJSONLine(line)
+		if err != nil {
+			continue
+		}
 		var entry HistoryEntry
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+		if err := json.Unmarshal(plain, &entry); err != nil {
 			continue
 		}
 		entries = append(entries, entry)
@@ -353,10 +420,14 @@ func Prune(keep int) (int, error) {
 	toKeep := entries[len(entries)-keep:]
 	removed := len(entries) - keep
 
-	// Rewrite file atomically
+	// Rewrite file atomically (re-encrypt if enabled)
 	var buf bytes.Buffer
 	for _, entry := range toKeep {
 		data, err := json.Marshal(entry)
+		if err != nil {
+			continue
+		}
+		data, err = encryptJSONLine(data)
 		if err != nil {
 			continue
 		}
@@ -397,10 +468,14 @@ func PruneByTime(cutoff time.Time) (int, error) {
 		return 0, nil
 	}
 
-	// Rewrite file atomically
+	// Rewrite file atomically (re-encrypt if enabled)
 	var buf bytes.Buffer
 	for _, entry := range toKeep {
 		data, err := json.Marshal(entry)
+		if err != nil {
+			continue
+		}
+		data, err = encryptJSONLine(data)
 		if err != nil {
 			continue
 		}
@@ -427,6 +502,28 @@ func Search(query string) ([]HistoryEntry, error) {
 	queryLower := strings.ToLower(query)
 	for _, e := range entries {
 		if strings.Contains(strings.ToLower(e.Prompt), queryLower) {
+			result = append(result, e)
+		}
+	}
+	return result, nil
+}
+
+// SearchRegex finds entries where the prompt matches the provided regex pattern.
+// Pattern uses Go's regexp syntax. Use inline flags like (?i) for case-insensitive matches.
+func SearchRegex(pattern string) ([]HistoryEntry, error) {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	var result []HistoryEntry
+	for _, e := range entries {
+		if re.MatchString(e.Prompt) {
 			result = append(result, e)
 		}
 	}
@@ -493,8 +590,13 @@ func ImportFrom(path string) (int, error) {
 	scanner.Buffer(make([]byte, 64*1024), 5*1024*1024)
 
 	for scanner.Scan() {
+		line := scanner.Bytes()
+		plain, err := decryptJSONLine(line)
+		if err != nil {
+			continue
+		}
 		var entry HistoryEntry
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+		if err := json.Unmarshal(plain, &entry); err != nil {
 			continue
 		}
 		entries = append(entries, &entry)

@@ -486,12 +486,17 @@ Examples:
 	cmd.Flags().BoolVar(&assignCCOnly, "cc-only", false, "Only assign to Claude agents (alias for --agent=claude)")
 	cmd.Flags().BoolVar(&assignCodOnly, "cod-only", false, "Only assign to Codex agents (alias for --agent=codex)")
 	cmd.Flags().BoolVar(&assignGmiOnly, "gmi-only", false, "Only assign to Gemini agents (alias for --agent=gemini)")
+	cmd.Flags().StringVar(&assignBeads, "beads", "", "Comma-separated list of specific bead IDs to assign")
 	cmd.Flags().StringVar(&assignTemplate, "template", "", "Prompt template: impl, review, custom")
 	cmd.Flags().StringVar(&assignTemplateFile, "template-file", "", "Custom prompt template file path")
 	cmd.Flags().BoolVar(&assignVerbose, "verbose", false, "Show detailed scoring/decision logs")
 	cmd.Flags().BoolVar(&assignQuiet, "quiet", false, "Suppress non-essential output")
 	cmd.Flags().DurationVar(&assignTimeout, "timeout", 30*time.Second, "Timeout for external calls (bv, br, Agent Mail)")
 	cmd.Flags().BoolVar(&assignReserveFiles, "reserve-files", true, "Reserve files via Agent Mail when assigning")
+	cmd.Flags().IntVar(&assignPane, "pane", -1, "Assign bead directly to a specific pane (requires --beads)")
+	cmd.Flags().BoolVar(&assignForce, "force", false, "Force assignment even if pane is busy")
+	cmd.Flags().BoolVar(&assignIgnoreDeps, "ignore-deps", false, "Ignore dependency checks for assignment")
+	cmd.Flags().StringVar(&assignPrompt, "prompt", "", "Custom prompt for direct assignment")
 
 	return cmd
 }
@@ -540,9 +545,17 @@ func runCoordinatorAssign(cmd *cobra.Command, args []string, dryRun bool) error 
 		timeout = 30 * time.Second
 	}
 
+	var beadIDs []string
+	if assignBeads != "" {
+		beadIDs = strings.Split(assignBeads, ",")
+		for i := range beadIDs {
+			beadIDs[i] = strings.TrimSpace(beadIDs[i])
+		}
+	}
+
 	assignOpts := &AssignCommandOptions{
 		Session:         session,
-		BeadIDs:         nil,
+		BeadIDs:         beadIDs,
 		Strategy:        strategy,
 		Limit:           assignLimit,
 		AgentTypeFilter: agentTypeFilter,
@@ -556,6 +569,10 @@ func runCoordinatorAssign(cmd *cobra.Command, args []string, dryRun bool) error 
 		Force:           assignForce,
 		IgnoreDeps:      assignIgnoreDeps,
 		Prompt:          assignPrompt,
+	}
+
+	if assignPane >= 0 {
+		return runDirectPaneAssignment(cmd, assignOpts)
 	}
 
 	if IsJSONOutput() {

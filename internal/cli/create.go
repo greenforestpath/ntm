@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/hooks"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/output"
@@ -93,7 +95,7 @@ Example:
 	return cmd
 }
 
-func runCreate(session string, panes int) error {
+func runCreate(session string, panes int) (err error) {
 	if IsJSONOutput() {
 		result, err := kernel.Run(context.Background(), "sessions.create", SessionCreateInput{
 			Session: session,
@@ -129,6 +131,36 @@ func runCreate(session string, panes int) error {
 	}
 
 	dir := cfg.GetProjectDir(session)
+	auditStart := time.Now()
+	auditCreated := false
+	auditAlreadyExisted := false
+	auditAborted := false
+	_ = audit.LogEvent(session, audit.EventTypeCommand, audit.ActorUser, "session.create", map[string]interface{}{
+		"phase":          "start",
+		"session":        session,
+		"panes":          panes,
+		"working_dir":    dir,
+		"correlation_id": auditCorrelationID,
+	}, nil)
+	defer func() {
+		success := err == nil && !auditAborted
+		payload := map[string]interface{}{
+			"phase":           "finish",
+			"session":         session,
+			"panes":           panes,
+			"working_dir":     dir,
+			"created":         auditCreated,
+			"already_existed": auditAlreadyExisted,
+			"aborted":         auditAborted,
+			"success":         success,
+			"duration_ms":     time.Since(auditStart).Milliseconds(),
+			"correlation_id":  auditCorrelationID,
+		}
+		if err != nil {
+			payload["error"] = err.Error()
+		}
+		_ = audit.LogEvent(session, audit.EventTypeCommand, audit.ActorUser, "session.create", payload, nil)
+	}()
 
 	// Initialize hook executor
 	hookExec, err := hooks.NewExecutorFromConfig()
@@ -175,6 +207,7 @@ func runCreate(session string, panes int) error {
 		} else {
 			fmt.Printf("Directory not found: %s\n", dir)
 			if !confirm("Create it?") {
+				auditAborted = true
 				fmt.Println("Aborted.")
 				return nil
 			}
@@ -187,6 +220,7 @@ func runCreate(session string, panes int) error {
 
 	// Check if session already exists
 	if tmux.SessionExists(session) {
+		auditAlreadyExisted = true
 		if IsJSONOutput() {
 			// Return info about existing session
 			existingPanes, _ := tmux.GetPanes(session)
@@ -228,6 +262,7 @@ func runCreate(session string, panes int) error {
 		}
 		return fmt.Errorf("creating session: %w", err)
 	}
+	auditCreated = true
 
 	// Add additional panes
 	if panes > 1 {
@@ -293,7 +328,7 @@ func coerceCreateResponse(result any) (output.CreateResponse, error) {
 	}
 }
 
-func buildCreateResponse(session string, panes int) (output.CreateResponse, error) {
+func buildCreateResponse(session string, panes int) (resp output.CreateResponse, err error) {
 	if err := tmux.EnsureInstalled(); err != nil {
 		return output.CreateResponse{}, err
 	}
@@ -308,6 +343,34 @@ func buildCreateResponse(session string, panes int) (output.CreateResponse, erro
 	}
 
 	dir := cfg.GetProjectDir(session)
+	auditStart := time.Now()
+	auditCreated := false
+	auditAlreadyExisted := false
+	_ = audit.LogEvent(session, audit.EventTypeCommand, audit.ActorUser, "session.create", map[string]interface{}{
+		"phase":          "start",
+		"session":        session,
+		"panes":          panes,
+		"working_dir":    dir,
+		"correlation_id": auditCorrelationID,
+	}, nil)
+	defer func() {
+		success := err == nil
+		payload := map[string]interface{}{
+			"phase":           "finish",
+			"session":         session,
+			"panes":           panes,
+			"working_dir":     dir,
+			"created":         auditCreated,
+			"already_existed": auditAlreadyExisted,
+			"success":         success,
+			"duration_ms":     time.Since(auditStart).Milliseconds(),
+			"correlation_id":  auditCorrelationID,
+		}
+		if err != nil {
+			payload["error"] = err.Error()
+		}
+		_ = audit.LogEvent(session, audit.EventTypeCommand, audit.ActorUser, "session.create", payload, nil)
+	}()
 
 	// Initialize hook executor
 	hookExec, err := hooks.NewExecutorFromConfig()
@@ -341,6 +404,7 @@ func buildCreateResponse(session string, panes int) (output.CreateResponse, erro
 
 	// Check if session already exists
 	if tmux.SessionExists(session) {
+		auditAlreadyExisted = true
 		existingPanes, _ := tmux.GetPanes(session)
 		paneResponses := make([]output.PaneResponse, len(existingPanes))
 		for i, p := range existingPanes {
@@ -355,7 +419,7 @@ func buildCreateResponse(session string, panes int) (output.CreateResponse, erro
 				Command: p.Command,
 			}
 		}
-		return output.CreateResponse{
+		resp = output.CreateResponse{
 			TimestampedResponse: output.NewTimestamped(),
 			Session:             session,
 			Created:             false,
@@ -363,13 +427,15 @@ func buildCreateResponse(session string, panes int) (output.CreateResponse, erro
 			WorkingDirectory:    dir,
 			PaneCount:           len(existingPanes),
 			Panes:               paneResponses,
-		}, nil
+		}
+		return resp, nil
 	}
 
 	// Create the session
 	if err := tmux.CreateSession(session, dir); err != nil {
 		return output.CreateResponse{}, fmt.Errorf("creating session: %w", err)
 	}
+	auditCreated = true
 
 	// Add additional panes
 	if panes > 1 {
@@ -400,14 +466,15 @@ func buildCreateResponse(session string, panes int) (output.CreateResponse, erro
 		}
 	}
 
-	return output.CreateResponse{
+	resp = output.CreateResponse{
 		TimestampedResponse: output.NewTimestamped(),
 		Session:             session,
 		Created:             true,
 		WorkingDirectory:    dir,
 		PaneCount:           len(finalPanes),
 		Panes:               paneResponses,
-	}, nil
+	}
+	return resp, nil
 }
 
 // confirm prompts the user for y/n confirmation

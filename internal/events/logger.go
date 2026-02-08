@@ -4,10 +4,14 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/privacy"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 const (
@@ -42,7 +46,7 @@ type LoggerOptions struct {
 // DefaultOptions returns the default logger options.
 func DefaultOptions() LoggerOptions {
 	return LoggerOptions{
-		Path:          expandPath(DefaultLogPath),
+		Path:          util.ExpandPath(DefaultLogPath),
 		RetentionDays: DefaultRetentionDays,
 		Enabled:       true,
 	}
@@ -51,7 +55,7 @@ func DefaultOptions() LoggerOptions {
 // NewLogger creates a new event logger.
 func NewLogger(opts LoggerOptions) (*Logger, error) {
 	if opts.Path == "" {
-		opts.Path = expandPath(DefaultLogPath)
+		opts.Path = util.ExpandPath(DefaultLogPath)
 	}
 	if opts.RetentionDays == 0 {
 		opts.RetentionDays = DefaultRetentionDays
@@ -85,6 +89,7 @@ func NewLogger(opts LoggerOptions) (*Logger, error) {
 }
 
 // Log writes an event to the log file.
+// If redaction is configured via SetRedactionConfig, sensitive data is redacted before storage.
 func (l *Logger) Log(event *Event) error {
 	if !l.enabled || l.file == nil {
 		return nil
@@ -93,10 +98,19 @@ func (l *Logger) Log(event *Event) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// Apply redaction if configured
+	eventToWrite := RedactEvent(event)
+
 	// Serialize event to JSON
-	data, err := json.Marshal(event)
+	data, err := json.Marshal(eventToWrite)
 	if err != nil {
 		return fmt.Errorf("marshaling event: %w", err)
+	}
+
+	// Encrypt if configured (after redaction, before write)
+	data, err = encryptJSONLine(data)
+	if err != nil {
+		return fmt.Errorf("encrypting event: %w", err)
 	}
 
 	// Write to file with newline
@@ -116,6 +130,13 @@ func (l *Logger) Log(event *Event) error {
 
 // LogEvent is a convenience method to create and log an event in one call.
 func (l *Logger) LogEvent(eventType EventType, session string, data interface{}) error {
+	// Check privacy mode before logging
+	if session != "" {
+		if err := privacy.GetDefaultManager().CanPersist(session, privacy.OpEventLog); err != nil {
+			// Silently skip logging in privacy mode (don't propagate error)
+			return nil
+		}
+	}
 	event := NewEvent(eventType, session, ToMap(data))
 	return l.Log(event)
 }
@@ -148,7 +169,7 @@ func (l *Logger) maybeRotate() {
 	// Perform rotation
 	if err := l.rotateOldEntries(); err != nil {
 		// Log rotation errors but don't fail
-		fmt.Fprintf(os.Stderr, "event log rotation error: %v\n", err)
+		slog.Warn("event log rotation error", "error", err)
 	}
 }
 
@@ -188,8 +209,20 @@ func (l *Logger) rotateOldEntries() error {
 			continue
 		}
 
+		// Decrypt for timestamp inspection
+		plain, decErr := decryptJSONLine(line)
+		if decErr != nil {
+			// Keep lines we can't decrypt
+			if _, err := writer.Write(line); err != nil {
+				tmpFile.Close()
+				return err
+			}
+			writer.WriteByte('\n')
+			continue
+		}
+
 		var event Event
-		if err := json.Unmarshal(line, &event); err != nil {
+		if err := json.Unmarshal(plain, &event); err != nil {
 			// Keep malformed entries
 			if _, err := writer.Write(line); err != nil {
 				tmpFile.Close()
@@ -200,6 +233,7 @@ func (l *Logger) rotateOldEntries() error {
 		}
 
 		if event.Timestamp.After(cutoff) {
+			// Re-encrypt if encryption is enabled (write original encrypted line)
 			if _, err := writer.Write(line); err != nil {
 				tmpFile.Close()
 				return err
@@ -246,17 +280,6 @@ func (l *Logger) rotateOldEntries() error {
 	l.file = f
 
 	return nil
-}
-
-// expandPath expands ~ in a path to the home directory.
-func expandPath(path string) string {
-	if len(path) > 0 && path[0] == '~' {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, path[1:])
-		}
-	}
-	return path
 }
 
 // Global logger instance
@@ -335,9 +358,9 @@ func (l *Logger) Replay(since time.Time) (<-chan *Event, error) {
 		f, err := os.Open(l.path)
 		if err != nil {
 			// No log file or can't open - nothing to replay
-			// Errors are logged to stderr for debugging
+			// Errors are logged for debugging
 			if !os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "event log replay: %v\n", err)
+				slog.Warn("event log replay error", "error", err)
 			}
 			return
 		}
@@ -350,9 +373,17 @@ func (l *Logger) Replay(since time.Time) (<-chan *Event, error) {
 				continue
 			}
 
+			// Decrypt if encrypted
+			plain, err := decryptJSONLine(line)
+			if err != nil {
+				slog.Warn("event replay: skipping unreadable line", "error", err)
+				continue
+			}
+
 			var event Event
-			if err := json.Unmarshal(line, &event); err != nil {
-				continue // Skip malformed entries
+			if err := json.Unmarshal(plain, &event); err != nil {
+				slog.Warn("event replay: skipping malformed line", "error", err)
+				continue
 			}
 
 			if event.Timestamp.After(since) {
@@ -362,7 +393,7 @@ func (l *Logger) Replay(since time.Time) (<-chan *Event, error) {
 
 		// Check for scanner errors (I/O errors during reading)
 		if err := scanner.Err(); err != nil {
-			fmt.Fprintf(os.Stderr, "event log replay scan error: %v\n", err)
+			slog.Warn("event log replay scan error", "error", err)
 		}
 	}()
 
@@ -454,8 +485,16 @@ func (l *Logger) LastEvent() (*Event, error) {
 			continue
 		}
 
+		// Decrypt if encrypted
+		plain, err := decryptJSONLine(line)
+		if err != nil {
+			slog.Warn("event last: skipping unreadable line", "error", err)
+			continue
+		}
+
 		var event Event
-		if err := json.Unmarshal(line, &event); err != nil {
+		if err := json.Unmarshal(plain, &event); err != nil {
+			slog.Warn("event last: skipping malformed line", "error", err)
 			continue
 		}
 		lastEvent = &event

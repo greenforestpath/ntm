@@ -2,8 +2,10 @@ package approval
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -366,5 +368,182 @@ func TestEventEmission(t *testing.T) {
 
 	if len(received) < 2 {
 		t.Errorf("Expected at least 2 events, got %d", len(received))
+	}
+}
+
+// =============================================================================
+// Pure function tests
+// =============================================================================
+
+func TestBuildSLBCommand(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		action   string
+		resource string
+		want     string
+	}{
+		{"both present", "force_release", "internal/auth/**", "ntm approval: force_release internal/auth/**"},
+		{"action only", "force_release", "", "ntm approval: force_release"},
+		{"empty action", "", "resource", ""},
+		{"both empty", "", "", ""},
+		{"whitespace action", "  force_release  ", "  res  ", "ntm approval: force_release res"},
+		{"whitespace only action", "   ", "", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := buildSLBCommand(tc.action, tc.resource)
+			if got != tc.want {
+				t.Errorf("buildSLBCommand(%q, %q) = %q, want %q", tc.action, tc.resource, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseSLBRequestID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  json.RawMessage
+		want string
+	}{
+		{"empty", nil, ""},
+		{"empty bytes", json.RawMessage{}, ""},
+		{"valid id", json.RawMessage(`{"id":"req-123"}`), "req-123"},
+		{"no id field", json.RawMessage(`{"status":"pending"}`), ""},
+		{"id not string", json.RawMessage(`{"id":42}`), ""},
+		{"invalid json", json.RawMessage(`{invalid}`), ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := parseSLBRequestID(tc.raw)
+			if got != tc.want {
+				t.Errorf("parseSLBRequestID(%s) = %q, want %q", string(tc.raw), got, tc.want)
+			}
+		})
+	}
+}
+
+func TestContains(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		slice []string
+		s     string
+		want  bool
+	}{
+		{"found", []string{"a", "b", "c"}, "b", true},
+		{"not found", []string{"a", "b", "c"}, "d", false},
+		{"empty slice", []string{}, "a", false},
+		{"nil slice", nil, "a", false},
+		{"empty string found", []string{"", "a"}, "", true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := contains(tc.slice, tc.s)
+			if got != tc.want {
+				t.Errorf("contains(%v, %q) = %v, want %v", tc.slice, tc.s, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGenerateApprovalID(t *testing.T) {
+	t.Parallel()
+
+	id1 := generateApprovalID()
+	id2 := generateApprovalID()
+
+	if id1 == "" {
+		t.Error("generateApprovalID() returned empty string")
+	}
+	if !strings.HasPrefix(id1, "appr-") {
+		t.Errorf("ID should start with 'appr-', got %q", id1)
+	}
+	if id1 == id2 {
+		t.Errorf("two calls should produce different IDs: %q == %q", id1, id2)
+	}
+}
+
+func TestDefaultConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	if cfg.DefaultExpiry != DefaultExpiry {
+		t.Errorf("DefaultExpiry = %v, want %v", cfg.DefaultExpiry, DefaultExpiry)
+	}
+	if !cfg.NotifyOnRequest {
+		t.Error("NotifyOnRequest should be true")
+	}
+	if !cfg.NotifyOnDecision {
+		t.Error("NotifyOnDecision should be true")
+	}
+	if !cfg.EnableSLB {
+		t.Error("EnableSLB should be true")
+	}
+}
+
+func TestNewEngineDefaultExpiry(t *testing.T) {
+	store := setupTestStore(t)
+	engine := New(store, nil, nil, Config{})
+	if engine.config.DefaultExpiry != DefaultExpiry {
+		t.Errorf("expected default expiry %v, got %v", DefaultExpiry, engine.config.DefaultExpiry)
+	}
+}
+
+func TestDenyAlreadyApproved(t *testing.T) {
+	store := setupTestStore(t)
+	engine := New(store, nil, nil, DefaultConfig())
+
+	ctx := context.Background()
+	appr, _ := engine.Request(ctx, RequestParams{
+		Action:      "test",
+		Resource:    "res",
+		RequestedBy: "alice",
+	})
+
+	engine.Approve(ctx, appr.ID, "bob")
+
+	err := engine.Deny(ctx, appr.ID, "carol", "too late")
+	if err == nil {
+		t.Error("should not be able to deny an already-approved request")
+	}
+}
+
+func TestApproveNonExistent(t *testing.T) {
+	store := setupTestStore(t)
+	engine := New(store, nil, nil, DefaultConfig())
+
+	ctx := context.Background()
+	err := engine.Approve(ctx, "nonexistent-id", "approver")
+	if err == nil {
+		t.Error("should error for non-existent approval ID")
+	}
+}
+
+func TestRequestWithNilContext(t *testing.T) {
+	store := setupTestStore(t)
+	engine := New(store, nil, nil, DefaultConfig())
+
+	//nolint:staticcheck // intentionally passing nil context
+	appr, err := engine.Request(nil, RequestParams{
+		Action:      "test",
+		Resource:    "res",
+		RequestedBy: "alice",
+	})
+	if err != nil {
+		t.Fatalf("Request with nil context should work: %v", err)
+	}
+	if appr.ID == "" {
+		t.Error("approval should have an ID")
 	}
 }

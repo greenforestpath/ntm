@@ -109,8 +109,9 @@ func IsTemplateCommand(cmd string) bool {
 func DefaultAgentTemplates() AgentConfig {
 	return AgentConfig{
 		Claude:   `NODE_OPTIONS="--max-old-space-size=32768" claude --dangerously-skip-permissions{{if .Model}} --model {{shellQuote .Model}}{{end}}{{if .SystemPromptFile}} --system-prompt-file {{shellQuote .SystemPromptFile}}{{end}}`,
-		Codex:    `{{if .SystemPromptFile}}CODEX_SYSTEM_PROMPT="$(cat {{shellQuote .SystemPromptFile}})" {{end}}codex --dangerously-bypass-approvals-and-sandbox -m {{shellQuote (.Model | default "gpt-5.2-codex")}} -c model_reasoning_effort="xhigh" -c model_reasoning_summary_format=experimental --enable web_search_request`,
+		Codex:    `{{if .SystemPromptFile}}CODEX_SYSTEM_PROMPT="$(cat {{shellQuote .SystemPromptFile}})" {{end}}codex --dangerously-bypass-approvals-and-sandbox -m {{shellQuote (.Model | default "gpt-5.3-codex")}} -c model_reasoning_effort="xhigh" -c model_reasoning_summary_format=experimental --search`,
 		Gemini:   `gemini{{if .Model}} --model {{shellQuote .Model}}{{end}}{{if .SystemPromptFile}} --system-instruction-file {{shellQuote .SystemPromptFile}}{{end}} --yolo`,
+		Ollama:   `ollama run {{shellQuote (.Model | default "codellama:latest")}}`,
 		Cursor:   `cursor{{if .Model}} --model {{shellQuote .Model}}{{end}}`,
 		Windsurf: `windsurf{{if .Model}} --model {{shellQuote .Model}}{{end}}`,
 		Aider:    `aider{{if .Model}} --model {{shellQuote .Model}}{{end}}`,

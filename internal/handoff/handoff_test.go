@@ -478,6 +478,40 @@ func TestValidationErrorsCollection(t *testing.T) {
 	}
 }
 
+func TestValidate_AllowsGeneralSession(t *testing.T) {
+	h := &Handoff{
+		Session: "general",
+		Goal:    "Goal",
+		Now:     "Now",
+		Status:  StatusComplete,
+		Outcome: OutcomeSucceeded,
+	}
+
+	errs := h.Validate()
+	if errs.HasErrors() {
+		if len(errs.ForField("session")) > 0 {
+			t.Fatalf("expected session=general to be allowed, got errors: %v", errs)
+		}
+	}
+}
+
+func TestValidate_TokensPctOutOfRange(t *testing.T) {
+	h := &Handoff{
+		Goal:       "Goal",
+		Now:        "Now",
+		Status:     StatusComplete,
+		Outcome:    OutcomeSucceeded,
+		TokensMax:  100,
+		TokensUsed: 50,
+		TokensPct:  150,
+	}
+
+	errs := h.Validate()
+	if len(errs.ForField("tokens_pct")) != 1 {
+		t.Fatalf("expected tokens_pct validation error, got: %v", errs)
+	}
+}
+
 func TestValidationError(t *testing.T) {
 	err := ValidationError{
 		Field:   "test_field",
@@ -595,5 +629,33 @@ func TestCreatedAtPreserved(t *testing.T) {
 	}
 	if h.UpdatedAt.IsZero() {
 		t.Error("UpdatedAt should be set")
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+		want   string
+	}{
+		{"short string", "hello", 10, "hello"},
+		{"exact length", "hello", 5, "hello"},
+		{"needs truncation", "hello world", 8, "hello..."},
+		{"maxLen 3", "hello", 3, "hel"},
+		{"maxLen 2", "hello", 2, "he"},
+		{"maxLen 1", "hello", 1, "h"},
+		{"maxLen 0", "hello", 0, ""},
+		{"maxLen negative", "hello", -1, ""},
+		{"empty string", "", 5, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncate(tt.input, tt.maxLen)
+			if got != tt.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+			}
+		})
 	}
 }

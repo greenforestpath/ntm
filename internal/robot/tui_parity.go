@@ -920,6 +920,24 @@ func GetPalette(cfg *config.Config, opts PaletteOptions) (*PaletteOutput, error)
 		seen[key] = struct{}{}
 	}
 
+	// Inject built-in xf search command when xf integration is enabled
+	if cfg.Integrations.XF.Enabled {
+		xfKey := "xf-search"
+		if _, exists := seen[xfKey]; !exists {
+			if matchesFilters(xfKey, "XF Archive Search", "xf") {
+				output.Commands = append(output.Commands, PaletteCmd{
+					Key:      xfKey,
+					Label:    "XF Archive Search",
+					Category: "xf",
+					Prompt:   "Search X/Twitter archive (Ctrl+K)",
+					Tags:     []string{"xf", "search", "twitter"},
+				})
+				categorySet["xf"] = struct{}{}
+				seen[xfKey] = struct{}{}
+			}
+		}
+	}
+
 	for cat := range categorySet {
 		output.Categories = append(output.Categories, cat)
 	}

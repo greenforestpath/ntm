@@ -101,6 +101,66 @@ func TestParser_DetectAgentType_Gemini(t *testing.T) {
 	}
 }
 
+func TestParser_DetectAgentType_Cursor(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+
+	outputs := []string{
+		"Cursor AI ready to assist",
+		"cursor session started",
+	}
+
+	for _, output := range outputs {
+		t.Run(output, func(t *testing.T) {
+			t.Parallel()
+			agentType := p.DetectAgentType(output)
+			if agentType != AgentTypeCursor {
+				t.Errorf("DetectAgentType(%q) = %v, want %v", output, agentType, AgentTypeCursor)
+			}
+		})
+	}
+}
+
+func TestParser_DetectAgentType_Windsurf(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+
+	outputs := []string{
+		"Windsurf IDE connected",
+		"windsurf is ready",
+	}
+
+	for _, output := range outputs {
+		t.Run(output, func(t *testing.T) {
+			t.Parallel()
+			agentType := p.DetectAgentType(output)
+			if agentType != AgentTypeWindsurf {
+				t.Errorf("DetectAgentType(%q) = %v, want %v", output, agentType, AgentTypeWindsurf)
+			}
+		})
+	}
+}
+
+func TestParser_DetectAgentType_Aider(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+
+	outputs := []string{
+		"aider chat session",
+		"Aider started",
+	}
+
+	for _, output := range outputs {
+		t.Run(output, func(t *testing.T) {
+			t.Parallel()
+			agentType := p.DetectAgentType(output)
+			if agentType != AgentTypeAider {
+				t.Errorf("DetectAgentType(%q) = %v, want %v", output, agentType, AgentTypeAider)
+			}
+		})
+	}
+}
+
 func TestParser_Parse_RateLimited_Claude(t *testing.T) {
 	p := NewParser()
 	output := `Claude Opus 4.5 ready
@@ -676,6 +736,341 @@ func TestParser_FileData_AllFiles(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Cursor / Windsurf / Aider state detection via ParseWithHint
+// =============================================================================
+
+func TestParser_ParseWithHint_Cursor_Working(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	output := "Analyzing your codebase...\nwriting to src/main.ts"
+
+	state, err := p.ParseWithHint(output, AgentTypeCursor)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if state.Type != AgentTypeCursor {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeCursor)
+	}
+	if !state.IsWorking {
+		t.Error("Expected IsWorking=true for active Cursor")
+	}
+	if len(state.WorkIndicators) == 0 {
+		t.Error("Expected WorkIndicators to be populated")
+	}
+}
+
+func TestParser_ParseWithHint_Cursor_Idle(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	output := "Done editing.\ncursor> "
+
+	state, err := p.ParseWithHint(output, AgentTypeCursor)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if !state.IsIdle {
+		t.Error("Expected IsIdle=true for Cursor at prompt")
+	}
+	if state.IsWorking {
+		t.Error("Expected IsWorking=false when idle")
+	}
+}
+
+func TestParser_ParseWithHint_Cursor_RateLimited(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	output := "Processing...\nError: rate limit exceeded. Please wait."
+
+	state, err := p.ParseWithHint(output, AgentTypeCursor)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if !state.IsRateLimited {
+		t.Error("Expected IsRateLimited=true")
+	}
+	if len(state.LimitIndicators) == 0 {
+		t.Error("Expected LimitIndicators to be populated")
+	}
+}
+
+func TestParser_ParseWithHint_Cursor_Error(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	output := "error: could not connect to server\nfailed: timeout"
+
+	state, err := p.ParseWithHint(output, AgentTypeCursor)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if !state.IsInError {
+		t.Error("Expected IsInError=true")
+	}
+}
+
+func TestParser_ParseWithHint_Windsurf_Working(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	output := "Generating code...\nsearching for references"
+
+	state, err := p.ParseWithHint(output, AgentTypeWindsurf)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if state.Type != AgentTypeWindsurf {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeWindsurf)
+	}
+	if !state.IsWorking {
+		t.Error("Expected IsWorking=true for active Windsurf")
+	}
+	if len(state.WorkIndicators) == 0 {
+		t.Error("Expected WorkIndicators to be populated")
+	}
+}
+
+func TestParser_ParseWithHint_Windsurf_Idle(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	output := "Completed task.\nwindsurf> "
+
+	state, err := p.ParseWithHint(output, AgentTypeWindsurf)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if !state.IsIdle {
+		t.Error("Expected IsIdle=true for Windsurf at prompt")
+	}
+}
+
+func TestParser_ParseWithHint_Windsurf_RateLimited(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	output := "Querying model...\ntoo many requests, please try again"
+
+	state, err := p.ParseWithHint(output, AgentTypeWindsurf)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if !state.IsRateLimited {
+		t.Error("Expected IsRateLimited=true")
+	}
+	if len(state.LimitIndicators) == 0 {
+		t.Error("Expected LimitIndicators to be populated")
+	}
+}
+
+func TestParser_ParseWithHint_Windsurf_Error(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	output := "exception: unexpected null pointer"
+
+	state, err := p.ParseWithHint(output, AgentTypeWindsurf)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if !state.IsInError {
+		t.Error("Expected IsInError=true")
+	}
+}
+
+func TestParser_ParseWithHint_Aider_Working(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	output := "Applied edit to src/main.py\ncommitting changes\nrepo-map updated"
+
+	state, err := p.ParseWithHint(output, AgentTypeAider)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if state.Type != AgentTypeAider {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeAider)
+	}
+	if !state.IsWorking {
+		t.Error("Expected IsWorking=true for active Aider")
+	}
+	if len(state.WorkIndicators) == 0 {
+		t.Error("Expected WorkIndicators to be populated")
+	}
+}
+
+func TestParser_ParseWithHint_Aider_Idle(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	output := "Changes applied.\naider> "
+
+	state, err := p.ParseWithHint(output, AgentTypeAider)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if !state.IsIdle {
+		t.Error("Expected IsIdle=true for Aider at prompt")
+	}
+}
+
+func TestParser_ParseWithHint_Aider_RateLimited(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	output := "Sending to model...\nquota exceeded, please wait"
+
+	state, err := p.ParseWithHint(output, AgentTypeAider)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if !state.IsRateLimited {
+		t.Error("Expected IsRateLimited=true")
+	}
+	if len(state.LimitIndicators) == 0 {
+		t.Error("Expected LimitIndicators to be populated")
+	}
+}
+
+func TestParser_ParseWithHint_Aider_Error(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	output := "failed: could not apply patch"
+
+	state, err := p.ParseWithHint(output, AgentTypeAider)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if !state.IsInError {
+		t.Error("Expected IsInError=true")
+	}
+}
+
+// =============================================================================
+// Unknown agent type: collect indicators fall through default branches
+// =============================================================================
+
+func TestParser_ParseWithHint_Ollama_RateLimited(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	// Ollama has no explicit case in detect functions, hits default branch
+	output := "rate limit exceeded. Please wait and try again later."
+
+	state, err := p.ParseWithHint(output, AgentTypeOllama)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if state.Type != AgentTypeOllama {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeOllama)
+	}
+	if !state.IsRateLimited {
+		t.Error("Expected IsRateLimited=true via default branch")
+	}
+	if len(state.LimitIndicators) == 0 {
+		t.Error("Expected LimitIndicators to be populated via default branch")
+	}
+}
+
+func TestParser_ParseWithHint_Ollama_Working(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	// Ollama hits default branch in detectWorking/collectWorkIndicators
+	output := "writing to main.go\n" + "```go\npackage main\n```"
+
+	state, err := p.ParseWithHint(output, AgentTypeOllama)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if state.Type != AgentTypeOllama {
+		t.Errorf("Type = %v, want %v", state.Type, AgentTypeOllama)
+	}
+	if !state.IsWorking {
+		t.Error("Expected IsWorking=true via default branch")
+	}
+	if len(state.WorkIndicators) == 0 {
+		t.Error("Expected WorkIndicators to be populated via default branch")
+	}
+}
+
+func TestParser_ParseWithHint_Ollama_Idle(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	// Ollama hits default branch in detectIdle
+	output := "Done.\n> "
+
+	state, err := p.ParseWithHint(output, AgentTypeOllama)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	if !state.IsIdle {
+		t.Error("Expected IsIdle=true via default branch")
+	}
+}
+
+func TestParser_ParseWithHint_Ollama_Error(t *testing.T) {
+	t.Parallel()
+	p := NewParser()
+	// Ollama hits default in detectError which returns false
+	output := "error: something broke\nfatal crash"
+
+	state, err := p.ParseWithHint(output, AgentTypeOllama)
+	if err != nil {
+		t.Fatalf("ParseWithHint error: %v", err)
+	}
+	// Default detectError returns false for types without explicit case
+	if state.IsInError {
+		t.Error("Expected IsInError=false for Ollama (detectError returns false for default)")
+	}
+}
+
+func TestParser_CalculateConfidence_Clamping(t *testing.T) {
+	t.Parallel()
+	p := NewParser().(*parserImpl)
+
+	t.Run("clamps above 1.0", func(t *testing.T) {
+		t.Parallel()
+		// Stack many boosts: ContextRemaining + TokensUsed + 3 indicators + LimitIndicators
+		state := &AgentState{
+			Type:             AgentTypeCodex,
+			ContextRemaining: floatPtr(47.0),
+			TokensUsed:       intPtr(100000),
+			WorkIndicators:   []string{"a", "b", "c", "d"},
+			LimitIndicators:  []string{"rate limit"},
+		}
+		conf := p.calculateConfidence(state)
+		if conf > 1.0 {
+			t.Errorf("confidence = %f, want <= 1.0", conf)
+		}
+		if conf != 1.0 {
+			t.Errorf("confidence = %f, want exactly 1.0 (clamped)", conf)
+		}
+	})
+
+	t.Run("clamps below 0.0", func(t *testing.T) {
+		t.Parallel()
+		// Unknown type (-0.3) + working+idle conflict (-0.2) = 0.5-0.3-0.2 = 0.0
+		// But we can't get below 0 easily since base is 0.5 and max penalty is -0.5
+		// Actually 0.5 - 0.3 - 0.2 = 0.0, not negative.
+		// Need to find a way to go negative... base 0.5, unknown -0.3, conflict -0.2 = 0.0 exactly
+		state := &AgentState{
+			Type:      AgentTypeUnknown,
+			IsWorking: true,
+			IsIdle:    true,
+		}
+		conf := p.calculateConfidence(state)
+		if conf < 0.0 {
+			t.Errorf("confidence = %f, want >= 0.0", conf)
+		}
+	})
+
+	t.Run("working+idle conflict penalty", func(t *testing.T) {
+		t.Parallel()
+		// Known type + working + idle should get -0.2 penalty
+		state := &AgentState{
+			Type:      AgentTypeClaudeCode,
+			IsWorking: true,
+			IsIdle:    true,
+		}
+		conf := p.calculateConfidence(state)
+		// Base 0.5, no unknown penalty, conflict -0.2 = 0.3
+		if conf != 0.3 {
+			t.Errorf("confidence = %f, want 0.3 (conflict penalty)", conf)
+		}
+	})
+}
+
 // Test real-world-like outputs
 func TestParser_RealWorldScenarios(t *testing.T) {
 	p := NewParser()
@@ -726,6 +1121,43 @@ Error: quota exceeded. Please try again in 1 minute.`,
 			wantWorking: false,
 			wantIdle:    false,
 			wantLimited: true,
+		},
+		{
+			name: "cursor working on code",
+			output: "Cursor AI session\nanalyzing your request\n" +
+				"```typescript\nconst x = 1;\n```",
+			wantType:    AgentTypeCursor,
+			wantWorking: true,
+			wantIdle:    false,
+			wantLimited: false,
+		},
+		{
+			name: "windsurf idle at prompt",
+			output: "Windsurf IDE connected\nDone.\nwindsurf> ",
+			wantType:    AgentTypeWindsurf,
+			wantWorking: false,
+			wantIdle:    true,
+			wantLimited: false,
+		},
+		{
+			name: "aider committing changes",
+			output: "aider chat started\napplied edit to main.py\ncommitting",
+			wantType:    AgentTypeAider,
+			wantWorking: true,
+			wantIdle:    false,
+			wantLimited: false,
+		},
+		{
+			name: "gemini thinking",
+			output: `gemini-2.0-flash-preview
+I am thinking about the best way to solve this...
+Here is a plan:
+1. First step
+2. Second step`,
+			wantType:    AgentTypeGemini,
+			wantWorking: true,
+			wantIdle:    false,
+			wantLimited: false,
 		},
 	}
 

@@ -21,11 +21,13 @@ import (
 )
 
 var (
-	healthWatch    bool
-	healthInterval int
-	healthVerbose  bool
-	healthPane     int
-	healthStatus   string
+	healthWatch            bool
+	healthInterval         int
+	healthVerbose          bool
+	healthPane             int
+	healthStatus           string
+	healthAutoRestartStuck bool
+	healthThreshold        string
 )
 
 // SessionHealthInput is the kernel input for sessions.health.
@@ -87,7 +89,7 @@ func init() {
 		if strings.TrimSpace(opts.Session) == "" {
 			return nil, fmt.Errorf("session is required")
 		}
-		return buildHealthOutput(opts)
+		return buildHealthOutput(ctx, opts)
 	})
 }
 
@@ -104,13 +106,15 @@ Reports:
   - Detected issues (rate limits, crashes, errors)
 
 Examples:
-  ntm health myproject              # Check health of all agents
-  ntm health myproject --json       # Output as JSON
-  ntm health myproject --watch      # Auto-refresh every 5s
-  ntm health myproject --watch -i 2 # Auto-refresh every 2s
-  ntm health myproject --verbose    # Show full error details
-  ntm health myproject --pane 1     # Filter to specific pane
-  ntm health myproject --status ok  # Filter by status (ok/warning/error)`,
+  ntm health myproject                          # Check health of all agents
+  ntm health myproject --json                   # Output as JSON
+  ntm health myproject --watch                  # Auto-refresh every 5s
+  ntm health myproject --watch -i 2             # Auto-refresh every 2s
+  ntm health myproject --verbose                # Show full error details
+  ntm health myproject --pane 1                 # Filter to specific pane
+  ntm health myproject --status ok              # Filter by status (ok/warning/error)
+  ntm health myproject --auto-restart-stuck     # Detect and restart stuck agents
+  ntm health myproject --auto-restart-stuck --threshold 10m --dry-run`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runHealth,
 	}
@@ -120,6 +124,8 @@ Examples:
 	cmd.Flags().BoolVarP(&healthVerbose, "verbose", "v", false, "Show full error details")
 	cmd.Flags().IntVar(&healthPane, "pane", -1, "Filter to specific pane index")
 	cmd.Flags().StringVar(&healthStatus, "status", "", "Filter by status (ok, warning, error)")
+	cmd.Flags().BoolVar(&healthAutoRestartStuck, "auto-restart-stuck", false, "Detect and restart agents stuck with no output")
+	cmd.Flags().StringVar(&healthThreshold, "threshold", "", "Duration before considering stuck (default 5m, e.g. 10m, 300s)")
 	cmd.ValidArgsFunction = completeSessionArgs
 	_ = cmd.RegisterFlagCompletionFunc("pane", completePaneIndexes)
 
@@ -160,6 +166,11 @@ func runHealth(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Auto-restart-stuck mode
+	if healthAutoRestartStuck {
+		return runAutoRestartStuck(session)
+	}
+
 	// Watch mode - continuous refresh
 	if healthWatch {
 		return runHealthWatch(session)
@@ -169,6 +180,45 @@ func runHealth(cmd *cobra.Command, args []string) error {
 	return runHealthOnce(session)
 }
 
+// runAutoRestartStuck detects and restarts stuck agents
+func runAutoRestartStuck(session string) error {
+	threshold, err := robot.ParseStuckThreshold(healthThreshold)
+	if err != nil {
+		return err
+	}
+
+	opts := robot.AutoRestartStuckOptions{
+		Session:   session,
+		Threshold: threshold,
+		DryRun:    false, // dry-run handled via --json + robot flag path
+	}
+
+	if jsonOutput {
+		return robot.PrintAutoRestartStuck(opts)
+	}
+
+	result, err := robot.GetAutoRestartStuck(opts)
+	if err != nil {
+		return err
+	}
+
+	// TUI output
+	if len(result.StuckPanes) == 0 {
+		fmt.Printf("No stuck agents found (threshold: %s)\n", result.Threshold)
+		return nil
+	}
+
+	fmt.Printf("Stuck agents detected (threshold: %s):\n", result.Threshold)
+	fmt.Printf("  Stuck panes:    %v\n", result.StuckPanes)
+	if len(result.Restarted) > 0 {
+		fmt.Printf("  Restarted:      %v\n", result.Restarted)
+	}
+	if len(result.Failed) > 0 {
+		fmt.Printf("  Failed:         %v\n", result.Failed)
+	}
+	return nil
+}
+
 // runHealthOnce performs a single health check and outputs the result
 func runHealthOnce(session string) error {
 	if jsonOutput {
@@ -176,7 +226,9 @@ func runHealthOnce(session string) error {
 		if healthPane >= 0 {
 			pane = &healthPane
 		}
-		result, err := kernel.Run(context.Background(), "sessions.health", SessionHealthInput{
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		result, err := kernel.Run(ctx, "sessions.health", SessionHealthInput{
 			Session: session,
 			Pane:    pane,
 			Status:  healthStatus,
@@ -198,7 +250,10 @@ func runHealthOnce(session string) error {
 		return encodeHealthOutput(output)
 	}
 
-	result, err := health.CheckSession(session)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := health.CheckSession(ctx, session)
 	if err != nil {
 		if _, ok := err.(*health.SessionNotFoundError); ok {
 			return fmt.Errorf("session '%s' not found", session)
@@ -376,8 +431,8 @@ func coerceHealthOutput(result any) (HealthOutput, error) {
 	}
 }
 
-func buildHealthOutput(input SessionHealthInput) (HealthOutput, error) {
-	result, err := health.CheckSession(input.Session)
+func buildHealthOutput(ctx context.Context, input SessionHealthInput) (HealthOutput, error) {
+	result, err := health.CheckSession(ctx, input.Session)
 	if err != nil {
 		if _, ok := err.(*health.SessionNotFoundError); ok {
 			return HealthOutput{

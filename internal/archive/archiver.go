@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 const (
@@ -77,7 +79,7 @@ type ArchiverOptions struct {
 func DefaultArchiverOptions(sessionName string) ArchiverOptions {
 	return ArchiverOptions{
 		SessionName:     sessionName,
-		OutputDir:       expandPath(DefaultOutputDir),
+		OutputDir:       util.ExpandPath(DefaultOutputDir),
 		Interval:        DefaultInterval,
 		LinesPerCapture: DefaultLinesPerCapture,
 	}
@@ -89,7 +91,7 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 		return nil, fmt.Errorf("session name required")
 	}
 	if opts.OutputDir == "" {
-		opts.OutputDir = expandPath(DefaultOutputDir)
+		opts.OutputDir = util.ExpandPath(DefaultOutputDir)
 	}
 	if opts.Interval == 0 {
 		opts.Interval = DefaultInterval
@@ -105,9 +107,9 @@ func NewArchiver(opts ArchiverOptions) (*Archiver, error) {
 
 	// Create archive file (one per session, append mode)
 	filename := fmt.Sprintf("%s_%s.jsonl", opts.SessionName, time.Now().Format("2006-01-02"))
-	filepath := filepath.Join(opts.OutputDir, filename)
+	filePath := filepath.Join(opts.OutputDir, filename)
 
-	f, err := os.OpenFile(filepath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("opening archive file: %w", err)
 	}
@@ -133,7 +135,7 @@ func (a *Archiver) Run(ctx context.Context) error {
 	// Initial capture
 	if err := a.archiveNewContent(ctx); err != nil {
 		// Log but continue - don't fail on first capture
-		fmt.Fprintf(os.Stderr, "archive: initial capture error: %v\n", err)
+		slog.Warn("archive initial capture error", "error", err)
 	}
 
 	for {
@@ -141,13 +143,13 @@ func (a *Archiver) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			// Final flush on shutdown
 			if err := a.flush(); err != nil {
-				fmt.Fprintf(os.Stderr, "archive: flush on shutdown error (session %s): %v\n", a.sessionName, err)
+				slog.Warn("archive flush on shutdown error", "session", a.sessionName, "error", err)
 			}
 			return ctx.Err()
 		case <-ticker.C:
 			if err := a.archiveNewContent(ctx); err != nil {
 				// Log but continue
-				fmt.Fprintf(os.Stderr, "archive: capture error: %v\n", err)
+				slog.Warn("archive capture error", "error", err)
 			}
 		}
 	}
@@ -181,7 +183,7 @@ func (a *Archiver) archiveNewContent(ctx context.Context) error {
 
 		if err := a.capturePane(ctx, pane); err != nil {
 			// Log but continue with other panes
-			fmt.Fprintf(os.Stderr, "archive: pane %d capture error: %v\n", pane.Index, err)
+			slog.Warn("archive pane capture error", "pane", pane.Index, "error", err)
 		}
 	}
 
@@ -281,7 +283,7 @@ func (a *Archiver) Close() error {
 	if a.file != nil {
 		if err := a.flush(); err != nil {
 			// Log but continue to close file
-			fmt.Fprintf(os.Stderr, "archive: flush on close error (session %s): %v\n", a.sessionName, err)
+			slog.Warn("archive flush on close error", "session", a.sessionName, "error", err)
 		}
 		err := a.file.Close()
 		a.file = nil
@@ -324,17 +326,6 @@ type ArchiverStats struct {
 }
 
 // Helper functions
-
-// expandPath expands ~ to home directory.
-func expandPath(path string) string {
-	if len(path) > 0 && path[0] == '~' {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, path[1:])
-		}
-	}
-	return path
-}
 
 // simpleHash computes a simple hash of a string for change detection.
 func simpleHash(s string) uint64 {

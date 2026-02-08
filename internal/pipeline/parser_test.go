@@ -604,6 +604,31 @@ func TestValidate_LoopWithMissingItems(t *testing.T) {
 	}
 }
 
+func TestValidate_LoopNegativeMaxIterations(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{
+				ID: "s1",
+				Loop: &LoopConfig{
+					Items:         "${vars.list}",
+					As:            "item",
+					MaxIterations: -1,
+					Steps:         []Step{{ID: "inner", Prompt: "test"}},
+				},
+			},
+		},
+	}
+
+	result := Validate(w)
+	if result.Valid {
+		t.Error("expected validation to fail for negative max_iterations")
+	}
+}
+
 func TestValidate_VariableReferences(t *testing.T) {
 	t.Parallel()
 
@@ -662,6 +687,75 @@ func TestValidate_VariableReferencesInLoopSubsteps(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected warning field to contain 'loop.steps'")
+	}
+}
+
+func TestValidate_VariableReferencesInWhenCondition(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{
+				ID:     "s1",
+				Prompt: "test",
+				When:   "${unknown.ref} == true",
+			},
+		},
+	}
+
+	result := Validate(w)
+	// Should produce warning for unknown reference type in when condition
+	if len(result.Warnings) == 0 {
+		t.Error("expected warning for unknown variable reference in when condition")
+	}
+
+	// Check that the field path includes .when
+	found := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w.Field, ".when") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning field to contain '.when'")
+	}
+}
+
+func TestValidate_VariableReferencesInParallelSubsteps(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{
+				ID: "par_step",
+				Parallel: []Step{
+					{ID: "inner", Prompt: "Process ${unknown.ref}"},
+				},
+			},
+		},
+	}
+
+	result := Validate(w)
+	// Should produce warning for unknown reference type in parallel sub-step
+	if len(result.Warnings) == 0 {
+		t.Error("expected warning for unknown variable reference in parallel sub-step")
+	}
+
+	// Check that the field path includes .parallel
+	found := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w.Field, ".parallel") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning field to contain '.parallel'")
 	}
 }
 
@@ -896,5 +990,450 @@ func TestIsValidPath(t *testing.T) {
 				t.Errorf("isValidPath(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsValidRoute(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		route RoutingStrategy
+		want  bool
+	}{
+		{RouteLeastLoaded, true},
+		{RouteFirstAvailable, true},
+		{RouteRoundRobin, true},
+		{RoutingStrategy("unknown"), false},
+		{RoutingStrategy(""), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.route), func(t *testing.T) {
+			t.Parallel()
+			got := isValidRoute(tt.route)
+			if got != tt.want {
+				t.Errorf("isValidRoute(%q) = %v, want %v", tt.route, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsValidErrorAction(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		action ErrorAction
+		want   bool
+	}{
+		{ErrorActionFail, true},
+		{ErrorActionContinue, true},
+		{ErrorActionRetry, true},
+		{ErrorAction("unknown"), false},
+		{ErrorAction(""), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.action), func(t *testing.T) {
+			t.Parallel()
+			got := isValidErrorAction(tt.action)
+			if got != tt.want {
+				t.Errorf("isValidErrorAction(%q) = %v, want %v", tt.action, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsValidWaitCondition(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		cond WaitCondition
+		want bool
+	}{
+		{WaitCompletion, true},
+		{WaitIdle, true},
+		{WaitTime, true},
+		{WaitNone, true},
+		{WaitCondition("unknown"), false},
+		{WaitCondition(""), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.cond), func(t *testing.T) {
+			t.Parallel()
+			got := isValidWaitCondition(tt.cond)
+			if got != tt.want {
+				t.Errorf("isValidWaitCondition(%q) = %v, want %v", tt.cond, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseString_UnsupportedFormat(t *testing.T) {
+	t.Parallel()
+
+	_, err := ParseString("{}", "json")
+	if err == nil {
+		t.Error("expected error for unsupported format")
+	}
+
+	pe, ok := err.(*ParseError)
+	if !ok {
+		t.Fatalf("expected *ParseError, got %T", err)
+	}
+	if !strings.Contains(pe.Message, "unsupported format") {
+		t.Errorf("expected 'unsupported format' in message, got %q", pe.Message)
+	}
+	if pe.Hint != "Use 'yaml' or 'toml'" {
+		t.Errorf("expected hint about yaml/toml, got %q", pe.Hint)
+	}
+}
+
+func TestParseString_InvalidYAML(t *testing.T) {
+	t.Parallel()
+
+	content := `
+name: test
+steps:
+  - id: step1
+  invalid yaml here: [
+`
+	_, err := ParseString(content, "yaml")
+	if err == nil {
+		t.Error("expected error for invalid YAML")
+	}
+
+	pe, ok := err.(*ParseError)
+	if !ok {
+		t.Fatalf("expected *ParseError, got %T", err)
+	}
+	if !strings.Contains(pe.Message, "YAML parse error") {
+		t.Errorf("expected 'YAML parse error' in message, got %q", pe.Message)
+	}
+}
+
+func TestParseString_InvalidTOML(t *testing.T) {
+	t.Parallel()
+
+	content := `
+name = "test"
+invalid toml [here
+`
+	_, err := ParseString(content, "toml")
+	if err == nil {
+		t.Error("expected error for invalid TOML")
+	}
+
+	pe, ok := err.(*ParseError)
+	if !ok {
+		t.Fatalf("expected *ParseError, got %T", err)
+	}
+	if !strings.Contains(pe.Message, "TOML parse error") {
+		t.Errorf("expected 'TOML parse error' in message, got %q", pe.Message)
+	}
+}
+
+func TestParseString_YMLFormat(t *testing.T) {
+	t.Parallel()
+
+	content := `
+schema_version: "2.0"
+name: yml-test
+steps:
+  - id: s1
+    prompt: test
+`
+	w, err := ParseString(content, "yml")
+	if err != nil {
+		t.Fatalf("ParseString failed: %v", err)
+	}
+
+	if w.Name != "yml-test" {
+		t.Errorf("expected name 'yml-test', got %q", w.Name)
+	}
+}
+
+func TestParseFile_InvalidTOML(t *testing.T) {
+	t.Parallel()
+
+	content := `
+name = "test"
+invalid toml [here
+`
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "workflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ParseFile(path)
+	if err == nil {
+		t.Error("expected error for invalid TOML")
+	}
+}
+
+func TestValidate_StepWithPromptAndParallel(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{
+				ID:     "s1",
+				Prompt: "do something",
+				Parallel: []Step{
+					{ID: "p1", Agent: "cc", Prompt: "parallel task"},
+				},
+			},
+		},
+	}
+
+	result := Validate(w)
+	if result.Valid {
+		t.Error("expected validation to fail for prompt + parallel")
+	}
+
+	found := false
+	for _, e := range result.Errors {
+		if strings.Contains(e.Message, "both prompt and parallel") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected error about prompt + parallel conflict")
+	}
+}
+
+func TestValidate_StepWithUnknownAgent(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{
+				ID:     "s1",
+				Agent:  "unknown-agent-type",
+				Prompt: "test",
+			},
+		},
+	}
+
+	result := Validate(w)
+	// Unknown agent should be a warning, not error
+	found := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w.Message, "unknown agent type") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning about unknown agent type")
+	}
+}
+
+func TestValidate_StepWithInvalidRoute(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{
+				ID:     "s1",
+				Route:  "invalid-route",
+				Prompt: "test",
+			},
+		},
+	}
+
+	result := Validate(w)
+	if result.Valid {
+		t.Error("expected validation to fail for invalid route")
+	}
+
+	found := false
+	for _, e := range result.Errors {
+		if strings.Contains(e.Message, "invalid routing strategy") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected error about invalid routing strategy")
+	}
+}
+
+func TestValidate_StepWithMultipleAgentMethods(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{
+				ID:     "s1",
+				Agent:  "claude",
+				Pane:   1,
+				Route:  "least-loaded",
+				Prompt: "test",
+			},
+		},
+	}
+
+	result := Validate(w)
+	if result.Valid {
+		t.Error("expected validation to fail for multiple agent methods")
+	}
+
+	found := false
+	for _, e := range result.Errors {
+		if strings.Contains(e.Message, "can only use one of") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error about multiple agent selection methods, got %v", result.Errors)
+	}
+}
+
+func TestValidate_IncompleteVarsReference(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{
+				ID:     "s1",
+				Prompt: "The value is ${vars}",
+			},
+		},
+	}
+
+	result := Validate(w)
+	// Should have warning about incomplete reference
+	found := false
+	for _, warn := range result.Warnings {
+		if strings.Contains(warn.Message, "incomplete variable reference") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected warning about incomplete variable reference, got %v", result.Warnings)
+	}
+}
+
+func TestValidate_IncompleteStepsReference(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{
+				ID:     "s1",
+				Prompt: "Using ${steps.prev}",
+			},
+		},
+	}
+
+	result := Validate(w)
+	// Should have warning about incomplete step reference
+	found := false
+	for _, warn := range result.Warnings {
+		if strings.Contains(warn.Message, "incomplete step reference") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected warning about incomplete step reference, got %v", result.Warnings)
+	}
+}
+
+func TestValidate_UnknownReferenceType(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{
+				ID:     "s1",
+				Prompt: "Using ${unknown.ref}",
+			},
+		},
+	}
+
+	result := Validate(w)
+	// Should have warning about unknown reference type
+	found := false
+	for _, warn := range result.Warnings {
+		if strings.Contains(warn.Message, "unknown reference type") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected warning about unknown reference type, got %v", result.Warnings)
+	}
+}
+
+func TestValidate_StepWithEmptyID(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{ID: "", Prompt: "test prompt"}, // Empty ID should fail
+		},
+	}
+
+	result := Validate(w)
+	if result.Valid {
+		t.Error("expected validation to fail for empty step id")
+	}
+
+	found := false
+	for _, err := range result.Errors {
+		if strings.Contains(err.Message, "step id is required") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error about empty step id, got %v", result.Errors)
+	}
+}
+
+func TestValidate_StepWithInvalidPromptFile(t *testing.T) {
+	t.Parallel()
+
+	w := &Workflow{
+		SchemaVersion: "2.0",
+		Name:          "test",
+		Steps: []Step{
+			{ID: "s1", PromptFile: "invalid\x00path"}, // Invalid path with null byte
+		},
+	}
+
+	result := Validate(w)
+	// This should produce a warning about invalid path
+	found := false
+	for _, warn := range result.Warnings {
+		if strings.Contains(warn.Message, "may be invalid") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected warning about invalid prompt_file path, got %v", result.Warnings)
 	}
 }

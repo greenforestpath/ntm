@@ -187,9 +187,16 @@ func GetIsWorking(opts IsWorkingOptions) (*IsWorkingOutput, error) {
 	// Determine which panes to check
 	panesToCheck := opts.Panes
 	if len(panesToCheck) == 0 {
-		// Default: all panes except pane 0 (control pane)
+		// Default: all panes except control pane (pane 1 with pane-base-index=1)
+		// Find minimum pane index to identify control pane
+		minIdx := -1
 		for _, p := range allPanes {
-			if p.Index > 0 { // Skip control pane
+			if minIdx == -1 || p.Index < minIdx {
+				minIdx = p.Index
+			}
+		}
+		for _, p := range allPanes {
+			if p.Index != minIdx { // Skip control pane (first pane)
 				panesToCheck = append(panesToCheck, p.Index)
 			}
 		}

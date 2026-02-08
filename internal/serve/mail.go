@@ -190,6 +190,28 @@ func (s *Server) getMailClient() (*agentmail.Client, error) {
 	return client, nil
 }
 
+func (s *Server) publishMailEvent(agentName, eventType string, payload map[string]interface{}) {
+	if s.wsHub == nil {
+		return
+	}
+	topic := "mail:*"
+	if agentName != "" {
+		topic = "mail:" + agentName
+	}
+	s.wsHub.Publish(topic, eventType, payload)
+}
+
+func (s *Server) publishReservationEvent(agentName, eventType string, payload map[string]interface{}) {
+	if s.wsHub == nil {
+		return
+	}
+	topic := "reservations:*"
+	if agentName != "" {
+		topic = "reservations:" + agentName
+	}
+	s.wsHub.Publish(topic, eventType, payload)
+}
+
 // handleMailHealth handles GET /api/v1/mail/health
 func (s *Server) handleMailHealth(w http.ResponseWriter, r *http.Request) {
 	reqID := requestIDFromContext(r.Context())
@@ -424,6 +446,16 @@ func (s *Server) handleMailInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	messageIDs := make([]int, 0, len(messages))
+	for _, m := range messages {
+		messageIDs = append(messageIDs, m.ID)
+	}
+	s.publishMailEvent(agentName, "mail.received", map[string]interface{}{
+		"agent_name":  agentName,
+		"count":       len(messages),
+		"message_ids": messageIDs,
+	})
+
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"messages": messages,
 		"count":    len(messages),
@@ -612,6 +644,11 @@ func (s *Server) handleMarkMessageRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.publishMailEvent(agentName, "mail.read", map[string]interface{}{
+		"agent_name": agentName,
+		"message_id": messageID,
+	})
+
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"message_id": messageID,
 		"read":       true,
@@ -655,6 +692,11 @@ func (s *Server) handleAckMessage(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
+
+	s.publishMailEvent(agentName, "mail.acknowledged", map[string]interface{}{
+		"agent_name": agentName,
+		"message_id": messageID,
+	})
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"message_id":   messageID,
@@ -1021,6 +1063,25 @@ func (s *Server) handleReservePaths(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(result.Granted) > 0 {
+		s.publishReservationEvent(req.AgentName, "reservation.granted", map[string]interface{}{
+			"agent_name":    req.AgentName,
+			"exclusive":     req.Exclusive,
+			"ttl_seconds":   ttl,
+			"reason":        req.Reason,
+			"granted":       result.Granted,
+			"granted_count": len(result.Granted),
+		})
+	}
+	if len(result.Conflicts) > 0 {
+		s.publishReservationEvent(req.AgentName, "reservation.conflict", map[string]interface{}{
+			"agent_name":     req.AgentName,
+			"paths":          req.Paths,
+			"conflicts":      result.Conflicts,
+			"conflict_count": len(result.Conflicts),
+		})
+	}
+
 	status := http.StatusCreated
 	if len(result.Conflicts) > 0 {
 		status = http.StatusConflict
@@ -1067,6 +1128,12 @@ func (s *Server) handleReleaseReservations(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	s.publishReservationEvent(req.AgentName, "reservation.released", map[string]interface{}{
+		"agent_name": req.AgentName,
+		"paths":      req.Paths,
+		"ids":        req.IDs,
+	})
+
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"released": true,
 	}, reqID)
@@ -1101,6 +1168,14 @@ func (s *Server) handleReservationConflicts(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
+	}
+
+	if len(conflicts) > 0 {
+		s.publishReservationEvent("", "reservation.conflict", map[string]interface{}{
+			"paths":          paths,
+			"conflicts":      conflicts,
+			"conflict_count": len(conflicts),
+		})
 	}
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
@@ -1184,6 +1259,11 @@ func (s *Server) handleReleaseReservationByID(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	s.publishReservationEvent(agentName, "reservation.released", map[string]interface{}{
+		"agent_name":     agentName,
+		"reservation_id": reservationID,
+	})
+
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"reservation_id": reservationID,
 		"released":       true,
@@ -1243,6 +1323,13 @@ func (s *Server) handleRenewReservation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	s.publishReservationEvent(req.AgentName, "reservation.renewed", map[string]interface{}{
+		"agent_name":     req.AgentName,
+		"reservation_id": reservationID,
+		"extend_seconds": extendSeconds,
+		"renewed":        result.Renewed,
+	})
+
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"renewed":      result.Renewed,
 		"reservations": result.Reservations,
@@ -1297,6 +1384,13 @@ func (s *Server) handleForceReleaseReservation(w http.ResponseWriter, r *http.Re
 		writeErrorResponse(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error(), nil, reqID)
 		return
 	}
+
+	s.publishReservationEvent(req.AgentName, "reservation.released", map[string]interface{}{
+		"agent_name":      req.AgentName,
+		"reservation_id":  reservationID,
+		"force_released":  true,
+		"notify_previous": req.NotifyPrevious,
+	})
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"reservation_id": reservationID,

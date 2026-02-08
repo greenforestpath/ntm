@@ -473,3 +473,133 @@ func TestBVClientConstants(t *testing.T) {
 		t.Errorf("DefaultClientTimeout = %v, want 10s", DefaultClientTimeout)
 	}
 }
+
+func TestBuildInsightsFromResponse(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty response", func(t *testing.T) {
+		t.Parallel()
+		client := &BVClient{}
+		resp := &InsightsResponse{}
+		insights := client.buildInsightsFromResponse(resp)
+
+		if insights == nil {
+			t.Fatal("expected non-nil insights")
+		}
+		if len(insights.Cycles) != 0 {
+			t.Errorf("expected 0 cycles, got %d", len(insights.Cycles))
+		}
+		if len(insights.Bottlenecks) != 0 {
+			t.Errorf("expected 0 bottlenecks, got %d", len(insights.Bottlenecks))
+		}
+	})
+
+	t.Run("with cycles and bottlenecks", func(t *testing.T) {
+		t.Parallel()
+		client := &BVClient{}
+		resp := &InsightsResponse{
+			Cycles: []Cycle{
+				{Nodes: []string{"A", "B", "C"}},
+				{Nodes: []string{"D", "E"}},
+			},
+			Bottlenecks: []NodeScore{
+				{ID: "X", Value: 0.9},
+				{ID: "Y", Value: 0.5},
+			},
+		}
+		insights := client.buildInsightsFromResponse(resp)
+
+		if len(insights.Cycles) != 2 {
+			t.Fatalf("expected 2 cycles, got %d", len(insights.Cycles))
+		}
+		if len(insights.Cycles[0]) != 3 {
+			t.Errorf("expected first cycle to have 3 nodes, got %d", len(insights.Cycles[0]))
+		}
+		if len(insights.Bottlenecks) != 2 {
+			t.Fatalf("expected 2 bottlenecks, got %d", len(insights.Bottlenecks))
+		}
+		if insights.Bottlenecks[0].ID != "X" {
+			t.Errorf("expected first bottleneck ID=X, got %s", insights.Bottlenecks[0].ID)
+		}
+		if insights.Bottlenecks[0].Betweenness != 0.9 {
+			t.Errorf("expected betweenness=0.9, got %f", insights.Bottlenecks[0].Betweenness)
+		}
+	})
+}
+
+func TestBuildInsightsFromTriage(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty triage", func(t *testing.T) {
+		t.Parallel()
+		client := &BVClient{}
+		triage := &TriageResponse{}
+		insights := client.buildInsightsFromTriage(triage)
+
+		if insights == nil {
+			t.Fatal("expected non-nil insights")
+		}
+		if insights.ReadyCount != 0 {
+			t.Errorf("expected 0 ready count, got %d", insights.ReadyCount)
+		}
+	})
+
+	t.Run("with project health and recommendations", func(t *testing.T) {
+		t.Parallel()
+		client := &BVClient{}
+		triage := &TriageResponse{
+			Triage: TriageData{
+				QuickRef: TriageQuickRef{
+					ActionableCount: 5,
+				},
+				Recommendations: []TriageRecommendation{
+					{ID: "rec-1", Breakdown: &ScoreBreakdown{Betweenness: 0.1}},
+					{ID: "rec-2", Breakdown: &ScoreBreakdown{Betweenness: 0.01}}, // below threshold
+					{ID: "rec-3", Breakdown: nil},                                 // no breakdown
+				},
+				ProjectHealth: &ProjectHealth{
+					StatusDistribution: map[string]int{"total": 42},
+					GraphMetrics:       &GraphMetrics{CycleCount: 3},
+				},
+			},
+		}
+		insights := client.buildInsightsFromTriage(triage)
+
+		if insights.ReadyCount != 5 {
+			t.Errorf("ReadyCount = %d, want 5", insights.ReadyCount)
+		}
+		if insights.TotalCount != 42 {
+			t.Errorf("TotalCount = %d, want 42", insights.TotalCount)
+		}
+		if len(insights.Cycles) != 3 {
+			t.Errorf("expected 3 cycle slots, got %d", len(insights.Cycles))
+		}
+		// Only rec-1 has betweenness > 0.05
+		if len(insights.Bottlenecks) != 1 {
+			t.Fatalf("expected 1 bottleneck, got %d", len(insights.Bottlenecks))
+		}
+		if insights.Bottlenecks[0].ID != "rec-1" {
+			t.Errorf("expected bottleneck ID=rec-1, got %s", insights.Bottlenecks[0].ID)
+		}
+	})
+
+	t.Run("no graph metrics", func(t *testing.T) {
+		t.Parallel()
+		client := &BVClient{}
+		triage := &TriageResponse{
+			Triage: TriageData{
+				ProjectHealth: &ProjectHealth{
+					StatusDistribution: map[string]int{"total": 10},
+				},
+			},
+		}
+		insights := client.buildInsightsFromTriage(triage)
+
+		if insights.TotalCount != 10 {
+			t.Errorf("TotalCount = %d, want 10", insights.TotalCount)
+		}
+		if len(insights.Cycles) != 0 {
+			t.Errorf("expected 0 cycles without graph metrics, got %d", len(insights.Cycles))
+		}
+	})
+}

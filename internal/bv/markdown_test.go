@@ -229,3 +229,22 @@ func TestRenderTriageJSON_Nil(t *testing.T) {
 		t.Errorf("expected empty JSON object, got: %s", result)
 	}
 }
+
+func TestDefaultMarkdownOptions(t *testing.T) {
+	t.Parallel()
+
+	opts := DefaultMarkdownOptions()
+
+	if opts.Compact {
+		t.Error("expected Compact to be false by default")
+	}
+	if opts.MaxRecommendations != 5 {
+		t.Errorf("MaxRecommendations = %d, want 5", opts.MaxRecommendations)
+	}
+	if opts.MaxQuickWins != 3 {
+		t.Errorf("MaxQuickWins = %d, want 3", opts.MaxQuickWins)
+	}
+	if opts.IncludeScores {
+		t.Error("expected IncludeScores to be false by default")
+	}
+}

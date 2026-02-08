@@ -41,8 +41,10 @@ func TestGetModelPricing(t *testing.T) {
 		{"claude-opus", 0.015, 0.075},
 		{"claude-sonnet", 0.003, 0.015},
 		{"claude-haiku", 0.00025, 0.00125},
+		{"claude-opus-4-5-20251101", 0.015, 0.075}, // date-suffixed variant
 		{"gpt-4o", 0.005, 0.015},
 		{"gpt-4o-mini", 0.00015, 0.0006},
+		{"gpt-4o-20250101", 0.005, 0.015}, // date-suffixed variant
 		{"gemini-flash", 0.000075, 0.0003},
 		{"unknown-model", 0.003, 0.015}, // Falls back to default
 	}

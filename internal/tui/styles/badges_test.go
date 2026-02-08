@@ -203,6 +203,29 @@ func TestTokenVelocityBadge(t *testing.T) {
 	}
 }
 
+func TestTokensPerSecondBadge(t *testing.T) {
+	values := []float64{0, 10, 42.1, 120}
+	for _, v := range values {
+		result := TokensPerSecondBadge(v)
+		if result == "" {
+			t.Errorf("TokensPerSecondBadge(%f) returned empty string", v)
+		}
+		if !strings.Contains(result, "tok/s") {
+			t.Errorf("TokensPerSecondBadge(%f) should contain tok/s", v)
+		}
+	}
+}
+
+func TestMemoryUsageBadge(t *testing.T) {
+	values := []int64{0, 1024, 8 * 1024 * 1024 * 1024}
+	for _, v := range values {
+		result := MemoryUsageBadge(v)
+		if result == "" {
+			t.Errorf("MemoryUsageBadge(%d) returned empty string", v)
+		}
+	}
+}
+
 func TestAlertSeverityBadge(t *testing.T) {
 	severities := []string{"critical", "high", "medium", "low", "info", "other", "p0", "sev2"}
 	for _, sev := range severities {
@@ -385,6 +408,16 @@ func TestTruncateBadgeText(t *testing.T) {
 					tt.input, tt.maxLen, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestTruncateToWidth_AllRunesExhausted(t *testing.T) {
+	t.Parallel()
+
+	// A wide CJK character (width 2) with maxWidth=1 should exhaust all runes
+	got := truncateToWidth("中", 1)
+	if got != "" {
+		t.Errorf("truncateToWidth(CJK, 1) = %q, want empty", got)
 	}
 }
 

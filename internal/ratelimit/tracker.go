@@ -24,6 +24,11 @@ const (
 	MinDelayOpenAI    = 3 * time.Second
 	MinDelayGoogle    = 2 * time.Second
 
+	// MaxLearnedDelay caps the adaptive delay to prevent overflow.
+	// With delayIncreaseRate=1.5, uncapped growth overflows int64
+	// nanoseconds after ~61 consecutive rate limits (ntm-45).
+	MaxLearnedDelay = 10 * time.Minute
+
 	// Learning parameters
 	delayIncreaseRate       = 1.5 // Increase by 50% on rate limit
 	delayDecreaseRate       = 0.9 // Decrease by 10% on consecutive successes
@@ -164,9 +169,13 @@ func (t *RateLimitTracker) recordRateLimitLocked(provider, action string, now ti
     state.TotalRateLimits++
     state.ConsecutiveSuccess = 0 // Reset consecutive successes
 
-    // Increase delay by 50%
-    newDelay := time.Duration(float64(state.CurrentDelay) * delayIncreaseRate)
-    state.CurrentDelay = newDelay
+    // Increase delay by 50%, capping to prevent int64 overflow (ntm-45).
+    newDelayF := float64(state.CurrentDelay) * delayIncreaseRate
+    if newDelayF > float64(MaxLearnedDelay) {
+        state.CurrentDelay = MaxLearnedDelay
+    } else {
+        state.CurrentDelay = time.Duration(newDelayF)
+    }
     return state
 }
 
@@ -333,6 +342,16 @@ func (t *RateLimitTracker) LoadFromDir(dir string) error {
 	defer t.mu.Unlock()
 
 	if pd.State != nil {
+		// Sanitize loaded state: reset corrupted delays and cooldowns
+		// that may have been persisted from a previous overflow bug.
+		for _, ps := range pd.State {
+			if ps.CurrentDelay < 0 || ps.CurrentDelay > time.Hour {
+				ps.CurrentDelay = 0
+			}
+			if !ps.CooldownUntil.IsZero() && ps.CooldownUntil.After(time.Now().Add(time.Hour)) {
+				ps.CooldownUntil = time.Time{}
+			}
+		}
 		t.state = pd.State
 	}
 	if pd.History != nil {

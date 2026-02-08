@@ -3,6 +3,7 @@
 package serve
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -17,14 +18,14 @@ import (
 
 // Pipeline-specific error codes
 const (
-	ErrCodePipelineNotFound   = "PIPELINE_NOT_FOUND"
-	ErrCodePipelineRunning    = "PIPELINE_RUNNING"
-	ErrCodePipelineFailed     = "PIPELINE_FAILED"
-	ErrCodeInvalidWorkflow    = "INVALID_WORKFLOW"
-	ErrCodeMissingWorkflow    = "MISSING_WORKFLOW"
-	ErrCodeMissingSession     = "MISSING_SESSION"
-	ErrCodeTemplateNotFound   = "TEMPLATE_NOT_FOUND"
-	ErrCodeNoResumableState   = "NO_RESUMABLE_STATE"
+	ErrCodePipelineNotFound = "PIPELINE_NOT_FOUND"
+	ErrCodePipelineRunning  = "PIPELINE_RUNNING"
+	ErrCodePipelineFailed   = "PIPELINE_FAILED"
+	ErrCodeInvalidWorkflow  = "INVALID_WORKFLOW"
+	ErrCodeMissingWorkflow  = "MISSING_WORKFLOW"
+	ErrCodeMissingSession   = "MISSING_SESSION"
+	ErrCodeTemplateNotFound = "TEMPLATE_NOT_FOUND"
+	ErrCodeNoResumableState = "NO_RESUMABLE_STATE"
 )
 
 // PipelineRunRequest is the request body for POST /api/v1/pipelines/run
@@ -166,7 +167,7 @@ func (s *Server) handleRunPipeline(w http.ResponseWriter, r *http.Request) {
 
 	// Use the pipeline robot API which handles everything
 	// For REST, we capture the result instead of printing
-	result := runPipelineWithResult(opts)
+	result := s.runPipelineWithResult(r.Context(), opts)
 
 	if !result.Success {
 		writeErrorResponse(w, http.StatusBadRequest, result.ErrorCode, result.Error, nil, reqID)
@@ -218,7 +219,7 @@ func (s *Server) handleExecPipeline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Execute inline workflow
-	result := execPipelineInline(&req.Workflow, req.Session, req.Variables, req.Background)
+	result := s.execPipelineInline(r.Context(), &req.Workflow, req.Session, req.Variables, req.Background)
 
 	if !result.Success {
 		writeErrorResponse(w, http.StatusBadRequest, result.ErrorCode, result.Error, nil, reqID)
@@ -353,7 +354,7 @@ func (s *Server) handleResumePipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := resumePipelineWithResult(runID, session, req.Variables, state)
+	result := s.resumePipelineWithResult(r.Context(), runID, session, req.Variables, state)
 
 	if !result.Success {
 		writeErrorResponse(w, http.StatusBadRequest, result.ErrorCode, result.Error, nil, reqID)
@@ -494,8 +495,36 @@ func (s *Server) handleCleanupPipelines(w http.ResponseWriter, r *http.Request) 
 
 // Helper functions
 
+func (s *Server) publishPipelineEvent(session, eventType string, payload map[string]interface{}) {
+	if s.wsHub == nil {
+		return
+	}
+	topic := "pipelines:*"
+	if session != "" {
+		topic = "pipelines:" + session
+	}
+	s.wsHub.Publish(topic, eventType, payload)
+}
+
+func pipelineEventTypeFromProgressType(progressType string) (string, bool) {
+	switch progressType {
+	case "workflow_start":
+		return "pipeline.started", true
+	case "step_complete":
+		return "pipeline.step_completed", true
+	case "step_error":
+		return "pipeline.step_failed", true
+	case "workflow_complete":
+		return "pipeline.complete", true
+	case "workflow_error":
+		return "pipeline.complete", true
+	default:
+		return "", false
+	}
+}
+
 // runPipelineWithResult runs a pipeline and returns the result struct
-func runPipelineWithResult(opts pipeline.PipelineRunOptions) pipeline.PipelineRunOutput {
+func (s *Server) runPipelineWithResult(ctx context.Context, opts pipeline.PipelineRunOptions) pipeline.PipelineRunOutput {
 	output := pipeline.PipelineRunOutput{}
 
 	workflowPath := opts.WorkflowFile
@@ -529,20 +558,32 @@ func runPipelineWithResult(opts pipeline.PipelineRunOptions) pipeline.PipelineRu
 	projectDir, _ := os.Getwd()
 	config.ProjectDir = projectDir
 	config.WorkflowFile = workflowPath
+	config.RunID = pipeline.GenerateRunID()
 
 	executor := pipeline.NewExecutor(config)
 
 	if opts.DryRun {
 		validation := executor.Validate(workflow)
 		output.RobotResponse = pipeline.NewRobotResponse(validation.Valid)
+		output.RunID = config.RunID
 		output.WorkflowID = workflow.Name
 		output.Status = "validated"
 		output.DryRun = true
 		return output
 	}
 
+	runCtx := ctx
+	if runCtx == nil {
+		runCtx = context.Background()
+	}
+	if opts.Background {
+		// Detach from request lifecycle.
+		runCtx = context.Background()
+	}
+
 	// Start execution
 	output.RobotResponse = pipeline.NewRobotResponse(true)
+	output.RunID = config.RunID
 	output.WorkflowID = workflow.Name
 	output.Session = opts.Session
 	output.Status = "started"
@@ -552,15 +593,75 @@ func runPipelineWithResult(opts pipeline.PipelineRunOptions) pipeline.PipelineRu
 		Percent: 0,
 	}
 
+	progress := make(chan pipeline.ProgressEvent, 256)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case ev := <-progress:
+				eventType, ok := pipelineEventTypeFromProgressType(ev.Type)
+				if !ok {
+					continue
+				}
+				payload := map[string]interface{}{
+					"run_id":      config.RunID,
+					"workflow_id": workflow.Name,
+					"session":     opts.Session,
+					"step_id":     ev.StepID,
+					"message":     ev.Message,
+					"progress":    ev.Progress,
+					"timestamp":   ev.Timestamp.UTC().Format(time.RFC3339Nano),
+				}
+				if ev.Type == "workflow_error" {
+					payload["success"] = false
+				}
+				if ev.Type == "workflow_complete" {
+					payload["success"] = true
+				}
+				s.publishPipelineEvent(opts.Session, eventType, payload)
+			case <-done:
+				for {
+					select {
+					case ev := <-progress:
+						eventType, ok := pipelineEventTypeFromProgressType(ev.Type)
+						if !ok {
+							continue
+						}
+						payload := map[string]interface{}{
+							"run_id":      config.RunID,
+							"workflow_id": workflow.Name,
+							"session":     opts.Session,
+							"step_id":     ev.StepID,
+							"message":     ev.Message,
+							"progress":    ev.Progress,
+							"timestamp":   ev.Timestamp.UTC().Format(time.RFC3339Nano),
+						}
+						if ev.Type == "workflow_error" {
+							payload["success"] = false
+						}
+						if ev.Type == "workflow_complete" {
+							payload["success"] = true
+						}
+						s.publishPipelineEvent(opts.Session, eventType, payload)
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+
 	// For background mode, start async and return immediately
 	if opts.Background {
 		go func() {
-			_, _ = executor.Run(nil, workflow, opts.Variables, nil)
+			defer close(done)
+			_, _ = executor.Run(runCtx, workflow, opts.Variables, progress)
 		}()
 		output.Status = "running"
 	} else {
 		// Synchronous execution
-		state, err := executor.Run(nil, workflow, opts.Variables, nil)
+		state, err := executor.Run(runCtx, workflow, opts.Variables, progress)
+		close(done)
 		if err != nil {
 			output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodePipelineFailed, "pipeline execution failed")
 			return output
@@ -573,16 +674,18 @@ func runPipelineWithResult(opts pipeline.PipelineRunOptions) pipeline.PipelineRu
 }
 
 // execPipelineInline executes an inline workflow definition
-func execPipelineInline(workflow *pipeline.Workflow, session string, variables map[string]interface{}, background bool) pipeline.PipelineRunOutput {
+func (s *Server) execPipelineInline(ctx context.Context, workflow *pipeline.Workflow, session string, variables map[string]interface{}, background bool) pipeline.PipelineRunOutput {
 	output := pipeline.PipelineRunOutput{}
 
 	config := pipeline.DefaultExecutorConfig(session)
 	projectDir, _ := os.Getwd()
 	config.ProjectDir = projectDir
+	config.RunID = pipeline.GenerateRunID()
 
 	executor := pipeline.NewExecutor(config)
 
 	output.RobotResponse = pipeline.NewRobotResponse(true)
+	output.RunID = config.RunID
 	output.WorkflowID = workflow.Name
 	output.Session = session
 	output.Status = "started"
@@ -592,13 +695,81 @@ func execPipelineInline(workflow *pipeline.Workflow, session string, variables m
 		Percent: 0,
 	}
 
+	runCtx := ctx
+	if runCtx == nil {
+		runCtx = context.Background()
+	}
+	if background {
+		runCtx = context.Background()
+	}
+
+	progress := make(chan pipeline.ProgressEvent, 256)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case ev := <-progress:
+				eventType, ok := pipelineEventTypeFromProgressType(ev.Type)
+				if !ok {
+					continue
+				}
+				payload := map[string]interface{}{
+					"run_id":      config.RunID,
+					"workflow_id": workflow.Name,
+					"session":     session,
+					"step_id":     ev.StepID,
+					"message":     ev.Message,
+					"progress":    ev.Progress,
+					"timestamp":   ev.Timestamp.UTC().Format(time.RFC3339Nano),
+				}
+				if ev.Type == "workflow_error" {
+					payload["success"] = false
+				}
+				if ev.Type == "workflow_complete" {
+					payload["success"] = true
+				}
+				s.publishPipelineEvent(session, eventType, payload)
+			case <-done:
+				for {
+					select {
+					case ev := <-progress:
+						eventType, ok := pipelineEventTypeFromProgressType(ev.Type)
+						if !ok {
+							continue
+						}
+						payload := map[string]interface{}{
+							"run_id":      config.RunID,
+							"workflow_id": workflow.Name,
+							"session":     session,
+							"step_id":     ev.StepID,
+							"message":     ev.Message,
+							"progress":    ev.Progress,
+							"timestamp":   ev.Timestamp.UTC().Format(time.RFC3339Nano),
+						}
+						if ev.Type == "workflow_error" {
+							payload["success"] = false
+						}
+						if ev.Type == "workflow_complete" {
+							payload["success"] = true
+						}
+						s.publishPipelineEvent(session, eventType, payload)
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+
 	if background {
 		go func() {
-			_, _ = executor.Run(nil, workflow, variables, nil)
+			defer close(done)
+			_, _ = executor.Run(runCtx, workflow, variables, progress)
 		}()
 		output.Status = "running"
 	} else {
-		state, err := executor.Run(nil, workflow, variables, nil)
+		state, err := executor.Run(runCtx, workflow, variables, progress)
+		close(done)
 		if err != nil {
 			output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodePipelineFailed, "pipeline execution failed")
 			return output
@@ -611,7 +782,7 @@ func execPipelineInline(workflow *pipeline.Workflow, session string, variables m
 }
 
 // resumePipelineWithResult resumes a pipeline from saved state
-func resumePipelineWithResult(runID, session string, variables map[string]interface{}, state *pipeline.ExecutionState) pipeline.PipelineRunOutput {
+func (s *Server) resumePipelineWithResult(ctx context.Context, runID, session string, variables map[string]interface{}, state *pipeline.ExecutionState) pipeline.PipelineRunOutput {
 	output := pipeline.PipelineRunOutput{}
 
 	// Load workflow from state
@@ -643,7 +814,71 @@ func resumePipelineWithResult(runID, session string, variables map[string]interf
 		vars[k] = v
 	}
 
-	newState, err := executor.Resume(nil, workflow, state, nil)
+	runCtx := ctx
+	if runCtx == nil {
+		runCtx = context.Background()
+	}
+
+	progress := make(chan pipeline.ProgressEvent, 256)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case ev := <-progress:
+				eventType, ok := pipelineEventTypeFromProgressType(ev.Type)
+				if !ok {
+					continue
+				}
+				payload := map[string]interface{}{
+					"run_id":      config.RunID,
+					"workflow_id": workflow.Name,
+					"session":     session,
+					"step_id":     ev.StepID,
+					"message":     ev.Message,
+					"progress":    ev.Progress,
+					"timestamp":   ev.Timestamp.UTC().Format(time.RFC3339Nano),
+				}
+				if ev.Type == "workflow_error" {
+					payload["success"] = false
+				}
+				if ev.Type == "workflow_complete" {
+					payload["success"] = true
+				}
+				s.publishPipelineEvent(session, eventType, payload)
+			case <-done:
+				for {
+					select {
+					case ev := <-progress:
+						eventType, ok := pipelineEventTypeFromProgressType(ev.Type)
+						if !ok {
+							continue
+						}
+						payload := map[string]interface{}{
+							"run_id":      config.RunID,
+							"workflow_id": workflow.Name,
+							"session":     session,
+							"step_id":     ev.StepID,
+							"message":     ev.Message,
+							"progress":    ev.Progress,
+							"timestamp":   ev.Timestamp.UTC().Format(time.RFC3339Nano),
+						}
+						if ev.Type == "workflow_error" {
+							payload["success"] = false
+						}
+						if ev.Type == "workflow_complete" {
+							payload["success"] = true
+						}
+						s.publishPipelineEvent(session, eventType, payload)
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	newState, err := executor.Resume(runCtx, workflow, state, progress)
+	close(done)
 	if err != nil {
 		output.RobotResponse = pipeline.NewErrorResponse(err, ErrCodePipelineFailed, "pipeline resume failed")
 		return output

@@ -223,6 +223,7 @@ func TestProjectBeadCountFromPath(t *testing.T) {
 
 func TestAllocationCalculator_GenerateSwarmPlan(t *testing.T) {
 	cfg := testSwarmConfig()
+	cfg.AutoRotateAccounts = true
 	ac := NewAllocationCalculator(cfg)
 
 	projects := []ProjectBeadCount{
@@ -250,6 +251,10 @@ func TestAllocationCalculator_GenerateSwarmPlan(t *testing.T) {
 
 	if plan.TotalGmi != 4 {
 		t.Errorf("TotalGmi = %d, want 4", plan.TotalGmi)
+	}
+
+	if !plan.AutoRotateAccounts {
+		t.Error("AutoRotateAccounts = false, want true")
 	}
 
 	if plan.SessionsPerType != 3 {

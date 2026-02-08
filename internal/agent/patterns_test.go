@@ -48,6 +48,66 @@ func TestMatchAny(t *testing.T) {
 			patterns: ccWorkingPatterns,
 			want:     true,
 		},
+		{
+			name:     "cursor rate limit",
+			text:     "rate limit hit, please wait",
+			patterns: cursorRateLimitPatterns,
+			want:     true,
+		},
+		{
+			name:     "cursor working",
+			text:     "analyzing your code for issues",
+			patterns: cursorWorkingPatterns,
+			want:     true,
+		},
+		{
+			name:     "windsurf rate limit",
+			text:     "too many requests, slow down",
+			patterns: windsurfRateLimitPatterns,
+			want:     true,
+		},
+		{
+			name:     "windsurf working",
+			text:     "searching for references in project",
+			patterns: windsurfWorkingPatterns,
+			want:     true,
+		},
+		{
+			name:     "aider rate limit",
+			text:     "quota exceeded for today",
+			patterns: aiderRateLimitPatterns,
+			want:     true,
+		},
+		{
+			name:     "aider working - applied edit",
+			text:     "applied edit to main.py",
+			patterns: aiderWorkingPatterns,
+			want:     true,
+		},
+		{
+			name:     "aider working - repo-map",
+			text:     "updating repo-map for context",
+			patterns: aiderWorkingPatterns,
+			want:     true,
+		},
+		{
+			name:     "cursor error",
+			text:     "error: connection lost",
+			patterns: cursorErrorPatterns,
+			want:     true,
+		},
+		{
+			name:     "windsurf error",
+			text:     "failed: invalid configuration",
+			patterns: windsurfErrorPatterns,
+			want:     true,
+		},
+		{
+			name:     "aider error",
+			text:     "exception: file not found",
+			patterns: aiderErrorPatterns,
+			want:     true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -95,6 +155,24 @@ func TestMatchAnyRegex(t *testing.T) {
 			text:     "Processing your request...",
 			patterns: ccIdlePatterns,
 			want:     false,
+		},
+		{
+			name:     "cursor prompt",
+			text:     "cursor> ",
+			patterns: cursorIdlePatterns,
+			want:     true,
+		},
+		{
+			name:     "windsurf prompt",
+			text:     "windsurf> ",
+			patterns: windsurfIdlePatterns,
+			want:     true,
+		},
+		{
+			name:     "aider prompt",
+			text:     "aider> ",
+			patterns: aiderIdlePatterns,
+			want:     true,
 		},
 	}
 
@@ -320,6 +398,8 @@ func TestStripANSICodes(t *testing.T) {
 }
 
 func TestHeaderPatterns(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		text    string
@@ -362,10 +442,47 @@ func TestHeaderPatterns(t *testing.T) {
 			pattern: gmiHeaderPattern,
 			want:    true,
 		},
+		{
+			name:    "cursor header",
+			text:    "Cursor AI ready",
+			pattern: cursorHeaderPattern,
+			want:    true,
+		},
+		{
+			name:    "cursor plain",
+			text:    "cursor session started",
+			pattern: cursorHeaderPattern,
+			want:    true,
+		},
+		{
+			name:    "windsurf header",
+			text:    "Windsurf IDE connected",
+			pattern: windsurfHeaderPattern,
+			want:    true,
+		},
+		{
+			name:    "windsurf plain",
+			text:    "windsurf is ready",
+			pattern: windsurfHeaderPattern,
+			want:    true,
+		},
+		{
+			name:    "aider header",
+			text:    "aider chat session",
+			pattern: aiderHeaderPattern,
+			want:    true,
+		},
+		{
+			name:    "aider plain",
+			text:    "Aider started",
+			pattern: aiderHeaderPattern,
+			want:    true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := tt.pattern.MatchString(tt.text); got != tt.want {
 				t.Errorf("HeaderPattern.MatchString(%q) = %v, want %v", tt.text, got, tt.want)
 			}
@@ -397,6 +514,27 @@ func TestGetPatternSet(t *testing.T) {
 		},
 		{
 			agentType:         AgentTypeGemini,
+			hasRateLimitPats:  true,
+			hasWorkingPats:    true,
+			hasIdlePats:       true,
+			hasContextPattern: false,
+		},
+		{
+			agentType:         AgentTypeCursor,
+			hasRateLimitPats:  true,
+			hasWorkingPats:    true,
+			hasIdlePats:       true,
+			hasContextPattern: false,
+		},
+		{
+			agentType:         AgentTypeWindsurf,
+			hasRateLimitPats:  true,
+			hasWorkingPats:    true,
+			hasIdlePats:       true,
+			hasContextPattern: false,
+		},
+		{
+			agentType:         AgentTypeAider,
 			hasRateLimitPats:  true,
 			hasWorkingPats:    true,
 			hasIdlePats:       true,
@@ -489,6 +627,9 @@ func TestAllPatternsCompile(t *testing.T) {
 		ccHeaderPattern,
 		codHeaderPattern,
 		gmiHeaderPattern,
+		cursorHeaderPattern,
+		windsurfHeaderPattern,
+		aiderHeaderPattern,
 		ansiPattern,
 	}
 
@@ -503,6 +644,9 @@ func TestAllPatternsCompile(t *testing.T) {
 		ccIdlePatterns,
 		codIdlePatterns,
 		gmiIdlePatterns,
+		cursorIdlePatterns,
+		windsurfIdlePatterns,
+		aiderIdlePatterns,
 	}
 
 	for i, ps := range patternSlices {

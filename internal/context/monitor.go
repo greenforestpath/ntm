@@ -169,33 +169,20 @@ func (e *RobotModeEstimator) Estimate(state *ContextState) (*ContextEstimate, er
 // ParseRobotModeContext attempts to parse context info from robot mode JSON output.
 // Returns nil if context info is not present in the output.
 func ParseRobotModeContext(output string) *ContextEstimate {
-	// The output might contain mixed text, so we scan for lines that look like our JSON
 	var data map[string]interface{}
-	found := false
 
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if (strings.Contains(line, `"context_used"`) || strings.Contains(line, `"tokens_used"`)) &&
-			strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}") {
-			if err := json.Unmarshal([]byte(line), &data); err == nil {
-				found = true
-				break
-			}
-		}
-	}
+	// Attempt to extract JSON object from the output string
+	// Find the first '{' and the last '}' to handle mixed text/markdown
+	firstBrace := strings.Index(output, "{")
+	lastBrace := strings.LastIndex(output, "}")
 
-	if !found {
-		// Fallback: try unmarshalling the whole blob in case it's multiline JSON without noise
-		// Only attempt if it looks like a JSON object
-		trimmed := strings.TrimSpace(output)
-		if strings.HasPrefix(trimmed, "{") {
-			if err := json.Unmarshal([]byte(trimmed), &data); err != nil {
-				return nil
-			}
-		} else {
+	if firstBrace != -1 && lastBrace != -1 && lastBrace > firstBrace {
+		jsonStr := output[firstBrace : lastBrace+1]
+		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 			return nil
 		}
+	} else {
+		return nil
 	}
 
 	contextUsed, hasUsed := data["context_used"].(float64)

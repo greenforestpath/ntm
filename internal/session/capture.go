@@ -6,11 +6,39 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // Capture captures the current state of a tmux session.
-func Capture(sessionName string) (*SessionState, error) {
+func Capture(sessionName string) (state *SessionState, err error) {
+	correlationID := audit.NewCorrelationID()
+	auditStart := time.Now()
+	_ = audit.LogEvent(sessionName, audit.EventTypeCommand, audit.ActorSystem, "session.capture", map[string]interface{}{
+		"phase":          "start",
+		"session":        sessionName,
+		"correlation_id": correlationID,
+	}, nil)
+	defer func() {
+		payload := map[string]interface{}{
+			"phase":          "finish",
+			"session":        sessionName,
+			"success":        err == nil,
+			"duration_ms":    time.Since(auditStart).Milliseconds(),
+			"correlation_id": correlationID,
+		}
+		if state != nil {
+			payload["panes"] = len(state.Panes)
+			payload["agents"] = state.Agents.Total()
+			payload["layout"] = state.Layout
+			payload["work_dir"] = state.WorkDir
+		}
+		if err != nil {
+			payload["error"] = err.Error()
+		}
+		_ = audit.LogEvent(sessionName, audit.EventTypeCommand, audit.ActorSystem, "session.capture", payload, nil)
+	}()
+
 	session, err := tmux.GetSession(sessionName)
 	if err != nil {
 		return nil, err
@@ -54,7 +82,7 @@ func Capture(sessionName string) (*SessionState, error) {
 		}
 	}
 
-	state := &SessionState{
+	state = &SessionState{
 		Name:      sessionName,
 		SavedAt:   time.Now().UTC(),
 		WorkDir:   cwd,
@@ -100,14 +128,15 @@ func mapPaneStates(panes []tmux.Pane) []PaneState {
 	states := make([]PaneState, len(panes))
 	for i, p := range panes {
 		states[i] = PaneState{
-			Title:     p.Title,
-			Index:     p.Index,
-			AgentType: string(p.Type),
-			Model:     p.Variant,
-			Active:    p.Active,
-			Width:     p.Width,
-			Height:    p.Height,
-			PaneID:    p.ID,
+			Title:       p.Title,
+			Index:       p.Index,
+			WindowIndex: p.WindowIndex,
+			AgentType:   string(p.Type),
+			Model:       p.Variant,
+			Active:      p.Active,
+			Width:       p.Width,
+			Height:      p.Height,
+			PaneID:      p.ID,
 		}
 	}
 	return states

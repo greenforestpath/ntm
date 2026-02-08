@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -444,4 +445,98 @@ func (m *mockAlertChannel) Send(ctx context.Context, alert *Alert) error {
 		return m.sendFunc(ctx, alert)
 	}
 	return nil
+}
+
+// =============================================================================
+// Pure Function Tests
+// =============================================================================
+
+func TestEscapeAppleScript(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty string", "", ""},
+		{"simple text", "hello", "hello"},
+		{"with backslash", `hello\world`, `hello\\world`},
+		{"with double quote", `say "hello"`, `say \"hello\"`},
+		{"with newline", "line1\nline2", `line1\nline2`},
+		{"mixed escapes", "say \"hi\"\nfoo\\bar", `say \"hi\"\nfoo\\bar`},
+		{"unicode", "héllo wörld", "héllo wörld"},
+		{"only backslash", `\`, `\\`},
+		{"only quote", `"`, `\"`},
+		{"only newline", "\n", `\n`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := escapeAppleScript(tt.input)
+			if got != tt.want {
+				t.Errorf("escapeAppleScript(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetSuggestion(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		alertType AlertType
+		wantNonEmpty bool
+	}{
+		{AlertUnhealthy, true},
+		{AlertDegraded, true},
+		{AlertRateLimited, true},
+		{AlertRestart, true},
+		{AlertRestartFailed, true},
+		{AlertMaxRestarts, true},
+		{AlertRecovered, true},
+		{AlertType("unknown"), false},
+		{AlertType(""), false},
+	}
+
+	for _, tt := range tests {
+		name := string(tt.alertType)
+		if name == "" {
+			name = "empty_alert_type"
+		}
+		t.Run(name, func(t *testing.T) {
+			got := getSuggestion(tt.alertType)
+			if tt.wantNonEmpty && got == "" {
+				t.Errorf("getSuggestion(%q) returned empty string, expected non-empty", tt.alertType)
+			}
+			if !tt.wantNonEmpty && got != "" {
+				t.Errorf("getSuggestion(%q) = %q, expected empty string", tt.alertType, got)
+			}
+		})
+	}
+}
+
+func TestGetSuggestionContent(t *testing.T) {
+	t.Parallel()
+	// Verify specific suggestions contain expected keywords
+	tests := []struct {
+		alertType    AlertType
+		wantContains string
+	}{
+		{AlertUnhealthy, "restart"},
+		{AlertDegraded, "slow"},
+		{AlertRateLimited, "rate"},
+		{AlertRestart, "restart"},
+		{AlertRestartFailed, "failed"},
+		{AlertMaxRestarts, "restarts"},
+		{AlertRecovered, "healthy"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.alertType), func(t *testing.T) {
+			got := getSuggestion(tt.alertType)
+			gotLower := strings.ToLower(got)
+			if !strings.Contains(gotLower, tt.wantContains) {
+				t.Errorf("getSuggestion(%q) = %q, expected to contain %q", tt.alertType, got, tt.wantContains)
+			}
+		})
+	}
 }

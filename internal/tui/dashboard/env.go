@@ -13,6 +13,27 @@ func applyDashboardEnvOverrides(m *Model) {
 		return
 	}
 
+	// NTM_REDUCE_MOTION: disable animations for reduced flicker (fixes #32)
+	// Aligns with styles.reducedMotionEnabled() - any truthy value enables reduce motion
+	if v := strings.TrimSpace(strings.ToLower(os.Getenv("NTM_REDUCE_MOTION"))); v != "" && v != "0" && v != "false" && v != "no" && v != "off" {
+		m.reduceMotion = true
+	}
+
+	// NTM_DASHBOARD_TICK_MS: base tick interval in milliseconds (default 100ms)
+	if ms, ok := envPositiveInt("NTM_DASHBOARD_TICK_MS"); ok {
+		m.baseTick = time.Duration(ms) * time.Millisecond
+	}
+
+	// NTM_IDLE_TICK_MS: tick interval when idle (default 500ms)
+	if ms, ok := envPositiveInt("NTM_IDLE_TICK_MS"); ok {
+		m.idleTick = time.Duration(ms) * time.Millisecond
+	}
+
+	// NTM_IDLE_TIMEOUT_SECS: seconds of inactivity before entering idle (default 5)
+	if secs, ok := envPositiveInt("NTM_IDLE_TIMEOUT_SECS"); ok {
+		m.idleTimeout = time.Duration(secs) * time.Second
+	}
+
 	if v := os.Getenv("NTM_DASHBOARD_REFRESH"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			m.refreshInterval = d
@@ -56,6 +77,11 @@ func applyDashboardEnvOverrides(m *Model) {
 	if ms, ok := envPositiveInt("NTM_DASH_SPAWN_REFRESH_MS"); ok {
 		m.spawnRefreshInterval = time.Duration(ms) * time.Millisecond
 	}
+
+	// NTM_DASH_BUDGET_DAILY_USD: enable budget display/alerts for the cost panel
+	if usd, ok := envNonNegativeFloat("NTM_DASH_BUDGET_DAILY_USD"); ok {
+		m.costDailyBudgetUSD = usd
+	}
 }
 
 func envPositiveInt(name string) (int, bool) {
@@ -79,6 +105,20 @@ func envNonNegativeInt(name string) (int, bool) {
 	}
 
 	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return 0, false
+	}
+
+	return parsed, true
+}
+
+func envNonNegativeFloat(name string) (float64, bool) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return 0, false
+	}
+
+	parsed, err := strconv.ParseFloat(value, 64)
 	if err != nil || parsed < 0 {
 		return 0, false
 	}

@@ -1,0 +1,575 @@
+package git
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// setupGitRepo creates a temporary git repo with an initial commit.
+func setupGitRepo(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+
+	cmds := [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test"},
+		{"git", "commit", "--allow-empty", "-m", "init"},
+	}
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("%v failed: %v\n%s", args, err, out)
+		}
+	}
+	return tmp
+}
+
+func TestIsGitRepository(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	if IsGitRepository(tmp) {
+		t.Fatal("expected temp dir to not be a git repo")
+	}
+
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tmp
+	if err := cmd.Run(); err != nil {
+		t.Skipf("git init failed, skipping test: %v", err)
+	}
+
+	if !IsGitRepository(tmp) {
+		t.Fatal("expected directory to be detected as git repo after init")
+	}
+}
+
+func TestWorktreeManager_worktreeExists(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	wm := &WorktreeManager{baseRepo: tmp}
+
+	worktreePath := filepath.Join(tmp, ".git", "worktrees", "agent-cc-123")
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatalf("mkdir worktree path: %v", err)
+	}
+
+	exists, err := wm.worktreeExists("agent-cc-123")
+	if err != nil {
+		t.Fatalf("worktreeExists error: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected worktree to exist")
+	}
+
+	exists, err = wm.worktreeExists("missing")
+	if err != nil {
+		t.Fatalf("worktreeExists error: %v", err)
+	}
+	if exists {
+		t.Fatal("expected missing worktree to return false")
+	}
+}
+
+func TestWorktreeManager_parseWorktreeList(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	agentPath := filepath.Join(tmp, "agent-cc-123")
+	if err := os.MkdirAll(agentPath, 0o755); err != nil {
+		t.Fatalf("mkdir agent path: %v", err)
+	}
+	otherPath := filepath.Join(tmp, "normal")
+	if err := os.MkdirAll(otherPath, 0o755); err != nil {
+		t.Fatalf("mkdir other path: %v", err)
+	}
+
+	modTime := time.Unix(1700000000, 0)
+	if err := os.Chtimes(agentPath, modTime, modTime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	output := fmt.Sprintf(
+		"worktree %s\nHEAD abcdef\nbranch refs/heads/agent/cc/abc123\n\nworktree %s\nHEAD 111111\nbranch refs/heads/main\n",
+		agentPath,
+		otherPath,
+	)
+
+	wm := &WorktreeManager{}
+	worktrees, err := wm.parseWorktreeList(output)
+	if err != nil {
+		t.Fatalf("parseWorktreeList error: %v", err)
+	}
+
+	if len(worktrees) != 1 {
+		t.Fatalf("expected 1 agent worktree, got %d", len(worktrees))
+	}
+
+	wt := worktrees[0]
+	if wt.Path != agentPath {
+		t.Errorf("Path = %q, want %q", wt.Path, agentPath)
+	}
+	if wt.Branch != "agent/cc/abc123" {
+		t.Errorf("Branch = %q, want %q", wt.Branch, "agent/cc/abc123")
+	}
+	if wt.Commit != "abcdef" {
+		t.Errorf("Commit = %q, want %q", wt.Commit, "abcdef")
+	}
+	if wt.Agent != "cc" {
+		t.Errorf("Agent = %q, want %q", wt.Agent, "cc")
+	}
+	if diff := wt.LastUsed.Sub(modTime); diff > time.Second || diff < -time.Second {
+		t.Errorf("LastUsed = %v, want ~%v (diff %v)", wt.LastUsed, modTime, diff)
+	}
+}
+
+func TestNewWorktreeManager(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid git repo", func(t *testing.T) {
+		t.Parallel()
+		tmp := setupGitRepo(t)
+
+		wm, err := NewWorktreeManager(tmp)
+		if err != nil {
+			t.Fatalf("NewWorktreeManager: %v", err)
+		}
+		if wm.projectDir != tmp {
+			t.Errorf("projectDir = %q, want %q", wm.projectDir, tmp)
+		}
+		if wm.baseRepo != tmp {
+			t.Errorf("baseRepo = %q, want %q", wm.baseRepo, tmp)
+		}
+	})
+
+	t.Run("non-git directory", func(t *testing.T) {
+		t.Parallel()
+		tmp := t.TempDir()
+
+		_, err := NewWorktreeManager(tmp)
+		if err == nil {
+			t.Fatal("expected error for non-git directory")
+		}
+		if !strings.Contains(err.Error(), "not a git repository") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestWorktreeManager_parseWorktreeList_EmptyInput(t *testing.T) {
+	t.Parallel()
+
+	wm := &WorktreeManager{}
+
+	worktrees, err := wm.parseWorktreeList("")
+	if err != nil {
+		t.Fatalf("parseWorktreeList: %v", err)
+	}
+	if len(worktrees) != 0 {
+		t.Errorf("expected 0 worktrees for empty input, got %d", len(worktrees))
+	}
+}
+
+func TestWorktreeManager_parseWorktreeList_WhitespaceOnly(t *testing.T) {
+	t.Parallel()
+
+	wm := &WorktreeManager{}
+
+	worktrees, err := wm.parseWorktreeList("   \n\n  \n  ")
+	if err != nil {
+		t.Fatalf("parseWorktreeList: %v", err)
+	}
+	if len(worktrees) != 0 {
+		t.Errorf("expected 0 worktrees for whitespace input, got %d", len(worktrees))
+	}
+}
+
+func TestWorktreeManager_parseWorktreeList_NoAgentWorktrees(t *testing.T) {
+	t.Parallel()
+
+	wm := &WorktreeManager{}
+	output := "worktree /tmp/myproject\nHEAD abc123\nbranch refs/heads/main\n\nworktree /tmp/feature\nHEAD def456\nbranch refs/heads/feature\n"
+
+	worktrees, err := wm.parseWorktreeList(output)
+	if err != nil {
+		t.Fatalf("parseWorktreeList: %v", err)
+	}
+	if len(worktrees) != 0 {
+		t.Errorf("expected 0 agent worktrees, got %d", len(worktrees))
+	}
+}
+
+func TestWorktreeManager_parseWorktreeList_MultipleAgents(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	path1 := filepath.Join(tmp, "agent-cc-sess1")
+	path2 := filepath.Join(tmp, "agent-cod-sess2")
+	path3 := filepath.Join(tmp, "agent-gmi-sess3")
+	for _, p := range []string{path1, path2, path3} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+
+	output := fmt.Sprintf(
+		"worktree %s\nHEAD aaa111\nbranch refs/heads/agent/cc/sess1\n\n"+
+			"worktree %s\nHEAD bbb222\nbranch refs/heads/agent/cod/sess2\n\n"+
+			"worktree %s\nHEAD ccc333\nbranch refs/heads/agent/gmi/sess3\n",
+		path1, path2, path3,
+	)
+
+	wm := &WorktreeManager{}
+	worktrees, err := wm.parseWorktreeList(output)
+	if err != nil {
+		t.Fatalf("parseWorktreeList: %v", err)
+	}
+	if len(worktrees) != 3 {
+		t.Fatalf("expected 3 worktrees, got %d", len(worktrees))
+	}
+
+	agents := map[string]bool{}
+	for _, wt := range worktrees {
+		agents[wt.Agent] = true
+	}
+	for _, expected := range []string{"cc", "cod", "gmi"} {
+		if !agents[expected] {
+			t.Errorf("expected agent %q in results", expected)
+		}
+	}
+}
+
+func TestWorktreeManager_parseWorktreeList_DetachedHead(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	agentPath := filepath.Join(tmp, "agent-cc-detached")
+	if err := os.MkdirAll(agentPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Detached HEAD has no branch line, instead "HEAD abc123" followed by "detached"
+	output := fmt.Sprintf("worktree %s\nHEAD abc123\ndetached\n", agentPath)
+
+	wm := &WorktreeManager{}
+	worktrees, err := wm.parseWorktreeList(output)
+	if err != nil {
+		t.Fatalf("parseWorktreeList: %v", err)
+	}
+	if len(worktrees) != 1 {
+		t.Fatalf("expected 1 worktree, got %d", len(worktrees))
+	}
+	if worktrees[0].Branch != "" {
+		t.Errorf("expected empty branch for detached HEAD, got %q", worktrees[0].Branch)
+	}
+}
+
+func TestWorktreeManager_parseWorktreeList_AgentNameExtraction(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		basename  string
+		wantAgent string
+	}{
+		{"simple", "agent-cc-12345678", "cc"},
+		{"codex", "agent-cod-abcdefgh", "cod"},
+		{"gemini", "agent-gmi-sessid12", "gmi"},
+		{"no dash after agent", "agent-onlyone", "onlyone"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tmp := t.TempDir()
+			agentPath := filepath.Join(tmp, tt.basename)
+			if err := os.MkdirAll(agentPath, 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+
+			output := fmt.Sprintf("worktree %s\nHEAD abc123\nbranch refs/heads/agent/x/y\n", agentPath)
+
+			wm := &WorktreeManager{}
+			worktrees, err := wm.parseWorktreeList(output)
+			if err != nil {
+				t.Fatalf("parseWorktreeList: %v", err)
+			}
+			if len(worktrees) != 1 {
+				t.Fatalf("expected 1 worktree, got %d", len(worktrees))
+			}
+			if worktrees[0].Agent != tt.wantAgent {
+				t.Errorf("Agent = %q, want %q", worktrees[0].Agent, tt.wantAgent)
+			}
+		})
+	}
+}
+
+func TestWorktreeManager_parseWorktreeList_NonExistentPath(t *testing.T) {
+	t.Parallel()
+
+	// Path that contains "agent-" but doesn't exist on disk
+	output := "worktree /nonexistent/agent-cc-test1234\nHEAD abc123\nbranch refs/heads/agent/cc/test1234\n"
+
+	wm := &WorktreeManager{}
+	worktrees, err := wm.parseWorktreeList(output)
+	if err != nil {
+		t.Fatalf("parseWorktreeList: %v", err)
+	}
+	// Should still parse the worktree (os.Stat failure means LastUsed defaults to now)
+	if len(worktrees) != 1 {
+		t.Fatalf("expected 1 worktree, got %d", len(worktrees))
+	}
+	// LastUsed should be approximately now since stat failed
+	if time.Since(worktrees[0].LastUsed) > 5*time.Second {
+		t.Errorf("LastUsed should be ~now for non-existent path, got %v", worktrees[0].LastUsed)
+	}
+}
+
+// Integration tests using real git repos
+
+func TestWorktreeManager_ProvisionAndList(t *testing.T) {
+	t.Parallel()
+
+	tmp := setupGitRepo(t)
+
+	wm, err := NewWorktreeManager(tmp)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Provision a worktree
+	info, err := wm.ProvisionWorktree(ctx, "cc", "session1234")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree: %v", err)
+	}
+
+	if info.Agent != "cc" {
+		t.Errorf("Agent = %q, want %q", info.Agent, "cc")
+	}
+	if !strings.HasPrefix(info.Branch, "agent/cc/") {
+		t.Errorf("Branch = %q, want prefix %q", info.Branch, "agent/cc/")
+	}
+	if info.Commit == "" {
+		t.Error("expected non-empty commit hash")
+	}
+	if info.Path == "" {
+		t.Error("expected non-empty path")
+	}
+
+	// Verify the path was actually created
+	if _, err := os.Stat(info.Path); err != nil {
+		t.Errorf("worktree path does not exist: %v", err)
+	}
+
+	// List worktrees
+	worktrees, err := wm.ListWorktrees(ctx)
+	if err != nil {
+		t.Fatalf("ListWorktrees: %v", err)
+	}
+	if len(worktrees) != 1 {
+		t.Fatalf("expected 1 worktree, got %d", len(worktrees))
+	}
+	if worktrees[0].Agent != "cc" {
+		t.Errorf("listed Agent = %q, want %q", worktrees[0].Agent, "cc")
+	}
+}
+
+func TestWorktreeManager_ProvisionExisting(t *testing.T) {
+	t.Parallel()
+
+	tmp := setupGitRepo(t)
+
+	wm, err := NewWorktreeManager(tmp)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// First provision
+	info1, err := wm.ProvisionWorktree(ctx, "cc", "session1234")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree: %v", err)
+	}
+
+	// Second provision for same agent/session should return existing
+	info2, err := wm.ProvisionWorktree(ctx, "cc", "session1234")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree (existing): %v", err)
+	}
+
+	if info1.Branch != info2.Branch {
+		t.Errorf("expected same branch, got %q vs %q", info1.Branch, info2.Branch)
+	}
+}
+
+func TestWorktreeManager_RemoveWorktree(t *testing.T) {
+	t.Parallel()
+
+	tmp := setupGitRepo(t)
+
+	wm, err := NewWorktreeManager(tmp)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Provision
+	info, err := wm.ProvisionWorktree(ctx, "cc", "session1234")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree: %v", err)
+	}
+
+	// Verify exists
+	if _, err := os.Stat(info.Path); err != nil {
+		t.Fatalf("worktree path should exist: %v", err)
+	}
+
+	// Remove
+	if err := wm.RemoveWorktree(ctx, "cc", "session1234"); err != nil {
+		t.Fatalf("RemoveWorktree: %v", err)
+	}
+
+	// Verify no agent worktrees remain
+	worktrees, err := wm.ListWorktrees(ctx)
+	if err != nil {
+		t.Fatalf("ListWorktrees: %v", err)
+	}
+	if len(worktrees) != 0 {
+		t.Errorf("expected 0 worktrees after remove, got %d", len(worktrees))
+	}
+}
+
+func TestWorktreeManager_RemoveWorktree_NonExistent(t *testing.T) {
+	t.Parallel()
+
+	tmp := setupGitRepo(t)
+
+	wm, err := NewWorktreeManager(tmp)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	// Removing a non-existent worktree should not error
+	err = wm.RemoveWorktree(context.Background(), "cc", "nonexist1234")
+	if err != nil {
+		t.Fatalf("RemoveWorktree (non-existent) should not error: %v", err)
+	}
+}
+
+func TestWorktreeManager_MultipleProvisions(t *testing.T) {
+	t.Parallel()
+
+	tmp := setupGitRepo(t)
+
+	wm, err := NewWorktreeManager(tmp)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Provision multiple worktrees
+	_, err = wm.ProvisionWorktree(ctx, "cc", "session1234")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree cc: %v", err)
+	}
+	_, err = wm.ProvisionWorktree(ctx, "cod", "session1234")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree cod: %v", err)
+	}
+
+	// List should return both
+	worktrees, err := wm.ListWorktrees(ctx)
+	if err != nil {
+		t.Fatalf("ListWorktrees: %v", err)
+	}
+	if len(worktrees) != 2 {
+		t.Fatalf("expected 2 worktrees, got %d", len(worktrees))
+	}
+
+	agents := map[string]bool{}
+	for _, wt := range worktrees {
+		agents[wt.Agent] = true
+	}
+	if !agents["cc"] || !agents["cod"] {
+		t.Errorf("expected agents cc and cod, got %v", agents)
+	}
+}
+
+func TestWorktreeManager_CleanupStaleWorktrees(t *testing.T) {
+	t.Parallel()
+
+	tmp := setupGitRepo(t)
+
+	wm, err := NewWorktreeManager(tmp)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Provision a worktree
+	_, err = wm.ProvisionWorktree(ctx, "cc", "session1234")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree: %v", err)
+	}
+
+	// Cleanup with 0 duration should remove it (everything is stale)
+	if err := wm.CleanupStaleWorktrees(ctx, 0); err != nil {
+		t.Fatalf("CleanupStaleWorktrees: %v", err)
+	}
+
+	// Verify cleaned up
+	worktrees, err := wm.ListWorktrees(ctx)
+	if err != nil {
+		t.Fatalf("ListWorktrees: %v", err)
+	}
+	if len(worktrees) != 0 {
+		t.Errorf("expected 0 worktrees after cleanup, got %d", len(worktrees))
+	}
+}
+
+func TestWorktreeManager_CleanupStaleWorktrees_RecentKept(t *testing.T) {
+	t.Parallel()
+
+	tmp := setupGitRepo(t)
+
+	wm, err := NewWorktreeManager(tmp)
+	if err != nil {
+		t.Fatalf("NewWorktreeManager: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Provision a worktree
+	_, err = wm.ProvisionWorktree(ctx, "cc", "session1234")
+	if err != nil {
+		t.Fatalf("ProvisionWorktree: %v", err)
+	}
+
+	// Cleanup with long maxAge should keep recent worktrees
+	if err := wm.CleanupStaleWorktrees(ctx, 24*time.Hour); err != nil {
+		t.Fatalf("CleanupStaleWorktrees: %v", err)
+	}
+
+	worktrees, err := wm.ListWorktrees(ctx)
+	if err != nil {
+		t.Fatalf("ListWorktrees: %v", err)
+	}
+	if len(worktrees) != 1 {
+		t.Errorf("expected 1 worktree (recent, kept), got %d", len(worktrees))
+	}
+}

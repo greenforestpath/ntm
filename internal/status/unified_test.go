@@ -817,12 +817,20 @@ func TestDetermineState(t *testing.T) {
 		wantError    ErrorType
 	}{
 		{
-			name:         "error detected takes priority",
+			name:         "error detected when no prompt and recent activity",
 			output:       "Error: rate limit exceeded",
 			agentType:    "cc",
 			lastActivity: time.Now(),
 			wantState:    StateError,
 			wantError:    ErrorRateLimit,
+		},
+		{
+			name:         "idle prompt takes priority over historical errors when velocity low",
+			output:       "Earlier: Error: failed to find file\nTask recovered\nclaude>",
+			agentType:    "cc",
+			lastActivity: time.Now().Add(-10 * time.Second),
+			wantState:    StateIdle,
+			wantError:    ErrorNone,
 		},
 		{
 			name:         "idle at claude prompt",

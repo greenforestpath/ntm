@@ -45,6 +45,13 @@ internal/cli/outputs/
 # Temporary/backup files
 *.bak
 *.incomplete
+*.jsonl.lock
+
+# Go build temp directories
+.tmp-go/
+
+# Coverage reports
+cli_coverage.txt
 
 # Screenshots
 Snipping_*.png
@@ -57,3 +64,6 @@ rustc-ice-*.txt
 *.snap.new
 sweep_*.png
 test_screenshot.png
+
+# E2E runtime lockfiles
+e2e/*.lock

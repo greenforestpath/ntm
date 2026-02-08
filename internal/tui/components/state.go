@@ -142,6 +142,58 @@ func RenderEmptyState(opts EmptyStateOptions) string {
 	return content
 }
 
+// ErrorStateOptions configures enhanced error state rendering.
+type ErrorStateOptions struct {
+	Title       string // Primary error message (required)
+	Description string // Detail text (optional)
+	Width       int    // Available width
+}
+
+// RenderErrorState renders a styled multi-line error state.
+func RenderErrorState(opts ErrorStateOptions) string {
+	t := theme.Current()
+	ic := icons.Current()
+
+	icon := strings.TrimSpace(ic.Warning)
+	if icon == "" {
+		icon = "!"
+	}
+
+	iconStyle := lipgloss.NewStyle().Foreground(t.Red)
+	titleStyle := lipgloss.NewStyle().Foreground(t.Red).Bold(true)
+	descStyle := lipgloss.NewStyle().Foreground(t.Overlay).Italic(true)
+
+	var lines []string
+
+	lines = append(lines, iconStyle.Render(icon))
+
+	title := opts.Title
+	if title == "" {
+		title = "Something went wrong"
+	}
+	lines = append(lines, titleStyle.Render(title))
+
+	if opts.Description != "" {
+		lines = append(lines, "")
+		desc := opts.Description
+		if opts.Width > 0 && lipgloss.Width(desc) > opts.Width-4 {
+			desc = layout.TruncateWidthDefault(desc, opts.Width-4)
+		}
+		lines = append(lines, descStyle.Render(desc))
+	}
+
+	content := strings.Join(lines, "\n")
+
+	if opts.Width > 0 {
+		return lipgloss.NewStyle().
+			Width(opts.Width).
+			Align(lipgloss.Center).
+			Render(content)
+	}
+
+	return content
+}
+
 type StateOptions struct {
 	Kind        StateKind
 	Icon        string

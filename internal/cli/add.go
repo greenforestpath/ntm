@@ -2,7 +2,10 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"flag"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -21,6 +24,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/plugins"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
+	"github.com/Dicklesworthstone/ntm/internal/webhook"
 )
 
 // AddOptions configures agent addition
@@ -176,6 +180,15 @@ func runAdd(opts AddOptions) error {
 		return outputError(err)
 	}
 
+	if !IsJSONOutput() {
+		res, err := ResolveSession(session, nil)
+		if err != nil {
+			return outputError(err)
+		}
+		session = res.Session
+		opts.Session = session
+	}
+
 	if !tmux.SessionExists(session) {
 		return outputError(fmt.Errorf("session '%s' does not exist (use 'ntm spawn' to create)", session))
 	}
@@ -185,6 +198,18 @@ func runAdd(opts AddOptions) error {
 	}
 
 	dir := cfg.GetProjectDir(session)
+
+	// Enable project webhooks (if configured) so add lifecycle events can fan out.
+	// Best-effort: failures should not block add.
+	if cfg != nil {
+		redactCfg := cfg.Redaction.ToRedactionLibConfig()
+		bridge, err := webhook.StartBridgeFromProjectConfig(dir, session, events.DefaultBus, &redactCfg)
+		if err != nil {
+			slog.Default().Debug("webhook bridge init failed", "session", session, "error", err)
+		} else if bridge != nil {
+			defer bridge.Close()
+		}
+	}
 
 	// Initialize hook executor
 	hookExec, err := hooks.NewExecutorFromConfig()
@@ -311,12 +336,27 @@ func runAdd(opts AddOptions) error {
 		}
 	}
 
+	// Get pane initialization delay from config (same as spawn command)
+	paneInitDelay := time.Duration(cfg.Tmux.PaneInitDelayMs) * time.Millisecond
+	if flag.Lookup("test.v") != nil {
+		// Under `go test`, avoid the full init delay but keep a small floor
+		const testPaneInitDelay = 50 * time.Millisecond
+		if paneInitDelay > testPaneInitDelay {
+			paneInitDelay = testPaneInitDelay
+		}
+	}
+
 	for _, agent := range flatAgents {
 		agentTypeStr := string(agent.Type)
 
 		paneID, err := tmux.SplitWindow(session, dir)
 		if err != nil {
 			return outputError(fmt.Errorf("creating pane: %w", err))
+		}
+
+		// Wait for pane to initialize before sending commands (fixes #37)
+		if paneInitDelay > 0 {
+			time.Sleep(paneInitDelay)
 		}
 
 		// Increment index for this type
@@ -360,29 +400,63 @@ func runAdd(opts AddOptions) error {
 			}
 		}
 
-		// Configure DCG hooks for Claude agents when DCG integration is enabled
-		if agent.Type == AgentTypeClaude && cfg.Integrations.DCG.Enabled {
-			if dcg.ShouldConfigureHooks(cfg.Integrations.DCG.Enabled, cfg.Integrations.DCG.BinaryPath) {
+		// Configure Claude hooks for DCG and RCH integrations
+		if agent.Type == AgentTypeClaude {
+			var preToolHooks []dcg.HookEntry
+			var hookSources []string
+
+			if cfg.Integrations.DCG.Enabled && dcg.ShouldConfigureHooks(cfg.Integrations.DCG.Enabled, cfg.Integrations.DCG.BinaryPath) {
+				customWhitelist := cfg.Integrations.DCG.CustomWhitelist
+				if cfg.Integrations.RCH.Enabled && cfg.Integrations.RCH.DCGWhitelist {
+					customWhitelist = dcg.AppendRCHWhitelist(customWhitelist)
+				}
 				dcgOpts := dcg.DCGHookOptions{
 					BinaryPath:      cfg.Integrations.DCG.BinaryPath,
 					AuditLog:        cfg.Integrations.DCG.AuditLog,
 					Timeout:         5000, // 5 second timeout for hook
 					CustomBlocklist: cfg.Integrations.DCG.CustomBlocklist,
-					CustomWhitelist: cfg.Integrations.DCG.CustomWhitelist,
+					CustomWhitelist: customWhitelist,
 				}
-				dcgEnvVars, err := dcg.HookEnvVars(dcgOpts)
+				dcgConfig, err := dcg.GenerateHookConfig(dcgOpts)
+				if err == nil {
+					preToolHooks = append(preToolHooks, dcgConfig.Hooks.PreToolUse...)
+					hookSources = append(hookSources, "dcg")
+				} else if !IsJSONOutput() {
+					output.PrintWarningf("Failed to configure DCG hooks for agent %d: %v", num, err)
+				}
+			}
+
+			if dcg.ShouldConfigureRCHHooks(cfg.Integrations.RCH.Enabled, cfg.Integrations.RCH.InterceptPatterns) {
+				rchHook, err := dcg.GenerateRCHHookEntry(dcg.RCHHookOptions{
+					BinaryPath: cfg.Integrations.RCH.BinaryPath,
+					Patterns:   cfg.Integrations.RCH.InterceptPatterns,
+					Timeout:    5000,
+				})
+				if err == nil {
+					preToolHooks = append(preToolHooks, rchHook)
+					hookSources = append(hookSources, "rch")
+				} else if !IsJSONOutput() {
+					output.PrintWarningf("Failed to configure RCH hooks for agent %d: %v", num, err)
+				}
+			}
+
+			if len(preToolHooks) > 0 {
+				hookConfig := dcg.ClaudeHookConfig{
+					Hooks: dcg.HooksSection{
+						PreToolUse: preToolHooks,
+					},
+				}
+				hookJSON, err := json.Marshal(hookConfig)
 				if err == nil {
 					if envVars == nil {
 						envVars = make(map[string]string)
 					}
-					for k, v := range dcgEnvVars {
-						envVars[k] = v
-					}
+					envVars["CLAUDE_CODE_HOOKS"] = string(hookJSON)
 					if !IsJSONOutput() {
-						output.PrintInfof("DCG hooks configured for agent %d", num)
+						output.PrintInfof("Claude hooks configured for agent %d (%s)", num, strings.Join(hookSources, ", "))
 					}
 				} else if !IsJSONOutput() {
-					output.PrintWarningf("Failed to configure DCG hooks for agent %d: %v", num, err)
+					output.PrintWarningf("Failed to configure Claude hooks for agent %d: %v", num, err)
 				}
 			}
 		}
@@ -520,6 +594,21 @@ func runAdd(opts AddOptions) error {
 			Variant:   agent.Model,
 			PaneIndex: num,
 		})
+
+		events.DefaultEmitter().Emit(events.NewWebhookEvent(
+			events.WebhookAgentStarted,
+			session,
+			paneID,
+			agentTypeStr,
+			fmt.Sprintf("Agent started (%s)", agentTypeStr),
+			map[string]string{
+				"project_dir":    dir,
+				"pane_index":     fmt.Sprintf("%d", num),
+				"pane_title":     title,
+				"model":          agent.Model,
+				"resolved_model": resolvedModel,
+			},
+		))
 
 		// Track for JSON output
 		newPanes = append(newPanes, output.PaneResponse{

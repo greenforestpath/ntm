@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -268,7 +269,7 @@ func runMailInbox(cmd *cobra.Command, client mailInboxClient, session string, se
 					ID:          msg.ID,
 					Subject:     msg.Subject,
 					From:        msg.From,
-					CreatedTS:   msg.CreatedTS,
+					CreatedTS:   msg.CreatedTS.Time,
 					Importance:  msg.Importance,
 					AckRequired: msg.AckRequired,
 					Kind:        msg.Kind,
@@ -573,6 +574,59 @@ func runMailSendOverseer(cmd *cobra.Command, session string, to []string, subjec
 		subject = truncateSubject(body, 60)
 	}
 
+	redactCfg := redaction.DefaultConfig()
+	if cfg != nil {
+		redactCfg = cfg.Redaction.ToRedactionLibConfig()
+	}
+
+	redactedBody, bodySummary, err := applyOutputRedaction(body, redactCfg)
+	if err != nil {
+		return err
+	}
+	redactedSubject, subjectSummary, err := applyOutputRedaction(subject, redactCfg)
+	if err != nil {
+		return err
+	}
+
+	var redactionSummary *RedactionSummary
+	var warnings []string
+	if bodySummary != nil || subjectSummary != nil {
+		totalFindings := 0
+		totalCategories := map[string]int{}
+		action := ""
+		for _, s := range []*RedactionSummary{bodySummary, subjectSummary} {
+			if s == nil {
+				continue
+			}
+			totalFindings += s.Findings
+			for cat, count := range s.Categories {
+				totalCategories[cat] += count
+			}
+			if action == "" {
+				action = s.Action
+			}
+		}
+		redactionSummary = &RedactionSummary{
+			Mode:       string(redactCfg.Mode),
+			Findings:   totalFindings,
+			Categories: totalCategories,
+			Action:     action,
+		}
+
+		cats := formatRedactionCategoryCounts(totalCategories)
+		switch action {
+		case "warn":
+			msg := fmt.Sprintf("Warning: detected %d potential secret(s) (%s); message will be sent unmodified (mode=warn)", totalFindings, cats)
+			fmt.Fprintln(cmd.ErrOrStderr(), msg)
+			warnings = append(warnings, msg)
+		case "redact":
+			fmt.Fprintf(cmd.ErrOrStderr(), "Redacted %d potential secret(s) (%s)\n", totalFindings, cats)
+		}
+	}
+
+	subject = redactedSubject
+	body = redactedBody
+
 	// Derive project slug for the HTTP endpoint
 	projectSlug := agentmail.ProjectSlugFromPath(projectKey)
 	if project.Slug != "" {
@@ -599,14 +653,21 @@ func runMailSendOverseer(cmd *cobra.Command, session string, to []string, subjec
 		}
 	}
 	if jsonEnabled {
-		return encodeJSONResult(mailJSONWriter(cmd), map[string]interface{}{
+		payload := map[string]interface{}{
 			"success":    result.Success,
 			"recipients": result.Recipients,
 			"subject":    subject,
 			"message_id": result.MessageID,
 			"sent_at":    result.SentAt,
 			"overseer":   true,
-		})
+		}
+		if redactionSummary != nil {
+			payload["redaction"] = redactionSummary
+		}
+		if len(warnings) > 0 {
+			payload["warnings"] = warnings
+		}
+		return encodeJSONResult(mailJSONWriter(cmd), payload)
 	}
 
 	fmt.Printf("🚨 Human Overseer message sent to %d agent(s)\n", len(result.Recipients))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -459,27 +460,28 @@ func TestConflictDetector_FindReservationHolders(t *testing.T) {
 	cd := NewConflictDetector(nil)
 	now := time.Now()
 
+	ftNow := agentmail.FlexTime{Time: now}
 	reservations := []agentmail.FileReservation{
 		{
 			PathPattern: "internal/**",
 			AgentName:   "AgentA",
-			ExpiresTS:   now.Add(1 * time.Hour),
+			ExpiresTS:   agentmail.FlexTime{Time: now.Add(1 * time.Hour)},
 		},
 		{
 			PathPattern: "*.go",
 			AgentName:   "AgentB",
-			ExpiresTS:   now.Add(1 * time.Hour),
+			ExpiresTS:   agentmail.FlexTime{Time: now.Add(1 * time.Hour)},
 		},
 		{
 			PathPattern: "cmd/**",
 			AgentName:   "AgentC",
-			ExpiresTS:   now.Add(-1 * time.Hour), // expired
+			ExpiresTS:   agentmail.FlexTime{Time: now.Add(-1 * time.Hour)}, // expired
 		},
 		{
 			PathPattern: "docs/**",
 			AgentName:   "AgentD",
-			ExpiresTS:   now.Add(1 * time.Hour),
-			ReleasedTS:  &now, // released
+			ExpiresTS:   agentmail.FlexTime{Time: now.Add(1 * time.Hour)},
+			ReleasedTS:  &ftNow, // released
 		},
 	}
 
@@ -1148,4 +1150,317 @@ func TestOutputCapture_Stats(t *testing.T) {
 	if stats.TotalCaptures != 3 {
 		t.Errorf("TotalCaptures = %d, want 3", stats.TotalCaptures)
 	}
+}
+
+// =============================================================================
+// countErrors
+// =============================================================================
+
+func TestCountErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		lines []string
+		want  int
+	}{
+		{"empty", nil, 0},
+		{"no errors", []string{"ok", "success", "done"}, 0},
+		{"error:", []string{"error: something went wrong"}, 1},
+		{"Error!", []string{"Error! compilation failed"}, 1},
+		{"failed:", []string{"build failed: exit 1"}, 1},
+		{"fatal:", []string{"fatal: ref not found"}, 1},
+		{"panic:", []string{"panic: nil pointer"}, 1},
+		{"multiple", []string{
+			"starting build",
+			"error: syntax error",
+			"error: undefined var",
+			"panic: runtime error",
+		}, 3},
+		{"case insensitive", []string{"ERROR: caps", "Failed: mixed"}, 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := countErrors(tt.lines)
+			if got != tt.want {
+				t.Errorf("countErrors() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// extractKeyActions
+// =============================================================================
+
+func TestExtractKeyActions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
+		actions := extractKeyActions(nil, 5)
+		if len(actions) != 0 {
+			t.Errorf("expected empty, got %v", actions)
+		}
+	})
+
+	t.Run("summary prefix", func(t *testing.T) {
+		t.Parallel()
+		lines := []string{
+			"some output",
+			"Summary: Added authentication middleware",
+			"more output",
+		}
+		actions := extractKeyActions(lines, 5)
+		found := false
+		for _, a := range actions {
+			if strings.Contains(a, "Added authentication middleware") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected summary content, got %v", actions)
+		}
+	})
+
+	t.Run("action verbs", func(t *testing.T) {
+		t.Parallel()
+		lines := []string{
+			"Created new handler for /api/users",
+			"Fixed authentication bug in middleware",
+			"Modified the config parser",
+			"Implemented retry logic",
+		}
+		actions := extractKeyActions(lines, 10)
+		if len(actions) < 4 {
+			t.Errorf("expected at least 4 actions, got %d: %v", len(actions), actions)
+		}
+	})
+
+	t.Run("respects max", func(t *testing.T) {
+		t.Parallel()
+		lines := []string{
+			"Created file1",
+			"Created file2",
+			"Created file3",
+			"Created file4",
+			"Created file5",
+		}
+		actions := extractKeyActions(lines, 3)
+		if len(actions) > 3 {
+			t.Errorf("expected max 3 actions, got %d", len(actions))
+		}
+	})
+
+	t.Run("skips short lines", func(t *testing.T) {
+		t.Parallel()
+		lines := []string{
+			"ok",       // too short
+			"Created.", // too short
+			"Created a new file for handling authentication requests",
+		}
+		actions := extractKeyActions(lines, 5)
+		if len(actions) != 1 {
+			t.Errorf("expected 1 action (long one), got %d: %v", len(actions), actions)
+		}
+	})
+
+	t.Run("priority ordering", func(t *testing.T) {
+		t.Parallel()
+		// Priority 1 items should come before priority 2/3
+		lines := []string{
+			"Testing the new feature now",     // testing = priority 3
+			"Fixed critical security bug",     // fixed = priority 1
+			"Added helper function for utils", // added = priority 2
+		}
+		actions := extractKeyActions(lines, 3)
+		// Fixed should appear before Testing due to priority
+		fixedIdx, testingIdx := -1, -1
+		for i, a := range actions {
+			if strings.Contains(strings.ToLower(a), "fixed") {
+				fixedIdx = i
+			}
+			if strings.Contains(strings.ToLower(a), "testing") {
+				testingIdx = i
+			}
+		}
+		if fixedIdx >= 0 && testingIdx >= 0 && fixedIdx > testingIdx {
+			t.Errorf("fixed (priority 1) should come before testing (priority 3), got actions: %v", actions)
+		}
+	})
+}
+
+// =============================================================================
+// cleanActionLine
+// =============================================================================
+
+func TestCleanActionLine(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"simple text", "simple text"},
+		{"- bullet point", "bullet point"},
+		{"* asterisk point", "asterisk point"},
+		{"• unicode bullet", "unicode bullet"},
+		{"1. numbered item", "numbered item"},
+		{"[x] checkbox done", "checkbox done"},
+		{"[ ] checkbox empty", "checkbox empty"},
+		{"  leading spaces  ", "leading spaces"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
+			got := cleanActionLine(tt.input)
+			if got != tt.want {
+				t.Errorf("cleanActionLine(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCleanActionLine_Truncation(t *testing.T) {
+	t.Parallel()
+
+	longLine := strings.Repeat("a", 100)
+	result := cleanActionLine(longLine)
+	if len(result) > 83 { // 80 + "..."
+		t.Errorf("expected truncation, got len=%d", len(result))
+	}
+	if !strings.HasSuffix(result, "...") {
+		t.Errorf("expected ... suffix, got %q", result)
+	}
+}
+
+// =============================================================================
+// formatDuration (synthesis.go version)
+// =============================================================================
+
+func TestFormatDuration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{30 * time.Second, "30s"},
+		{59 * time.Second, "59s"},
+		{60 * time.Second, "1m"},
+		{90 * time.Second, "1m 30s"},
+		{5 * time.Minute, "5m"},
+		{65 * time.Minute, "1h 5m"},
+		{2 * time.Hour, "2h"},
+		{2*time.Hour + 30*time.Minute, "2h 30m"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			t.Parallel()
+			got := formatDuration(tt.d)
+			if got != tt.want {
+				t.Errorf("formatDuration(%v) = %q, want %q", tt.d, got, tt.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// FormatSessionSummaryText
+// =============================================================================
+
+func TestFormatSessionSummaryText(t *testing.T) {
+	t.Parallel()
+
+	t.Run("basic summary", func(t *testing.T) {
+		t.Parallel()
+		summary := &SessionSummary{
+			Session: "myproject",
+			TimeRange: SummaryTimeRange{
+				Duration: 30 * time.Minute,
+			},
+			Agents: []AgentOutputSummary{
+				{
+					PaneTitle:     "cc_1",
+					AgentType:     "claude",
+					ActiveTime:    15 * time.Minute,
+					OutputLines:   500,
+					FilesModified: []string{"main.go", "handler.go"},
+					KeyActions:    []string{"Added auth", "Fixed bug"},
+					Errors:        2,
+				},
+			},
+			TotalFiles:  2,
+			TotalOutput: 500,
+		}
+
+		text := FormatSessionSummaryText(summary)
+
+		checks := []string{
+			"Session: myproject",
+			"last 30m",
+			"Agent cc_1 (claude)",
+			"Active: 15m",
+			"Output: 500 lines",
+			"Files: main.go, handler.go",
+			"Key actions:",
+			"- Added auth",
+			"- Fixed bug",
+			"Errors: 2",
+			"Total: 2 files modified",
+		}
+		for _, want := range checks {
+			if !strings.Contains(text, want) {
+				t.Errorf("missing %q in:\n%s", want, text)
+			}
+		}
+	})
+
+	t.Run("with conflicts", func(t *testing.T) {
+		t.Parallel()
+		summary := &SessionSummary{
+			Session: "proj",
+			TimeRange: SummaryTimeRange{
+				Duration: 10 * time.Minute,
+			},
+			Conflicts: []FileConflict{
+				{Path: "config.go", Agents: []string{"cc_1", "cod_1"}},
+			},
+		}
+
+		text := FormatSessionSummaryText(summary)
+		if !strings.Contains(text, "⚠ 1 potential conflicts") {
+			t.Errorf("missing conflicts warning in: %s", text)
+		}
+		if !strings.Contains(text, "config.go (agents: cc_1, cod_1)") {
+			t.Errorf("missing conflict detail in: %s", text)
+		}
+	})
+
+	t.Run("no files or actions", func(t *testing.T) {
+		t.Parallel()
+		summary := &SessionSummary{
+			Session: "empty",
+			TimeRange: SummaryTimeRange{
+				Duration: 5 * time.Minute,
+			},
+			Agents: []AgentOutputSummary{
+				{PaneTitle: "cc_1", AgentType: "claude", OutputLines: 10},
+			},
+		}
+
+		text := FormatSessionSummaryText(summary)
+		// Should not contain "Files:" or "Key actions:" sections
+		if strings.Contains(text, "Files:") {
+			t.Errorf("should not have Files section when empty: %s", text)
+		}
+		if strings.Contains(text, "Key actions:") {
+			t.Errorf("should not have Key actions section when empty: %s", text)
+		}
+	})
 }

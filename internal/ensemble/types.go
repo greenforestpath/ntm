@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -579,6 +580,74 @@ type EnsemblePreset struct {
 	Source string `json:"source,omitempty" toml:"-" yaml:"source,omitempty"`
 }
 
+// EnsembleExportSchemaVersion is the current schema version for ensemble export files.
+const EnsembleExportSchemaVersion = 1
+
+// EnsembleExport represents a portable ensemble preset export.
+// It is serialized as TOML for cross-project sharing.
+type EnsembleExport struct {
+	SchemaVersion int       `json:"schema_version" toml:"schema_version" yaml:"schema_version"`
+	ExportedAt    time.Time `json:"exported_at,omitempty" toml:"exported_at,omitempty" yaml:"exported_at,omitempty"`
+
+	Name              string             `json:"name" toml:"name" yaml:"name"`
+	Extends           string             `json:"extends,omitempty" toml:"extends,omitempty" yaml:"extends,omitempty"`
+	DisplayName       string             `json:"display_name,omitempty" toml:"display_name,omitempty" yaml:"display_name,omitempty"`
+	Description       string             `json:"description" toml:"description" yaml:"description"`
+	Modes             []ModeRef          `json:"modes" toml:"modes" yaml:"modes"`
+	Synthesis         SynthesisConfig    `json:"synthesis,omitempty" toml:"synthesis,omitempty" yaml:"synthesis,omitempty"`
+	Budget            BudgetConfig       `json:"budget,omitempty" toml:"budget,omitempty" yaml:"budget,omitempty"`
+	Cache             CacheConfig        `json:"cache,omitempty" toml:"cache,omitempty" yaml:"cache,omitempty"`
+	AllowAdvanced     bool               `json:"allow_advanced,omitempty" toml:"allow_advanced,omitempty" yaml:"allow_advanced,omitempty"`
+	AgentDistribution *AgentDistribution `json:"agent_distribution,omitempty" toml:"agent_distribution,omitempty" yaml:"agent_distribution,omitempty"`
+	Tags              []string           `json:"tags,omitempty" toml:"tags,omitempty" yaml:"tags,omitempty"`
+}
+
+// ExportFromPreset converts a preset into an export payload.
+func ExportFromPreset(preset EnsemblePreset) EnsembleExport {
+	return EnsembleExport{
+		SchemaVersion:     EnsembleExportSchemaVersion,
+		ExportedAt:        time.Now().UTC(),
+		Name:              preset.Name,
+		Extends:           preset.Extends,
+		DisplayName:       preset.DisplayName,
+		Description:       preset.Description,
+		Modes:             preset.Modes,
+		Synthesis:         preset.Synthesis,
+		Budget:            preset.Budget,
+		Cache:             preset.Cache,
+		AllowAdvanced:     preset.AllowAdvanced,
+		AgentDistribution: preset.AgentDistribution,
+		Tags:              preset.Tags,
+	}
+}
+
+// ToPreset converts an export payload back into an ensemble preset.
+func (e EnsembleExport) ToPreset() EnsemblePreset {
+	return EnsemblePreset{
+		Name:              e.Name,
+		Extends:           e.Extends,
+		DisplayName:       e.DisplayName,
+		Description:       e.Description,
+		Modes:             e.Modes,
+		Synthesis:         e.Synthesis,
+		Budget:            e.Budget,
+		Cache:             e.Cache,
+		AllowAdvanced:     e.AllowAdvanced,
+		AgentDistribution: e.AgentDistribution,
+		Tags:              e.Tags,
+	}
+}
+
+// Validate checks schema version and validates the embedded preset.
+func (e EnsembleExport) Validate(catalog *ModeCatalog, registry *EnsembleRegistry) error {
+	if e.SchemaVersion != EnsembleExportSchemaVersion {
+		return fmt.Errorf("unsupported schema_version %d (expected %d)", e.SchemaVersion, EnsembleExportSchemaVersion)
+	}
+	preset := e.ToPreset()
+	report := ValidateEnsemblePreset(&preset, catalog, registry)
+	return report.Error()
+}
+
 // Validate checks that the preset is valid and all mode refs resolve against the catalog.
 func (p *EnsemblePreset) Validate(catalog *ModeCatalog) error {
 	report := ValidateEnsemblePreset(p, catalog, nil)
@@ -687,6 +756,18 @@ func NewModeCatalog(modes []ReasoningMode, version string) (*ModeCatalog, error)
 		if mode.Tier != "" {
 			c.byTier[mode.Tier] = append(c.byTier[mode.Tier], ptr)
 		}
+	}
+
+	// Sort lists to ensure deterministic ordering
+	for _, modes := range c.byCat {
+		sort.Slice(modes, func(i, j int) bool {
+			return modes[i].ID < modes[j].ID
+		})
+	}
+	for _, modes := range c.byTier {
+		sort.Slice(modes, func(i, j int) bool {
+			return modes[i].ID < modes[j].ID
+		})
 	}
 
 	return c, nil

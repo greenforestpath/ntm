@@ -215,8 +215,8 @@ func TestAuditLogger_ConcurrentWrites(t *testing.T) {
 	defer logger.Close()
 
 	// Launch multiple goroutines to write concurrently
-	numWorkers := 5
-	entriesPerWorker := 10
+	numWorkers := 100
+	entriesPerWorker := 2
 	done := make(chan error, numWorkers)
 
 	for worker := 0; worker < numWorkers; worker++ {

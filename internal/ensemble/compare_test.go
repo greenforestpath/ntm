@@ -10,59 +10,59 @@ func TestCompareModes(t *testing.T) {
 	t.Log("TEST: TestCompareModes - starting")
 
 	tests := []struct {
-		name         string
-		modesA       []string
-		modesB       []string
-		wantAdded    int
-		wantRemoved  int
+		name          string
+		modesA        []string
+		modesB        []string
+		wantAdded     int
+		wantRemoved   int
 		wantUnchanged int
 	}{
 		{
-			name:         "identical modes",
-			modesA:       []string{"mode-a", "mode-b", "mode-c"},
-			modesB:       []string{"mode-a", "mode-b", "mode-c"},
-			wantAdded:    0,
-			wantRemoved:  0,
+			name:          "identical modes",
+			modesA:        []string{"mode-a", "mode-b", "mode-c"},
+			modesB:        []string{"mode-a", "mode-b", "mode-c"},
+			wantAdded:     0,
+			wantRemoved:   0,
 			wantUnchanged: 3,
 		},
 		{
-			name:         "added mode",
-			modesA:       []string{"mode-a", "mode-b"},
-			modesB:       []string{"mode-a", "mode-b", "mode-c"},
-			wantAdded:    1,
-			wantRemoved:  0,
+			name:          "added mode",
+			modesA:        []string{"mode-a", "mode-b"},
+			modesB:        []string{"mode-a", "mode-b", "mode-c"},
+			wantAdded:     1,
+			wantRemoved:   0,
 			wantUnchanged: 2,
 		},
 		{
-			name:         "removed mode",
-			modesA:       []string{"mode-a", "mode-b", "mode-c"},
-			modesB:       []string{"mode-a", "mode-b"},
-			wantAdded:    0,
-			wantRemoved:  1,
+			name:          "removed mode",
+			modesA:        []string{"mode-a", "mode-b", "mode-c"},
+			modesB:        []string{"mode-a", "mode-b"},
+			wantAdded:     0,
+			wantRemoved:   1,
 			wantUnchanged: 2,
 		},
 		{
-			name:         "mixed changes",
-			modesA:       []string{"mode-a", "mode-b"},
-			modesB:       []string{"mode-b", "mode-c"},
-			wantAdded:    1,
-			wantRemoved:  1,
+			name:          "mixed changes",
+			modesA:        []string{"mode-a", "mode-b"},
+			modesB:        []string{"mode-b", "mode-c"},
+			wantAdded:     1,
+			wantRemoved:   1,
 			wantUnchanged: 1,
 		},
 		{
-			name:         "completely different",
-			modesA:       []string{"mode-a", "mode-b"},
-			modesB:       []string{"mode-c", "mode-d"},
-			wantAdded:    2,
-			wantRemoved:  2,
+			name:          "completely different",
+			modesA:        []string{"mode-a", "mode-b"},
+			modesB:        []string{"mode-c", "mode-d"},
+			wantAdded:     2,
+			wantRemoved:   2,
 			wantUnchanged: 0,
 		},
 		{
-			name:         "empty runs",
-			modesA:       []string{},
-			modesB:       []string{},
-			wantAdded:    0,
-			wantRemoved:  0,
+			name:          "empty runs",
+			modesA:        []string{},
+			modesB:        []string{},
+			wantAdded:     0,
+			wantRemoved:   0,
 			wantUnchanged: 0,
 		},
 	}
@@ -521,6 +521,97 @@ func TestCompare_NilContributions(t *testing.T) {
 	}
 }
 
+func TestCompare_ModeDiff(t *testing.T) {
+	input := map[string]any{"runA": []string{"mode-a", "mode-b"}, "runB": []string{"mode-b", "mode-c"}}
+	logTestStartCompare(t, input)
+
+	result := Compare(
+		CompareInput{RunID: "A", ModeIDs: []string{"mode-a", "mode-b"}},
+		CompareInput{RunID: "B", ModeIDs: []string{"mode-b", "mode-c"}},
+	)
+	logTestResultCompare(t, result.ModeDiff)
+
+	assertEqualCompare(t, "added count", result.ModeDiff.AddedCount, 1)
+	assertEqualCompare(t, "removed count", result.ModeDiff.RemovedCount, 1)
+	assertTrueCompare(t, "unchanged includes mode-b", containsStringCompare(result.ModeDiff.Unchanged, "mode-b"))
+}
+
+func TestCompare_FindingDiff(t *testing.T) {
+	input := map[string]any{"runA": "finding-a", "runB": "finding-b"}
+	logTestStartCompare(t, input)
+
+	runA := CompareInput{
+		RunID:   "A",
+		Outputs: []ModeOutput{{ModeID: "mode-a", TopFindings: []Finding{{Finding: "finding-a", Impact: ImpactHigh, Confidence: 0.8}}}},
+	}
+	runB := CompareInput{
+		RunID:   "B",
+		Outputs: []ModeOutput{{ModeID: "mode-a", TopFindings: []Finding{{Finding: "finding-b", Impact: ImpactHigh, Confidence: 0.8}}}},
+	}
+	result := Compare(runA, runB)
+	logTestResultCompare(t, result.FindingsDiff)
+
+	assertEqualCompare(t, "new count", result.FindingsDiff.NewCount, 1)
+	assertEqualCompare(t, "missing count", result.FindingsDiff.MissingCount, 1)
+}
+
+func TestCompare_ContributionDiff(t *testing.T) {
+	input := map[string]any{"runA": 10.0, "runB": 20.0}
+	logTestStartCompare(t, input)
+
+	contribA := &ContributionReport{
+		Scores:         []ContributionScore{{ModeID: "mode-a", Score: 10, Rank: 1}},
+		OverlapRate:    0.2,
+		DiversityScore: 0.5,
+	}
+	contribB := &ContributionReport{
+		Scores:         []ContributionScore{{ModeID: "mode-a", Score: 20, Rank: 1}},
+		OverlapRate:    0.3,
+		DiversityScore: 0.6,
+	}
+
+	result := Compare(CompareInput{RunID: "A", Contributions: contribA}, CompareInput{RunID: "B", Contributions: contribB})
+	logTestResultCompare(t, result.ContributionDiff)
+
+	assertEqualCompare(t, "score delta count", len(result.ContributionDiff.ScoreDeltas), 1)
+	assertEqualCompare(t, "overlap rate B", result.ContributionDiff.OverlapRateB, 0.3)
+}
+
+func logTestStartCompare(t *testing.T, input any) {
+	t.Helper()
+	t.Logf("TEST: %s - starting with input: %v", t.Name(), input)
+}
+
+func logTestResultCompare(t *testing.T, result any) {
+	t.Helper()
+	t.Logf("TEST: %s - got result: %v", t.Name(), result)
+}
+
+func assertTrueCompare(t *testing.T, desc string, ok bool) {
+	t.Helper()
+	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
+	if !ok {
+		t.Fatalf("assertion failed: %s", desc)
+	}
+}
+
+func assertEqualCompare(t *testing.T, desc string, got, want any) {
+	t.Helper()
+	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
+	if got != want {
+		t.Fatalf("%s: got %v want %v", desc, got, want)
+	}
+}
+
+func containsStringCompare(values []string, target string) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestFormatComparison(t *testing.T) {
 	t.Log("TEST: TestFormatComparison - starting")
 
@@ -529,17 +620,17 @@ func TestFormatComparison(t *testing.T) {
 		RunB:        "run-beta",
 		GeneratedAt: time.Now(),
 		ModeDiff: ModeDiff{
-			Added:        []string{"causal"},
-			Removed:      []string{"bayesian"},
-			Unchanged:    []string{"deductive"},
-			AddedCount:   1,
-			RemovedCount: 1,
+			Added:          []string{"causal"},
+			Removed:        []string{"bayesian"},
+			Unchanged:      []string{"deductive"},
+			AddedCount:     1,
+			RemovedCount:   1,
 			UnchangedCount: 1,
 		},
 		FindingsDiff: FindingsDiff{
-			New:       []FindingDiffEntry{{FindingID: "abc123", ModeID: "causal", Text: "New finding"}},
-			Missing:   []FindingDiffEntry{{FindingID: "def456", ModeID: "bayesian", Text: "Missing finding"}},
-			NewCount:  1,
+			New:          []FindingDiffEntry{{FindingID: "abc123", ModeID: "causal", Text: "New finding"}},
+			Missing:      []FindingDiffEntry{{FindingID: "def456", ModeID: "bayesian", Text: "Missing finding"}},
+			NewCount:     1,
 			MissingCount: 1,
 		},
 		Summary: "+1 modes, -1 modes, +1 findings, -1 findings",

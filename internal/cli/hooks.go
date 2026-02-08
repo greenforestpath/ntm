@@ -314,7 +314,11 @@ func runPreCommitHook(verbose, failOnWarning bool, timeout int) error {
 	config := hooks.DefaultPreCommitConfig()
 	config.Verbose = verbose
 	config.FailOnWarning = failOnWarning
-	config.Timeout = config.Timeout * 1 // Use default
+	if timeout <= 0 {
+		config.Timeout = 0
+	} else {
+		config.Timeout = time.Duration(timeout) * time.Second
+	}
 
 	// Get repo root
 	mgr, err := hooks.NewManager("")

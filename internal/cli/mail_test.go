@@ -14,15 +14,16 @@ import (
 )
 
 type mailStub struct {
-	server       *httptest.Server
-	inbox        []agentmail.InboxMessage
-	fetchCalls   []fetchCall
-	readIDs      []int
-	ackIDs       []int
-	readAgents   []string
-	ackAgents    []string
-	ensureCalled int
-	failIDs      map[int]string // messageID -> error message
+	server        *httptest.Server
+	inbox         []agentmail.InboxMessage
+	fetchCalls    []fetchCall
+	readIDs       []int
+	ackIDs        []int
+	readAgents    []string
+	ackAgents     []string
+	ensureCalled  int
+	overseerCalls []overseerCall
+	failIDs       map[int]string // messageID -> error message
 }
 
 type fetchCall struct {
@@ -33,14 +34,38 @@ type fetchCall struct {
 	Project string
 }
 
+type overseerCall struct {
+	Recipients []string `json:"recipients"`
+	Subject    string   `json:"subject"`
+	BodyMD     string   `json:"body_md"`
+	ThreadID   string   `json:"thread_id,omitempty"`
+}
+
 func newMailStub(t *testing.T, inbox []agentmail.InboxMessage) *mailStub {
 	t.Helper()
 	stub := &mailStub{inbox: inbox, failIDs: make(map[int]string)}
 
 	stub.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/health" {
+		if r.Method == http.MethodGet && r.URL.Path == "/health/liveness" {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+
+		if r.Method == http.MethodPost && r.URL.Path == "/mail/stub/overseer/send" {
+			var call overseerCall
+			if err := json.NewDecoder(r.Body).Decode(&call); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			stub.overseerCalls = append(stub.overseerCalls, call)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success":    true,
+				"message_id": 123,
+				"recipients": call.Recipients,
+				"sent_at":    "2026-02-01T00:00:00Z",
+			})
 			return
 		}
 
@@ -255,6 +280,71 @@ func TestMailMarkReportsErrorsInJSON(t *testing.T) {
 	}
 }
 
+func TestMailSendOverseer_RedactModeScrubsBodyAndSubject(t *testing.T) {
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+
+	_, err := execCommand(t, "--redact=redact", "mail", "send", "mysession", "--to", "BlueLake", "prefix password=hunter2hunter2 suffix")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(stub.overseerCalls) != 1 {
+		t.Fatalf("expected 1 overseer call, got %d", len(stub.overseerCalls))
+	}
+	call := stub.overseerCalls[0]
+	if strings.Contains(call.BodyMD, "hunter2hunter2") {
+		t.Fatalf("expected body to be redacted, got %q", call.BodyMD)
+	}
+	if !strings.Contains(call.BodyMD, "[REDACTED:PASSWORD:") {
+		t.Fatalf("expected redaction placeholder in body, got %q", call.BodyMD)
+	}
+	if strings.Contains(call.Subject, "hunter2hunter2") {
+		t.Fatalf("expected subject to be redacted, got %q", call.Subject)
+	}
+}
+
+func TestMailSendOverseer_BlockModeRefusesBeforeSend(t *testing.T) {
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+
+	_, err := execCommand(t, "--redact=block", "mail", "send", "mysession", "--to", "BlueLake", "password=hunter2hunter2")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if len(stub.overseerCalls) != 0 {
+		t.Fatalf("expected no overseer calls when blocked, got %d", len(stub.overseerCalls))
+	}
+}
+
+func TestMailSendOverseer_WarnModeSendsUnmodifiedButWarns(t *testing.T) {
+	stub := newMailStub(t, nil)
+	defer stub.Close()
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("AGENT_MAIL_URL", stub.server.URL+"/")
+
+	out, err := execCommand(t, "mail", "send", "mysession", "--to", "BlueLake", "password=hunter2hunter2")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(stub.overseerCalls) != 1 {
+		t.Fatalf("expected 1 overseer call, got %d", len(stub.overseerCalls))
+	}
+	call := stub.overseerCalls[0]
+	if !strings.Contains(call.BodyMD, "hunter2hunter2") {
+		t.Fatalf("expected body to be unmodified in warn mode, got %q", call.BodyMD)
+	}
+	if !strings.Contains(out, "Warning: detected") {
+		t.Fatalf("expected warning output, got %q", out)
+	}
+}
+
 func TestMailMarkJSONPartialSuccess(t *testing.T) {
 	inbox := []agentmail.InboxMessage{}
 	stub := newMailStub(t, inbox)
@@ -284,9 +374,9 @@ func TestMailMarkJSONPartialSuccess(t *testing.T) {
 
 func TestMailReadWithFilters(t *testing.T) {
 	inbox := []agentmail.InboxMessage{
-		{ID: 1, From: "BlueBear", Importance: "urgent", CreatedTS: time.Now()},
-		{ID: 2, From: "LilacDog", Importance: "urgent", CreatedTS: time.Now()},
-		{ID: 3, From: "BlueBear", Importance: "normal", CreatedTS: time.Now()},
+		{ID: 1, From: "BlueBear", Importance: "urgent", CreatedTS: agentmail.FlexTime{Time: time.Now()}},
+		{ID: 2, From: "LilacDog", Importance: "urgent", CreatedTS: agentmail.FlexTime{Time: time.Now()}},
+		{ID: 3, From: "BlueBear", Importance: "normal", CreatedTS: agentmail.FlexTime{Time: time.Now()}},
 	}
 	stub := newMailStub(t, inbox)
 	defer stub.Close()

@@ -36,6 +36,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/kernel"
 	"github.com/Dicklesworthstone/ntm/internal/metrics"
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -80,6 +81,9 @@ type Server struct {
 	mailClient *agentmail.Client
 	projectDir string
 	mu         sync.Mutex
+
+	// Redaction configuration for REST API
+	redactionCfg *RedactionConfig
 }
 
 // AuthMode configures authentication for the server.
@@ -412,18 +416,21 @@ type WSClient struct {
 	topics     map[string]struct{}
 	topicsMu   sync.RWMutex
 	authClaims map[string]interface{}
+	closeOnce  sync.Once
 }
 
 // WSHub manages WebSocket connections and topic routing.
 type WSHub struct {
-	clients    map[*WSClient]struct{}
-	clientsMu  sync.RWMutex
-	register   chan *WSClient
-	unregister chan *WSClient
-	broadcast  chan *WSEvent
-	seq        int64
-	seqMu      sync.Mutex
-	done       chan struct{}
+	clients      map[*WSClient]struct{}
+	clientsMu    sync.RWMutex
+	register     chan *WSClient
+	unregister   chan *WSClient
+	broadcast    chan *WSEvent
+	seq          int64
+	seqMu        sync.Mutex
+	done         chan struct{}
+	redactionCfg *RedactionConfig
+	redactionMu  sync.RWMutex
 }
 
 // NewWSHub creates a new WebSocket hub.
@@ -478,6 +485,16 @@ func (h *WSHub) nextSeq() int64 {
 // broadcastEvent sends an event to all subscribed clients.
 func (h *WSHub) broadcastEvent(event *WSEvent) {
 	event.Seq = h.nextSeq()
+
+	// Apply redaction if configured
+	h.redactionMu.RLock()
+	cfg := h.redactionCfg
+	h.redactionMu.RUnlock()
+
+	if cfg != nil && cfg.Enabled && cfg.Config.Mode != redaction.ModeOff {
+		event.Data = redactWSEventData(event.Data, cfg.Config)
+	}
+
 	data, err := json.Marshal(event)
 	if err != nil {
 		log.Printf("ws marshal error: %v", err)
@@ -499,6 +516,33 @@ func (h *WSHub) broadcastEvent(event *WSEvent) {
 	}
 }
 
+// redactWSEventData recursively redacts sensitive content in event data.
+func redactWSEventData(data interface{}, cfg redaction.Config) interface{} {
+	if cfg.Mode == redaction.ModeOff {
+		return data
+	}
+
+	switch v := data.(type) {
+	case string:
+		result := redaction.ScanAndRedact(v, cfg)
+		return result.Output
+	case map[string]interface{}:
+		redacted := make(map[string]interface{}, len(v))
+		for key, val := range v {
+			redacted[key] = redactWSEventData(val, cfg)
+		}
+		return redacted
+	case []interface{}:
+		redacted := make([]interface{}, len(v))
+		for i, val := range v {
+			redacted[i] = redactWSEventData(val, cfg)
+		}
+		return redacted
+	default:
+		return data
+	}
+}
+
 // Publish publishes an event to a topic.
 func (h *WSHub) Publish(topic, eventType string, data interface{}) {
 	event := &WSEvent{
@@ -513,6 +557,20 @@ func (h *WSHub) Publish(topic, eventType string, data interface{}) {
 	default:
 		log.Printf("ws broadcast buffer full, dropping event topic=%s", topic)
 	}
+}
+
+// SetRedactionConfig sets the redaction configuration for WebSocket events.
+func (h *WSHub) SetRedactionConfig(cfg *RedactionConfig) {
+	h.redactionMu.Lock()
+	defer h.redactionMu.Unlock()
+	h.redactionCfg = cfg
+}
+
+// GetRedactionConfig returns the current redaction configuration.
+func (h *WSHub) GetRedactionConfig() *RedactionConfig {
+	h.redactionMu.RLock()
+	defer h.redactionMu.RUnlock()
+	return h.redactionCfg
 }
 
 // ClientCount returns the number of connected clients.
@@ -739,7 +797,8 @@ func (s *Server) buildRouter() chi.Router {
 	r.Use(s.loggingMiddlewareFunc)
 	r.Use(s.corsMiddlewareFunc)
 	r.Use(s.authMiddlewareFunc)
-	r.Use(s.rbacMiddleware) // Extract role from auth claims
+	r.Use(s.rbacMiddleware)      // Extract role from auth claims
+	r.Use(s.redactionMiddleware) // Redact sensitive content in requests/responses
 
 	// Health check (no versioning)
 	r.Get("/health", s.handleHealth)
@@ -1356,6 +1415,19 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 // writeErrorResponse writes a structured error response matching robot mode format.
 func writeErrorResponse(w http.ResponseWriter, status int, code, message string, details map[string]interface{}, requestID string) {
+	var hint string
+	if details != nil {
+		if v, ok := details["hint"]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				hint = s
+			}
+			delete(details, "hint")
+			if len(details) == 0 {
+				details = nil
+			}
+		}
+	}
+
 	resp := APIError{
 		APIResponse: APIResponse{
 			Success:   false,
@@ -1365,6 +1437,7 @@ func writeErrorResponse(w http.ResponseWriter, status int, code, message string,
 		Error:     message,
 		ErrorCode: code,
 		Details:   details,
+		Hint:      hint,
 	}
 	writeJSON(w, status, resp)
 }
@@ -4475,7 +4548,7 @@ var authContextKey = ctxKeyAuth{}
 func (c *WSClient) readPump() {
 	defer func() {
 		c.hub.unregister <- c
-		c.conn.Close()
+		c.closeOnce.Do(func() { c.conn.Close() })
 	}()
 
 	c.conn.SetReadLimit(wsMaxMessageSize)
@@ -4503,7 +4576,7 @@ func (c *WSClient) writePump() {
 	ticker := time.NewTicker(wsPingPeriod)
 	defer func() {
 		ticker.Stop()
-		c.conn.Close()
+		c.closeOnce.Do(func() { c.conn.Close() })
 	}()
 
 	for {
@@ -4637,13 +4710,14 @@ func (c *WSClient) handleUnsubscribe(msg WSMessage) {
 }
 
 // isValidTopic checks if a topic string is valid.
-// Valid topics: global, global:*, sessions:*, sessions:{name}, panes:*,
-// panes:{session}:{idx}, agent:{type}
+//
+// Note: This is intentionally permissive for topic *values* and primarily
+// validates known topic namespaces, not the full shape of each topic string.
 func isValidTopic(topic string) bool {
 	if topic == "" {
 		return false
 	}
-	if topic == "*" || topic == "global" || topic == "global:*" {
+	if topic == "*" || topic == "global" || topic == "global:*" || topic == "scanner" || topic == "memory" {
 		return true
 	}
 	// sessions:* or sessions:{name}
@@ -4656,6 +4730,15 @@ func isValidTopic(topic string) bool {
 	}
 	// agent:{type}
 	if strings.HasPrefix(topic, "agent:") {
+		return true
+	}
+	// tool systems
+	if strings.HasPrefix(topic, "beads:") ||
+		strings.HasPrefix(topic, "mail:") ||
+		strings.HasPrefix(topic, "reservations:") ||
+		strings.HasPrefix(topic, "pipelines:") ||
+		strings.HasPrefix(topic, "approvals:") ||
+		strings.HasPrefix(topic, "accounts:") {
 		return true
 	}
 	return false

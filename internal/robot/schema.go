@@ -17,11 +17,13 @@ var SchemaCommand = map[string]interface{}{
 	"version":  VersionOutput{},
 
 	// Session operations
-	"spawn":     SpawnOutput{},
-	"send":      SendOutput{},
-	"interrupt": InterruptOutput{},
-	"tail":      TailOutput{},
-	"ack":       AckOutput{},
+	"spawn":        SpawnOutput{},
+	"send":         SendOutput{},
+	"interrupt":    InterruptOutput{},
+	"tail":         TailOutput{},
+	"watch_bead":   WatchBeadOutput{},
+	"ack":          AckOutput{},
+	"proxy_status": ProxyStatusOutput{},
 
 	// Pane inspection
 	"inspect": InspectPaneOutput{},
@@ -41,8 +43,10 @@ var SchemaCommand = map[string]interface{}{
 	"probe":    ProbeSessionOutput{},
 
 	// Agent health
-	"agent_health": AgentHealthOutput{},
-	"is_working":   IsWorkingOutput{},
+	"agent_health":       AgentHealthOutput{},
+	"is_working":         IsWorkingOutput{},
+	"restart_pane":       RestartPaneOutput{},
+	"auto_restart_stuck": AutoRestartStuckOutput{},
 }
 
 // JSONSchema represents a JSON Schema document.

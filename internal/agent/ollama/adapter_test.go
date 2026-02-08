@@ -113,6 +113,14 @@ func TestConnect_NormalizesHost(t *testing.T) {
 	}
 }
 
+func TestNewAdapterFromEnv_DefaultHost(t *testing.T) {
+	t.Setenv("NTM_OLLAMA_HOST", "")
+	a := NewAdapterFromEnv()
+	if a == nil {
+		t.Fatal("NewAdapterFromEnv returned nil")
+	}
+}
+
 func TestListModels(t *testing.T) {
 	testModels := []ollamaModel{
 		{
@@ -166,6 +174,24 @@ func TestListModels_NotConnected(t *testing.T) {
 	_, err := a.ListModels(context.Background())
 	if err != ErrNotConnected {
 		t.Errorf("expected ErrNotConnected, got %v", err)
+	}
+}
+
+func TestListModels_DecodeError(t *testing.T) {
+	server := mockOllamaServer(t, map[string]http.HandlerFunc{
+		"/api/tags": func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`not-json`))
+		},
+	})
+	defer server.Close()
+
+	a := NewAdapterWithHost(server.URL)
+	_, err := a.ListModels(context.Background())
+	if err == nil {
+		t.Fatal("expected decode error")
+	}
+	if !strings.Contains(err.Error(), "failed to decode response") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -300,6 +326,78 @@ func TestStreamResponse(t *testing.T) {
 	}
 }
 
+func TestStreamResponse_NoModel(t *testing.T) {
+	server := mockOllamaServer(t, map[string]http.HandlerFunc{
+		"/api/tags": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(ollamaTagsResponse{})
+		},
+	})
+	defer server.Close()
+
+	a := NewAdapterWithHost(server.URL)
+	_, err := a.StreamResponse(context.Background(), "Hello")
+	if err == nil {
+		t.Fatal("expected error when model is not set")
+	}
+	if !strings.Contains(err.Error(), "no model set") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestStreamResponse_HTTPError(t *testing.T) {
+	server := mockOllamaServer(t, map[string]http.HandlerFunc{
+		"/api/tags": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(ollamaTagsResponse{})
+		},
+		"/api/generate": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"boom"}`))
+		},
+	})
+	defer server.Close()
+
+	a := NewAdapterWithHost(server.URL)
+	a.SetModel("llama3")
+	_, err := a.StreamResponse(context.Background(), "Hello")
+	if err == nil {
+		t.Fatal("expected stream setup error")
+	}
+}
+
+func TestStreamResponse_MalformedStreamLine(t *testing.T) {
+	server := mockOllamaServer(t, map[string]http.HandlerFunc{
+		"/api/tags": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(ollamaTagsResponse{})
+		},
+		"/api/generate": func(w http.ResponseWriter, r *http.Request) {
+			flusher, _ := w.(http.Flusher)
+			_, _ = w.Write([]byte(`{"response":"ok","done":false}` + "\n"))
+			flusher.Flush()
+			_, _ = w.Write([]byte(`not-json` + "\n"))
+			flusher.Flush()
+		},
+	})
+	defer server.Close()
+
+	a := NewAdapterWithHost(server.URL)
+	a.SetModel("llama3")
+
+	tokenChan, err := a.StreamResponse(context.Background(), "Hello")
+	if err != nil {
+		t.Fatalf("StreamResponse failed: %v", err)
+	}
+
+	var sawParseErr bool
+	for token := range tokenChan {
+		if token.Error != nil && strings.Contains(token.Error.Error(), "failed to parse stream") {
+			sawParseErr = true
+		}
+	}
+	if !sawParseErr {
+		t.Fatal("expected parse error token from malformed stream line")
+	}
+}
+
 func TestStreamResponse_ContextCancellation(t *testing.T) {
 	server := mockOllamaServer(t, map[string]http.HandlerFunc{
 		"/api/tags": func(w http.ResponseWriter, r *http.Request) {
@@ -397,11 +495,153 @@ func TestPullModel(t *testing.T) {
 	}
 }
 
+func TestPullModelWithProgress(t *testing.T) {
+	server := mockOllamaServer(t, map[string]http.HandlerFunc{
+		"/api/tags": func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(ollamaTagsResponse{})
+		},
+		"/api/pull": func(w http.ResponseWriter, r *http.Request) {
+			var req ollamaPullRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+
+			flusher, _ := w.(http.Flusher)
+			updates := []ollamaPullResponse{
+				{Status: "pulling manifest"},
+				{Status: "downloading", Total: 100, Completed: 50},
+				{Status: "success"},
+			}
+			for _, u := range updates {
+				_ = json.NewEncoder(w).Encode(u)
+				flusher.Flush()
+			}
+		},
+	})
+	defer server.Close()
+
+	a := NewAdapterWithHost(server.URL)
+
+	var progress []ModelPullProgress
+	err := a.PullModelWithProgress(context.Background(), "mistral:latest", func(p ModelPullProgress) {
+		progress = append(progress, p)
+	})
+	if err != nil {
+		t.Fatalf("PullModelWithProgress failed: %v", err)
+	}
+	if len(progress) < 3 {
+		t.Fatalf("expected at least 3 progress updates, got %d", len(progress))
+	}
+	if progress[1].Completed != 50 || progress[1].Total != 100 {
+		t.Fatalf("expected mid-progress 50/100, got %d/%d", progress[1].Completed, progress[1].Total)
+	}
+	if !progress[len(progress)-1].Done {
+		t.Fatalf("expected final progress update to be done")
+	}
+}
+
+func TestPullModelWithProgress_HTTPError(t *testing.T) {
+	server := mockOllamaServer(t, map[string]http.HandlerFunc{
+		"/api/tags": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(ollamaTagsResponse{})
+		},
+		"/api/pull": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"pull failed"}`))
+		},
+	})
+	defer server.Close()
+
+	a := NewAdapterWithHost(server.URL)
+	err := a.PullModelWithProgress(context.Background(), "mistral:latest", nil)
+	if err == nil {
+		t.Fatal("expected pull error")
+	}
+}
+
+func TestPullModelWithProgress_FailedStatus(t *testing.T) {
+	server := mockOllamaServer(t, map[string]http.HandlerFunc{
+		"/api/tags": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(ollamaTagsResponse{})
+		},
+		"/api/pull": func(w http.ResponseWriter, r *http.Request) {
+			flusher, _ := w.(http.Flusher)
+			_ = json.NewEncoder(w).Encode(ollamaPullResponse{Status: "failed"})
+			flusher.Flush()
+		},
+	})
+	defer server.Close()
+
+	a := NewAdapterWithHost(server.URL)
+	err := a.PullModelWithProgress(context.Background(), "mistral:latest", nil)
+	if err == nil {
+		t.Fatal("expected failed final status error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestPullModel_NotConnected(t *testing.T) {
 	a := NewAdapter()
 	err := a.PullModel(context.Background(), "mistral:latest")
 	if err != ErrNotConnected {
 		t.Errorf("expected ErrNotConnected, got %v", err)
+	}
+}
+
+func TestDeleteModel(t *testing.T) {
+	server := mockOllamaServer(t, map[string]http.HandlerFunc{
+		"/api/tags": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(ollamaTagsResponse{})
+		},
+		"/api/delete": func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodDelete {
+				t.Fatalf("expected DELETE, got %s", r.Method)
+			}
+			var req ollamaDeleteRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("failed to decode request: %v", err)
+			}
+			if req.Name != "mistral:latest" {
+				t.Fatalf("expected model mistral:latest, got %q", req.Name)
+			}
+			w.WriteHeader(http.StatusOK)
+		},
+	})
+	defer server.Close()
+
+	a := NewAdapterWithHost(server.URL)
+	if err := a.DeleteModel(context.Background(), "mistral:latest"); err != nil {
+		t.Fatalf("DeleteModel failed: %v", err)
+	}
+}
+
+func TestDeleteModel_NotConnected(t *testing.T) {
+	a := NewAdapter()
+	err := a.DeleteModel(context.Background(), "mistral:latest")
+	if err != ErrNotConnected {
+		t.Errorf("expected ErrNotConnected, got %v", err)
+	}
+}
+
+func TestDeleteModel_HTTPError(t *testing.T) {
+	server := mockOllamaServer(t, map[string]http.HandlerFunc{
+		"/api/tags": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(ollamaTagsResponse{})
+		},
+		"/api/delete": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"model not found"}`))
+		},
+	})
+	defer server.Close()
+
+	a := NewAdapterWithHost(server.URL)
+	err := a.DeleteModel(context.Background(), "missing:latest")
+	if err == nil {
+		t.Fatal("expected delete error")
+	}
+	if !strings.Contains(err.Error(), ErrModelNotFound.Error()) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

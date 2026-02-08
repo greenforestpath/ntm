@@ -7,13 +7,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/notify"
 	"github.com/Dicklesworthstone/ntm/internal/state"
+	"github.com/Dicklesworthstone/ntm/internal/tools"
 )
 
 // DefaultExpiry is the default time before an approval request expires.
@@ -33,6 +36,9 @@ type Config struct {
 
 	// NotifyOnDecision enables notifications when requests are approved/denied.
 	NotifyOnDecision bool
+
+	// EnableSLB routes SLB-required approvals to the slb queue when available.
+	EnableSLB bool
 }
 
 // DefaultConfig returns a default configuration.
@@ -42,6 +48,7 @@ func DefaultConfig() Config {
 		ApproverList:     nil, // Anyone can approve
 		NotifyOnRequest:  true,
 		NotifyOnDecision: true,
+		EnableSLB:        true,
 	}
 }
 
@@ -85,8 +92,9 @@ type RequestParams struct {
 
 // Request creates a new approval request.
 func (e *Engine) Request(ctx context.Context, params RequestParams) (*state.Approval, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	// Set expiry
 	expiry := params.ExpiresIn
@@ -108,6 +116,20 @@ func (e *Engine) Request(ctx context.Context, params RequestParams) (*state.Appr
 		Status:        state.ApprovalPending,
 	}
 
+	// If SLB is required and available, enqueue an SLB request first.
+	if params.RequiresSLB && e.config.EnableSLB {
+		slbID, err := e.enqueueSLBRequest(ctx, params)
+		if err != nil {
+			return nil, err
+		}
+		if slbID != "" && approval.CorrelationID == "" {
+			approval.CorrelationID = "slb:" + slbID
+		}
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	// Store the approval
 	if err := e.store.CreateApproval(approval); err != nil {
 		return nil, fmt.Errorf("create approval: %w", err)
@@ -127,6 +149,48 @@ func (e *Engine) Request(ctx context.Context, params RequestParams) (*state.Appr
 	}
 
 	return approval, nil
+}
+
+func (e *Engine) enqueueSLBRequest(ctx context.Context, params RequestParams) (string, error) {
+	adapter := tools.NewSLBAdapter()
+	if _, installed := adapter.Detect(); !installed {
+		return "", nil
+	}
+
+	command := buildSLBCommand(params.Action, params.Resource)
+	raw, err := adapter.Request(ctx, command, params.Reason)
+	if err != nil {
+		// Graceful fallback to internal approvals if SLB is unavailable or errors.
+		return "", nil
+	}
+
+	return parseSLBRequestID(raw), nil
+}
+
+func buildSLBCommand(action, resource string) string {
+	action = strings.TrimSpace(action)
+	resource = strings.TrimSpace(resource)
+	if action == "" {
+		return ""
+	}
+	if resource == "" {
+		return "ntm approval: " + action
+	}
+	return "ntm approval: " + action + " " + resource
+}
+
+func parseSLBRequestID(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	if id, ok := payload["id"].(string); ok {
+		return id
+	}
+	return ""
 }
 
 // Check returns the current status of an approval request.
@@ -274,8 +338,13 @@ func (e *Engine) Deny(ctx context.Context, id string, approverID string, reason 
 
 // WaitForApproval blocks until the approval is approved, denied, or times out.
 func (e *Engine) WaitForApproval(ctx context.Context, id string, timeout time.Duration) (*state.Approval, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	baseCtx := ctx
+
 	// First check current status
-	approval, err := e.Check(ctx, id)
+	approval, err := e.Check(baseCtx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -304,19 +373,19 @@ func (e *Engine) WaitForApproval(ctx context.Context, id string, timeout time.Du
 		e.waitersMu.Unlock()
 	}()
 
-	// Wait with timeout
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	waitCtx, cancel := context.WithTimeout(baseCtx, timeout)
+	defer cancel()
 
 	select {
 	case <-waitCh:
 		// Approval was decided
-		return e.Check(ctx, id)
-	case <-timer.C:
+		return e.Check(baseCtx, id)
+	case <-waitCtx.Done():
+		if baseCtx.Err() != nil {
+			return nil, baseCtx.Err()
+		}
 		// Timeout - check final status
-		return e.Check(ctx, id)
-	case <-ctx.Done():
-		return nil, ctx.Err()
+		return e.Check(baseCtx, id)
 	}
 }
 

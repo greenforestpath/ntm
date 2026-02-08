@@ -34,6 +34,9 @@ type SwarmPlan struct {
 	TotalGmi    int `json:"total_gmi"`
 	TotalAgents int `json:"total_agents"`
 
+	// AutoRotateAccounts enables automatic account rotation on limit hit (requires caam).
+	AutoRotateAccounts bool `json:"auto_rotate_accounts"`
+
 	// Session structure
 	SessionsPerType int `json:"sessions_per_type"`
 	PanesPerSession int `json:"panes_per_session"` // Calculated: ceil(total/sessions)

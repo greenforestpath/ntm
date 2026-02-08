@@ -3,83 +3,143 @@
 // file reservations, and project management.
 package agentmail
 
-import "time"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
+// FlexTime wraps time.Time with custom JSON unmarshaling that handles
+// ISO8601 timestamps with or without timezone suffixes.
+// The Agent Mail server sometimes returns timestamps without timezone info
+// (e.g., "2025-01-29T14:45:23.123456") which breaks Go's standard time.Time
+// JSON unmarshaling that expects RFC3339.
+type FlexTime struct {
+	time.Time
+}
+
+// flexTimeFormats lists the formats to try when unmarshaling, in order.
+var flexTimeFormats = []string{
+	time.RFC3339,
+	time.RFC3339Nano,
+	"2006-01-02T15:04:05",
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02T15:04:05.999999",
+	"2006-01-02T15:04:05.999",
+}
+
+// UnmarshalJSON implements json.Unmarshaler for FlexTime.
+// It tries RFC3339, RFC3339Nano, and bare ISO8601 formats (assuming UTC for bare timestamps).
+func (ft *FlexTime) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	if s == "" {
+		ft.Time = time.Time{}
+		return nil
+	}
+	for _, layout := range flexTimeFormats {
+		if t, err := time.Parse(layout, s); err == nil {
+			ft.Time = t
+			return nil
+		}
+	}
+	// As a last resort, try bare formats assuming UTC
+	for _, layout := range flexTimeFormats[2:] {
+		if t, err := time.ParseInLocation(layout, s, time.UTC); err == nil {
+			ft.Time = t
+			return nil
+		}
+	}
+	return &time.ParseError{
+		Value:   s,
+		Message: "does not match any known ISO8601/RFC3339 format",
+	}
+}
+
+// MarshalJSON implements json.Marshaler for FlexTime.
+// It outputs RFC3339Nano format.
+func (ft FlexTime) MarshalJSON() ([]byte, error) {
+	return json.Marshal(ft.Time.Format(time.RFC3339Nano))
+}
 
 // Agent represents an AI coding agent registered with Agent Mail.
 type Agent struct {
-	ID              int       `json:"id"`
-	Name            string    `json:"name"`             // e.g., "GreenCastle"
-	Program         string    `json:"program"`          // e.g., "claude-code"
-	Model           string    `json:"model"`            // e.g., "opus-4.5"
-	TaskDescription string    `json:"task_description"` // Current task description
-	InceptionTS     time.Time `json:"inception_ts"`     // When agent was first registered
-	LastActiveTS    time.Time `json:"last_active_ts"`   // Last activity timestamp
-	ProjectID       int       `json:"project_id"`       // Associated project ID
+	ID              int      `json:"id"`
+	Name            string   `json:"name"`             // e.g., "GreenCastle"
+	Program         string   `json:"program"`          // e.g., "claude-code"
+	Model           string   `json:"model"`            // e.g., "opus-4.5"
+	TaskDescription string   `json:"task_description"` // Current task description
+	InceptionTS     FlexTime `json:"inception_ts"`     // When agent was first registered
+	LastActiveTS    FlexTime `json:"last_active_ts"`   // Last activity timestamp
+	ProjectID       int      `json:"project_id"`       // Associated project ID
 }
 
 // Message represents an Agent Mail message.
 type Message struct {
-	ID          int       `json:"id"`
-	ProjectID   int       `json:"project_id"`
-	SenderID    int       `json:"sender_id"`
-	ThreadID    *string   `json:"thread_id,omitempty"`
-	Subject     string    `json:"subject"`
-	BodyMD      string    `json:"body_md"` // Markdown body
-	From        string    `json:"from"`    // Sender agent name
-	To          []string  `json:"to"`
-	CC          []string  `json:"cc,omitempty"`
-	BCC         []string  `json:"bcc,omitempty"`
-	Importance  string    `json:"importance"`   // normal, high, urgent
-	AckRequired bool      `json:"ack_required"` // Whether recipient must acknowledge
-	CreatedTS   time.Time `json:"created_ts"`
-	Kind        string    `json:"kind,omitempty"` // to, cc, bcc
+	ID          int      `json:"id"`
+	ProjectID   int      `json:"project_id"`
+	SenderID    int      `json:"sender_id"`
+	ThreadID    *string  `json:"thread_id,omitempty"`
+	Subject     string   `json:"subject"`
+	BodyMD      string   `json:"body_md"` // Markdown body
+	From        string   `json:"from"`    // Sender agent name
+	To          []string `json:"to"`
+	CC          []string `json:"cc,omitempty"`
+	BCC         []string `json:"bcc,omitempty"`
+	Importance  string   `json:"importance"`   // normal, high, urgent
+	AckRequired bool     `json:"ack_required"` // Whether recipient must acknowledge
+	CreatedTS   FlexTime `json:"created_ts"`
+	Kind        string   `json:"kind,omitempty"` // to, cc, bcc
 }
 
 // Project represents an Agent Mail project.
 type Project struct {
-	ID        int       `json:"id"`
-	Slug      string    `json:"slug"`
-	HumanKey  string    `json:"human_key"` // Absolute path to project
-	CreatedAt time.Time `json:"created_at"`
+	ID        int      `json:"id"`
+	Slug      string   `json:"slug"`
+	HumanKey  string   `json:"human_key"` // Absolute path to project
+	CreatedAt FlexTime `json:"created_at"`
 }
 
 // FileReservation represents a file path reservation (advisory lock).
 type FileReservation struct {
-	ID          int        `json:"id"`
-	PathPattern string     `json:"path_pattern"` // Path or glob pattern
-	AgentName   string     `json:"agent_name"`
-	ProjectID   int        `json:"project_id"`
-	Exclusive   bool       `json:"exclusive"` // Exclusive or shared
-	Reason      string     `json:"reason"`
-	ExpiresTS   time.Time  `json:"expires_ts"`
-	CreatedTS   time.Time  `json:"created_ts"`
-	ReleasedTS  *time.Time `json:"released_ts,omitempty"`
+	ID          int       `json:"id"`
+	PathPattern string    `json:"path_pattern"` // Path or glob pattern
+	AgentName   string    `json:"agent_name"`
+	ProjectID   int       `json:"project_id"`
+	Exclusive   bool      `json:"exclusive"` // Exclusive or shared
+	Reason      string    `json:"reason"`
+	ExpiresTS   FlexTime  `json:"expires_ts"`
+	CreatedTS   FlexTime  `json:"created_ts"`
+	ReleasedTS  *FlexTime `json:"released_ts,omitempty"`
 }
 
 // InboxMessage represents a message in an agent's inbox.
 type InboxMessage struct {
-	ID          int        `json:"id"`
-	Subject     string     `json:"subject"`
-	From        string     `json:"from"`
-	CreatedTS   time.Time  `json:"created_ts"`
-	ThreadID    *string    `json:"thread_id,omitempty"`
-	Importance  string     `json:"importance"`
-	AckRequired bool       `json:"ack_required"`
-	Kind        string     `json:"kind"`
-	BodyMD      string     `json:"body_md,omitempty"` // Only if include_bodies=true
-	ReadAt      *time.Time `json:"read_at,omitempty"`
+	ID          int       `json:"id"`
+	Subject     string    `json:"subject"`
+	From        string    `json:"from"`
+	CreatedTS   FlexTime  `json:"created_ts"`
+	ThreadID    *string   `json:"thread_id,omitempty"`
+	Importance  string    `json:"importance"`
+	AckRequired bool      `json:"ack_required"`
+	Kind        string    `json:"kind"`
+	BodyMD      string    `json:"body_md,omitempty"` // Only if include_bodies=true
+	ReadAt      *FlexTime `json:"read_at,omitempty"`
 }
 
 // ContactLink represents a contact relationship between agents.
 type ContactLink struct {
-	FromAgent string     `json:"from_agent,omitempty"`
-	ToAgent   string     `json:"to_agent,omitempty"`
-	To        string     `json:"to,omitempty"`
-	Status    string     `json:"status,omitempty"`
-	Reason    string     `json:"reason,omitempty"`
-	Approved  bool       `json:"approved,omitempty"`
-	UpdatedTS *time.Time `json:"updated_ts,omitempty"`
-	ExpiresTS *time.Time `json:"expires_ts,omitempty"`
+	FromAgent string    `json:"from_agent,omitempty"`
+	ToAgent   string    `json:"to_agent,omitempty"`
+	To        string    `json:"to,omitempty"`
+	Status    string    `json:"status,omitempty"`
+	Reason    string    `json:"reason,omitempty"`
+	Approved  bool      `json:"approved,omitempty"`
+	UpdatedTS *FlexTime `json:"updated_ts,omitempty"`
+	ExpiresTS *FlexTime `json:"expires_ts,omitempty"`
 }
 
 // ThreadSummary contains summary information for a message thread.
@@ -126,6 +186,53 @@ type ReservationResult struct {
 type ReservationConflict struct {
 	Path    string   `json:"path"`
 	Holders []string `json:"holders"`
+}
+
+func (c *ReservationConflict) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Path    string          `json:"path"`
+		Holders json.RawMessage `json:"holders"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	c.Path = raw.Path
+	c.Holders = nil
+
+	trimmed := bytes.TrimSpace(raw.Holders)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		c.Holders = []string{}
+		return nil
+	}
+
+	// Legacy format: holders is a list of agent names.
+	var names []string
+	if err := json.Unmarshal(raw.Holders, &names); err == nil {
+		c.Holders = names
+		return nil
+	}
+
+	// Current format: holders is a list of objects with an "agent" field.
+	var objs []struct {
+		Agent     string `json:"agent"`
+		AgentName string `json:"agent_name"`
+	}
+	if err := json.Unmarshal(raw.Holders, &objs); err == nil {
+		c.Holders = make([]string, 0, len(objs))
+		for _, o := range objs {
+			name := o.Agent
+			if name == "" {
+				name = o.AgentName
+			}
+			if name != "" {
+				c.Holders = append(c.Holders, name)
+			}
+		}
+		return nil
+	}
+
+	return fmt.Errorf("unsupported holders format in reservation conflict for path %q", raw.Path)
 }
 
 // RegisterAgentOptions contains options for registering an agent.
@@ -193,13 +300,13 @@ type SearchOptions struct {
 
 // SearchResult represents a message search result.
 type SearchResult struct {
-	ID          int       `json:"id"`
-	Subject     string    `json:"subject"`
-	Importance  string    `json:"importance"`
-	AckRequired bool      `json:"ack_required"`
-	CreatedTS   time.Time `json:"created_ts"`
-	ThreadID    *string   `json:"thread_id"`
-	From        string    `json:"from"`
+	ID          int      `json:"id"`
+	Subject     string   `json:"subject"`
+	Importance  string   `json:"importance"`
+	AckRequired bool     `json:"ack_required"`
+	CreatedTS   FlexTime `json:"created_ts"`
+	ThreadID    *string  `json:"thread_id"`
+	From        string   `json:"from"`
 }
 
 // OverseerMessageOptions contains options for sending a Human Overseer message.
@@ -214,10 +321,10 @@ type OverseerMessageOptions struct {
 
 // OverseerSendResult contains the result of sending a Human Overseer message.
 type OverseerSendResult struct {
-	Success    bool      `json:"success"`
-	MessageID  int       `json:"message_id"`
-	Recipients []string  `json:"recipients"`
-	SentAt     time.Time `json:"sent_at"`
+	Success    bool     `json:"success"`
+	MessageID  int      `json:"message_id"`
+	Recipients []string `json:"recipients"`
+	SentAt     FlexTime `json:"sent_at"`
 }
 
 // PrepareThreadOptions contains options for the macro_prepare_thread call.
@@ -300,8 +407,8 @@ type SummarizeThreadOptions struct {
 
 // ThreadSummaryResponse contains the summarize_thread response for a single thread.
 type ThreadSummaryResponse struct {
-	ThreadID string        `json:"thread_id"`
-	Summary  ThreadSummary `json:"summary"`
+	ThreadID string         `json:"thread_id"`
+	Summary  ThreadSummary  `json:"summary"`
 	Examples []InboxMessage `json:"examples,omitempty"`
 }
 
@@ -316,16 +423,16 @@ type RenewReservationsOptions struct {
 
 // RenewReservationsResult contains the result of renewing reservations.
 type RenewReservationsResult struct {
-	Renewed      int                 `json:"renewed"`
+	Renewed      int                  `json:"renewed"`
 	Reservations []RenewedReservation `json:"reservations"`
 }
 
 // RenewedReservation contains info about a renewed reservation.
 type RenewedReservation struct {
-	ID           int       `json:"id"`
-	PathPattern  string    `json:"path_pattern"`
-	OldExpiresTS time.Time `json:"old_expires_ts"`
-	NewExpiresTS time.Time `json:"new_expires_ts"`
+	ID           int      `json:"id"`
+	PathPattern  string   `json:"path_pattern"`
+	OldExpiresTS FlexTime `json:"old_expires_ts"`
+	NewExpiresTS FlexTime `json:"new_expires_ts"`
 }
 
 // ForceReleaseOptions contains options for forcibly releasing a stale reservation.
@@ -339,9 +446,9 @@ type ForceReleaseOptions struct {
 
 // ForceReleaseResult contains the result of a force-release operation.
 type ForceReleaseResult struct {
-	Success        bool       `json:"success"`
-	ReleasedAt     *time.Time `json:"released_at,omitempty"`
-	PreviousHolder string     `json:"previous_holder,omitempty"`
-	PathPattern    string     `json:"path_pattern,omitempty"`
-	Notified       bool       `json:"notified,omitempty"`
+	Success        bool      `json:"success"`
+	ReleasedAt     *FlexTime `json:"released_at,omitempty"`
+	PreviousHolder string    `json:"previous_holder,omitempty"`
+	PathPattern    string    `json:"path_pattern,omitempty"`
+	Notified       bool      `json:"notified,omitempty"`
 }

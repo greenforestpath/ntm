@@ -76,15 +76,15 @@ ntm --robot-tools
 Tool bridges are **optional**. When a tool is missing, robot commands return `DEPENDENCY_MISSING` with an actionable hint. Use `--robot-tools` and `--robot-capabilities` to confirm which wrappers are supported in your build.
 
 **Implemented today**
-- **JFP** (JeffreysPrompts): `--robot-jfp-status`, `--robot-jfp-list`, `--robot-jfp-search`, `--robot-jfp-show`, `--robot-jfp-suggest`, `--robot-jfp-installed`, `--robot-jfp-categories`, `--robot-jfp-tags`, `--robot-jfp-bundles`
+- **JFP** (JeffreysPrompts): `--robot-jfp-status`, `--robot-jfp-list`, `--robot-jfp-search`, `--robot-jfp-show`, `--robot-jfp-suggest`, `--robot-jfp-install`, `--robot-jfp-export`, `--robot-jfp-update`, `--robot-jfp-installed`, `--robot-jfp-categories`, `--robot-jfp-tags`, `--robot-jfp-bundles`
+- **ACFS** (Flywheel setup/bootstrapping): `--robot-acfs-status` (alias: `--robot-setup`)
 - **MS** (Meta Skill): `--robot-ms-search`, `--robot-ms-show`
 - **DCG** (Destructive Command Guard): `--robot-dcg-status`
+- **SLB** (two-person approvals): `--robot-slb-pending`, `--robot-slb-approve`, `--robot-slb-deny`
 
 **Planned / rolling out** (names follow `--robot-<tool>-<action>`; confirm via `--robot-capabilities`)
-- **SLB** (two-person approvals): `--robot-slb-*`
 - **RU** (repo updater): `--robot-ru-*`
 - **UBS** (Ultimate Bug Scanner): `--robot-ubs-*`
-- **ACFS** (Flywheel setup/bootstrapping): `--robot-acfs-*`
 - **GIIL** (image fetch): `--robot-giil-*`
 - **XF** (archive search): `--robot-xf-*`
 

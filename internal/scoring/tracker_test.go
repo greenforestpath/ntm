@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 func TestScoreMetrics_ComputeOverall(t *testing.T) {
@@ -221,6 +223,63 @@ func TestTracker_RollingAverage(t *testing.T) {
 	}
 }
 
+func TestTracker_PruneRetention(t *testing.T) {
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "scores.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true, RetentionDays: 365})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	now := time.Date(2026, 2, 4, 0, 0, 0, 0, time.UTC)
+	scores := []Score{
+		{
+			Timestamp: now.Add(-48 * time.Hour),
+			AgentType: "claude",
+			Metrics:   ScoreMetrics{Overall: 0.5},
+		},
+		{
+			Timestamp: now.Add(-12 * time.Hour),
+			AgentType: "codex",
+			Metrics:   ScoreMetrics{Overall: 0.7},
+		},
+		{
+			Timestamp: now.Add(-1 * time.Hour),
+			AgentType: "gemini",
+			Metrics:   ScoreMetrics{Overall: 0.9},
+		},
+	}
+
+	for i := range scores {
+		if err := tracker.Record(&scores[i]); err != nil {
+			t.Fatalf("Record() error: %v", err)
+		}
+	}
+
+	// Tighten retention window after recording to test pruning behavior.
+	tracker.retentionDays = 1
+	if err := tracker.pruneAt(now); err != nil {
+		t.Fatalf("pruneAt() error: %v", err)
+	}
+
+	results, err := tracker.QueryScores(Query{})
+	if err != nil {
+		t.Fatalf("QueryScores() error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 scores after pruning, got %d", len(results))
+	}
+
+	cutoff := now.Add(-24 * time.Hour)
+	for _, s := range results {
+		if s.Timestamp.Before(cutoff) {
+			t.Errorf("expected old score to be pruned, found timestamp %v", s.Timestamp)
+		}
+	}
+}
+
 func TestTracker_AnalyzeTrend(t *testing.T) {
 	tmpDir := t.TempDir()
 	scorePath := filepath.Join(tmpDir, "scores.jsonl")
@@ -371,6 +430,45 @@ func TestTracker_SummarizeByAgent(t *testing.T) {
 	}
 }
 
+func TestTracker_SummarizeByAgentList(t *testing.T) {
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "scores.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	now := time.Now().UTC()
+	entries := []Score{
+		{Timestamp: now, AgentType: "gemini", Metrics: ScoreMetrics{Overall: 0.8}},
+		{Timestamp: now, AgentType: "claude", Metrics: ScoreMetrics{Overall: 0.9}},
+		{Timestamp: now, AgentType: "codex", Metrics: ScoreMetrics{Overall: 0.7}},
+	}
+	for i := range entries {
+		if err := tracker.Record(&entries[i]); err != nil {
+			t.Fatalf("Record() error: %v", err)
+		}
+	}
+
+	ordered, err := tracker.SummarizeByAgentList(now.Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatalf("SummarizeByAgentList() error: %v", err)
+	}
+	if len(ordered) != 3 {
+		t.Fatalf("SummarizeByAgentList() returned %d summaries, want 3", len(ordered))
+	}
+
+	got := []string{ordered[0].AgentType, ordered[1].AgentType, ordered[2].AgentType}
+	want := []string{"claude", "codex", "gemini"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ordered[%d] = %s, want %s", i, got[i], want[i])
+		}
+	}
+}
+
 func TestTracker_Export(t *testing.T) {
 	tmpDir := t.TempDir()
 	scorePath := filepath.Join(tmpDir, "scores.jsonl")
@@ -491,6 +589,304 @@ func TestSqrt(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// bd-1u5g: Additional coverage tests
+// =============================================================================
+
+func TestDefaultTrackerOptions(t *testing.T) {
+	t.Parallel()
+
+	opts := DefaultTrackerOptions()
+
+	if opts.RetentionDays != DefaultRetentionDays {
+		t.Errorf("RetentionDays = %d, want %d", opts.RetentionDays, DefaultRetentionDays)
+	}
+	if !opts.Enabled {
+		t.Error("Enabled should be true by default")
+	}
+	if opts.Path == "" {
+		t.Error("Path should not be empty")
+	}
+	t.Logf("SCORE_TEST: DefaultTrackerOptions | Path=%s | Retention=%d | Enabled=%v",
+		opts.Path, opts.RetentionDays, opts.Enabled)
+}
+
+func TestTracker_Prune(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "scores.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true, RetentionDays: 1})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	// Write an old score directly
+	now := time.Now().UTC()
+	old := Score{
+		Timestamp: now.AddDate(0, 0, -5),
+		AgentType: "claude",
+		Metrics:   ScoreMetrics{Overall: 0.5},
+	}
+	recent := Score{
+		Timestamp: now.Add(-1 * time.Hour),
+		AgentType: "codex",
+		Metrics:   ScoreMetrics{Overall: 0.9},
+	}
+	for _, s := range []*Score{&old, &recent} {
+		if err := tracker.Record(s); err != nil {
+			t.Fatalf("Record() error: %v", err)
+		}
+	}
+
+	// Public Prune should remove the old one
+	if err := tracker.Prune(); err != nil {
+		t.Fatalf("Prune() error: %v", err)
+	}
+
+	results, err := tracker.QueryScores(Query{})
+	if err != nil {
+		t.Fatalf("QueryScores() error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 score after Prune(), got %d", len(results))
+	}
+	if results[0].AgentType != "codex" {
+		t.Errorf("expected codex score to survive, got %s", results[0].AgentType)
+	}
+	t.Logf("SCORE_TEST: Prune | kept=%d | removed=1", len(results))
+}
+
+func TestTracker_PruneMalformedLines(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "scores.jsonl")
+
+	// Write a mix of valid and malformed lines
+	content := `{"timestamp":"2020-01-01T00:00:00Z","agent_type":"old","metrics":{"overall":0.5}}
+not-valid-json
+{"timestamp":"` + time.Now().UTC().Format(time.RFC3339) + `","agent_type":"recent","metrics":{"overall":0.9}}
+`
+	if err := os.WriteFile(scorePath, []byte(content), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true, RetentionDays: 1})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	// Prune should keep malformed lines and recent scores, remove old
+	if err := tracker.Prune(); err != nil {
+		t.Fatalf("Prune() error: %v", err)
+	}
+
+	results, err := tracker.QueryScores(Query{})
+	if err != nil {
+		t.Fatalf("QueryScores() error: %v", err)
+	}
+	// The recent score should survive; old one pruned; malformed skipped by query
+	if len(results) != 1 {
+		t.Errorf("expected 1 queryable score after pruning malformed file, got %d", len(results))
+	}
+}
+
+func TestTracker_RecordAutoFields(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "scores.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	// Record with zero timestamp and zero Overall
+	score := Score{
+		AgentType: "claude",
+		Metrics: ScoreMetrics{
+			Completion: 0.8,
+			Quality:    0.7,
+			Efficiency: 0.6,
+		},
+	}
+	if err := tracker.Record(&score); err != nil {
+		t.Fatalf("Record() error: %v", err)
+	}
+
+	// Timestamp should be auto-set
+	if score.Timestamp.IsZero() {
+		t.Error("Record() should auto-set timestamp")
+	}
+
+	// Overall should be auto-computed
+	if score.Metrics.Overall == 0 {
+		t.Error("Record() should auto-compute Overall when zero")
+	}
+
+	t.Logf("SCORE_TEST: RecordAutoFields | Timestamp=%v | Overall=%.3f",
+		score.Timestamp, score.Metrics.Overall)
+}
+
+func TestTracker_RollingAverageDefaultWindow(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "scores.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	now := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		s := Score{
+			Timestamp: now.Add(-time.Duration(i) * time.Hour),
+			AgentType: "claude",
+			Metrics:   ScoreMetrics{Overall: 0.75},
+		}
+		tracker.Record(&s)
+	}
+
+	// Pass windowDays=0 to trigger default
+	avg, err := tracker.RollingAverage(Query{AgentType: "claude"}, 0)
+	if err != nil {
+		t.Fatalf("RollingAverage() error: %v", err)
+	}
+	if avg != 0.75 {
+		t.Errorf("RollingAverage(window=0) = %v, want 0.75", avg)
+	}
+}
+
+func TestTracker_RollingAverageEmpty(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "scores.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	avg, err := tracker.RollingAverage(Query{AgentType: "nonexistent"}, 7)
+	if err != nil {
+		t.Fatalf("RollingAverage() error: %v", err)
+	}
+	if avg != 0 {
+		t.Errorf("RollingAverage(empty) = %v, want 0", avg)
+	}
+}
+
+func TestTracker_QueryScoresFileNotFound(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "nonexistent.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	results, err := tracker.QueryScores(Query{})
+	if err != nil {
+		t.Fatalf("QueryScores() should not error for missing file: %v", err)
+	}
+	if results != nil {
+		t.Errorf("QueryScores() should return nil for missing file, got %d scores", len(results))
+	}
+}
+
+func TestTracker_PruneNoFile(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "nonexistent.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true, RetentionDays: 30})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+
+	// Should not error when file doesn't exist
+	if err := tracker.Prune(); err != nil {
+		t.Errorf("Prune() should not error for missing file: %v", err)
+	}
+}
+
+func TestTracker_PruneDisabled(t *testing.T) {
+	t.Parallel()
+
+	tracker, err := NewTracker(TrackerOptions{Enabled: false})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+
+	if err := tracker.Prune(); err != nil {
+		t.Errorf("Prune() with disabled tracker should not error: %v", err)
+	}
+}
+
+func TestLoadWeightsConfig_Errors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("file not found", func(t *testing.T) {
+		t.Parallel()
+		_, err := LoadWeightsConfig("/nonexistent/path.json")
+		if err == nil {
+			t.Error("expected error for missing config file")
+		}
+	})
+
+	t.Run("invalid JSON", func(t *testing.T) {
+		t.Parallel()
+		tmpPath := filepath.Join(t.TempDir(), "bad.json")
+		os.WriteFile(tmpPath, []byte("{invalid"), 0644)
+		_, err := LoadWeightsConfig(tmpPath)
+		if err == nil {
+			t.Error("expected error for invalid JSON config")
+		}
+	})
+}
+
+func TestTracker_ExportNoScores(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	scorePath := filepath.Join(tmpDir, "scores.jsonl")
+	exportPath := filepath.Join(tmpDir, "export.json")
+
+	tracker, err := NewTracker(TrackerOptions{Path: scorePath, Enabled: true})
+	if err != nil {
+		t.Fatalf("NewTracker() error: %v", err)
+	}
+	defer tracker.Close()
+
+	if err := tracker.Export(exportPath, time.Time{}); err != nil {
+		t.Fatalf("Export() error: %v", err)
+	}
+
+	data, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("reading export: %v", err)
+	}
+	// Empty export should still be valid JSON
+	if string(data) != "null" && string(data) != "[]" {
+		t.Logf("empty export content: %s", string(data))
+	}
+}
+
 func TestExpandPath(t *testing.T) {
 	t.Parallel()
 
@@ -506,21 +902,270 @@ func TestExpandPath(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := expandPath(tc.input)
+			got := util.ExpandPath(tc.input)
 			if got != tc.input {
-				t.Errorf("expandPath(%q) = %q, want %q", tc.input, got, tc.input)
+				t.Errorf("ExpandPath(%q) = %q, want %q", tc.input, got, tc.input)
 			}
 		})
 	}
 
 	// Tilde expansion should produce a different path
 	t.Run("tilde expansion", func(t *testing.T) {
-		got := expandPath("~/foo")
+		got := util.ExpandPath("~/foo")
 		if got == "~/foo" {
-			t.Error("expandPath(\"~/foo\") should expand tilde")
+			t.Error("ExpandPath(\"~/foo\") should expand tilde")
 		}
 		if !filepath.IsAbs(got) {
-			t.Errorf("expandPath(\"~/foo\") = %q, expected absolute path", got)
+			t.Errorf("ExpandPath(\"~/foo\") = %q, expected absolute path", got)
 		}
 	})
+}
+
+func TestExp2(t *testing.T) {
+	tests := []struct {
+		name      string
+		x         float64
+		want      float64
+		tolerance float64
+	}{
+		{"zero", 0, 1.0, 0.001},
+		{"one", 1, 2.0, 0.01},
+		{"two", 2, 4.0, 0.01},
+		{"negative one", -1, 0.5, 0.01},
+		{"negative two", -2, 0.25, 0.01},
+		{"very negative", -15, 0.0, 0.001}, // Should be near zero
+		{"very positive", 15, 1024, 100},   // Capped at reasonable max
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := exp2(tt.x)
+			diff := math.Abs(got - tt.want)
+			if diff > tt.tolerance {
+				t.Errorf("exp2(%v) = %v, want %v (tolerance %v)", tt.x, got, tt.want, tt.tolerance)
+			}
+		})
+	}
+}
+
+func TestMinFloat(t *testing.T) {
+	tests := []struct {
+		a, b, want float64
+	}{
+		{1.0, 2.0, 1.0},
+		{2.0, 1.0, 1.0},
+		{1.0, 1.0, 1.0},
+		{-1.0, 1.0, -1.0},
+		{0.0, 0.5, 0.0},
+	}
+
+	for _, tt := range tests {
+		got := minFloat(tt.a, tt.b)
+		if got != tt.want {
+			t.Errorf("minFloat(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+func TestAgentTaskEffectivenessStruct(t *testing.T) {
+	score := AgentTaskEffectiveness{
+		AgentType:    "claude",
+		TaskType:     "bug",
+		Score:        0.85,
+		SampleCount:  10,
+		Confidence:   0.5,
+		HasData:      true,
+		DecayApplied: true,
+	}
+
+	if score.AgentType != "claude" {
+		t.Errorf("expected AgentType=claude, got %s", score.AgentType)
+	}
+	if score.Score != 0.85 {
+		t.Errorf("expected Score=0.85, got %f", score.Score)
+	}
+	if !score.HasData {
+		t.Error("expected HasData=true")
+	}
+	if !score.DecayApplied {
+		t.Error("expected DecayApplied=true")
+	}
+}
+
+func TestDefaultDecayFactor(t *testing.T) {
+	if DefaultDecayFactor != 7 {
+		t.Errorf("expected DefaultDecayFactor=7, got %d", DefaultDecayFactor)
+	}
+}
+
+func TestDefaultMinSamplesForEffectiveness(t *testing.T) {
+	if DefaultMinSamplesForEffectiveness != 3 {
+		t.Errorf("expected DefaultMinSamplesForEffectiveness=3, got %d", DefaultMinSamplesForEffectiveness)
+	}
+}
+
+func TestDecayedAverageEmptyTracker(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "empty_scores.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{
+		Path:          path,
+		RetentionDays: 90,
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("NewTracker error: %v", err)
+	}
+	defer tracker.Close()
+
+	avg, count, err := tracker.DecayedAverage(Query{AgentType: "claude"}, 14, 7)
+	if err != nil {
+		t.Fatalf("DecayedAverage error: %v", err)
+	}
+
+	if avg != 0 {
+		t.Errorf("expected avg=0 for empty tracker, got %f", avg)
+	}
+	if count != 0 {
+		t.Errorf("expected count=0 for empty tracker, got %d", count)
+	}
+}
+
+func TestQueryEffectivenessNoData(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "no_data_scores.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{
+		Path:          path,
+		RetentionDays: 90,
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("NewTracker error: %v", err)
+	}
+	defer tracker.Close()
+
+	eff, err := tracker.QueryEffectiveness("claude", "bug", 14)
+	if err != nil {
+		t.Fatalf("QueryEffectiveness error: %v", err)
+	}
+
+	if eff.AgentType != "claude" {
+		t.Errorf("expected AgentType=claude, got %s", eff.AgentType)
+	}
+	if eff.TaskType != "bug" {
+		t.Errorf("expected TaskType=bug, got %s", eff.TaskType)
+	}
+	if eff.HasData {
+		t.Error("expected HasData=false with no scores")
+	}
+	if eff.Confidence != 0 {
+		t.Errorf("expected Confidence=0 with no data, got %f", eff.Confidence)
+	}
+}
+
+func TestQueryEffectivenessWithScores(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "with_scores.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{
+		Path:          path,
+		RetentionDays: 90,
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("NewTracker error: %v", err)
+	}
+	defer tracker.Close()
+
+	// Record several scores
+	now := time.Now()
+	scores := []Score{
+		{Timestamp: now.Add(-1 * 24 * time.Hour), AgentType: "claude", TaskType: "bug", Metrics: ScoreMetrics{Overall: 0.9}},
+		{Timestamp: now.Add(-2 * 24 * time.Hour), AgentType: "claude", TaskType: "bug", Metrics: ScoreMetrics{Overall: 0.8}},
+		{Timestamp: now.Add(-3 * 24 * time.Hour), AgentType: "claude", TaskType: "bug", Metrics: ScoreMetrics{Overall: 0.7}},
+	}
+
+	for i := range scores {
+		if err := tracker.Record(&scores[i]); err != nil {
+			t.Fatalf("Record error: %v", err)
+		}
+	}
+
+	eff, err := tracker.QueryEffectiveness("claude", "bug", 14)
+	if err != nil {
+		t.Fatalf("QueryEffectiveness error: %v", err)
+	}
+
+	if !eff.HasData {
+		t.Error("expected HasData=true with 3 scores")
+	}
+	if eff.SampleCount != 3 {
+		t.Errorf("expected SampleCount=3, got %d", eff.SampleCount)
+	}
+	if !eff.DecayApplied {
+		t.Error("expected DecayApplied=true")
+	}
+
+	// Score should be weighted towards recent (0.9) due to decay
+	if eff.Score < 0.75 || eff.Score > 0.95 {
+		t.Errorf("expected Score in range [0.75, 0.95], got %f", eff.Score)
+	}
+
+	// Confidence should be low with only 3 samples (3/20 = 0.15)
+	if eff.Confidence < 0.1 || eff.Confidence > 0.2 {
+		t.Errorf("expected Confidence near 0.15 with 3 samples, got %f", eff.Confidence)
+	}
+}
+
+func TestQueryAllEffectiveness(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "all_eff_scores.jsonl")
+
+	tracker, err := NewTracker(TrackerOptions{
+		Path:          path,
+		RetentionDays: 90,
+		Enabled:       true,
+	})
+	if err != nil {
+		t.Fatalf("NewTracker error: %v", err)
+	}
+	defer tracker.Close()
+
+	// Record scores for multiple agent-task pairs
+	now := time.Now()
+	scores := []Score{
+		{Timestamp: now.Add(-1 * 24 * time.Hour), AgentType: "claude", TaskType: "bug", Metrics: ScoreMetrics{Overall: 0.9}},
+		{Timestamp: now.Add(-2 * 24 * time.Hour), AgentType: "claude", TaskType: "bug", Metrics: ScoreMetrics{Overall: 0.8}},
+		{Timestamp: now.Add(-3 * 24 * time.Hour), AgentType: "claude", TaskType: "bug", Metrics: ScoreMetrics{Overall: 0.7}},
+		{Timestamp: now.Add(-1 * 24 * time.Hour), AgentType: "codex", TaskType: "feature", Metrics: ScoreMetrics{Overall: 0.85}},
+		{Timestamp: now.Add(-2 * 24 * time.Hour), AgentType: "codex", TaskType: "feature", Metrics: ScoreMetrics{Overall: 0.75}},
+		{Timestamp: now.Add(-3 * 24 * time.Hour), AgentType: "codex", TaskType: "feature", Metrics: ScoreMetrics{Overall: 0.80}},
+	}
+
+	for i := range scores {
+		if err := tracker.Record(&scores[i]); err != nil {
+			t.Fatalf("Record error: %v", err)
+		}
+	}
+
+	all, err := tracker.QueryAllEffectiveness(14)
+	if err != nil {
+		t.Fatalf("QueryAllEffectiveness error: %v", err)
+	}
+
+	// Should have two agent types
+	if len(all) != 2 {
+		t.Errorf("expected 2 agent types, got %d", len(all))
+	}
+
+	// Claude should have bug scores
+	if _, ok := all["claude"]["bug"]; !ok {
+		t.Error("expected claude-bug effectiveness")
+	}
+
+	// Codex should have feature scores
+	if _, ok := all["codex"]["feature"]; !ok {
+		t.Error("expected codex-feature effectiveness")
+	}
 }

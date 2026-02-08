@@ -239,6 +239,30 @@ func TestNewSemanticStyles(t *testing.T) {
 	})
 }
 
+func TestNewSemanticStyles_PlainTheme(t *testing.T) {
+	t.Parallel()
+
+	s := NewSemanticStyles(Plain)
+
+	// Plain theme should use Reverse(true) for Selected
+	rendered := s.Selected.Render("item")
+	if rendered == "" {
+		t.Error("Selected.Render with Plain theme should not return empty")
+	}
+
+	// Plain theme should add Underline to TextWarning
+	warnRendered := s.TextWarning.Render("warn")
+	if warnRendered == "" {
+		t.Error("TextWarning.Render with Plain theme should not return empty")
+	}
+
+	// Plain theme should add Underline to TextError
+	errRendered := s.TextError.Render("err")
+	if errRendered == "" {
+		t.Error("TextError.Render with Plain theme should not return empty")
+	}
+}
+
 func TestDefaultSemanticStyles(t *testing.T) {
 	s := DefaultSemanticStyles()
 

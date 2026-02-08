@@ -15,6 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/audit"
+	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
 // Default Ollama settings
@@ -31,6 +34,7 @@ var (
 	ErrContextLengthExceeded = errors.New("context length exceeded")
 	ErrGPUMemoryExhausted    = errors.New("GPU memory exhausted")
 	ErrPullFailed            = errors.New("model pull failed")
+	ErrDeleteFailed          = errors.New("model delete failed")
 	ErrStreamClosed          = errors.New("response stream closed")
 )
 
@@ -51,6 +55,12 @@ type AgentBackend interface {
 
 	// PullModel downloads a model
 	PullModel(ctx context.Context, name string) error
+
+	// PullModelWithProgress downloads a model and streams progress updates.
+	PullModelWithProgress(ctx context.Context, name string, onProgress func(ModelPullProgress)) error
+
+	// DeleteModel removes a local model.
+	DeleteModel(ctx context.Context, name string) error
 
 	// Close releases any resources
 	Close() error
@@ -90,6 +100,15 @@ type ModelDetails struct {
 	Families          []string `json:"families,omitempty"`
 	ParameterSize     string   `json:"parameter_size,omitempty"`
 	QuantizationLevel string   `json:"quantization_level,omitempty"`
+}
+
+// ModelPullProgress represents a single pull progress update from Ollama.
+type ModelPullProgress struct {
+	Status    string `json:"status"`
+	Digest    string `json:"digest,omitempty"`
+	Total     int64  `json:"total,omitempty"`
+	Completed int64  `json:"completed,omitempty"`
+	Done      bool   `json:"done,omitempty"`
 }
 
 // Adapter implements AgentBackend for Ollama
@@ -248,6 +267,11 @@ type ollamaPullRequest struct {
 	Stream bool   `json:"stream"`
 }
 
+// ollamaDeleteRequest is the request body for /api/delete
+type ollamaDeleteRequest struct {
+	Name string `json:"name"`
+}
+
 // ollamaPullResponse is a streaming response from /api/pull
 type ollamaPullResponse struct {
 	Status    string `json:"status"`
@@ -257,7 +281,7 @@ type ollamaPullResponse struct {
 }
 
 // SendPrompt sends a prompt and waits for the complete response
-func (a *Adapter) SendPrompt(ctx context.Context, prompt string) (*Response, error) {
+func (a *Adapter) SendPrompt(ctx context.Context, prompt string) (respOut *Response, err error) {
 	a.mu.RLock()
 	if !a.connected {
 		a.mu.RUnlock()
@@ -270,6 +294,43 @@ func (a *Adapter) SendPrompt(ctx context.Context, prompt string) (*Response, err
 	if model == "" {
 		return nil, errors.New("no model set; call SetModel first")
 	}
+
+	correlationID := audit.NewCorrelationID()
+	auditStart := time.Now()
+	_ = audit.LogEvent("", audit.EventTypeSend, audit.ActorSystem, "ollama.send", map[string]interface{}{
+		"phase":          "start",
+		"backend":        "ollama",
+		"model":          model,
+		"stream":         false,
+		"prompt_preview": util.Truncate(strings.TrimSpace(prompt), 100),
+		"prompt_length":  len(prompt),
+		"correlation_id": correlationID,
+	}, nil)
+	defer func() {
+		payload := map[string]interface{}{
+			"phase":          "finish",
+			"backend":        "ollama",
+			"model":          model,
+			"stream":         false,
+			"success":        err == nil,
+			"duration_ms":    time.Since(auditStart).Milliseconds(),
+			"correlation_id": correlationID,
+		}
+		if respOut != nil {
+			payload["output_preview"] = util.Truncate(strings.TrimSpace(respOut.Content), 120)
+			payload["output_length"] = len(respOut.Content)
+			payload["total_tokens"] = respOut.TotalTokens
+			payload["prompt_tokens"] = respOut.PromptTokens
+			payload["output_tokens"] = respOut.OutputTokens
+			payload["done"] = respOut.Done
+		}
+		if err != nil {
+			payload["error"] = err.Error()
+			_ = audit.LogEvent("", audit.EventTypeError, audit.ActorSystem, "ollama.send", payload, nil)
+			return
+		}
+		_ = audit.LogEvent("", audit.EventTypeResponse, audit.ActorSystem, "ollama.response", payload, nil)
+	}()
 
 	reqBody := ollamaGenerateRequest{
 		Model:  model,
@@ -303,7 +364,7 @@ func (a *Adapter) SendPrompt(ctx context.Context, prompt string) (*Response, err
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	return &Response{
+	respOut = &Response{
 		Content:      ollamaResp.Response,
 		Model:        ollamaResp.Model,
 		Done:         ollamaResp.Done,
@@ -311,11 +372,12 @@ func (a *Adapter) SendPrompt(ctx context.Context, prompt string) (*Response, err
 		OutputTokens: ollamaResp.EvalCount,
 		TotalTokens:  ollamaResp.PromptEvalCount + ollamaResp.EvalCount,
 		Duration:     time.Duration(ollamaResp.TotalDuration),
-	}, nil
+	}
+	return respOut, nil
 }
 
 // StreamResponse sends a prompt and returns a channel of streaming tokens
-func (a *Adapter) StreamResponse(ctx context.Context, prompt string) (<-chan Token, error) {
+func (a *Adapter) StreamResponse(ctx context.Context, prompt string) (stream <-chan Token, err error) {
 	a.mu.RLock()
 	if !a.connected {
 		a.mu.RUnlock()
@@ -328,6 +390,36 @@ func (a *Adapter) StreamResponse(ctx context.Context, prompt string) (<-chan Tok
 	if model == "" {
 		return nil, errors.New("no model set; call SetModel first")
 	}
+
+	correlationID := audit.NewCorrelationID()
+	auditStart := time.Now()
+	_ = audit.LogEvent("", audit.EventTypeSend, audit.ActorSystem, "ollama.stream", map[string]interface{}{
+		"phase":          "start",
+		"backend":        "ollama",
+		"model":          model,
+		"stream":         true,
+		"prompt_preview": util.Truncate(strings.TrimSpace(prompt), 100),
+		"prompt_length":  len(prompt),
+		"correlation_id": correlationID,
+	}, nil)
+	defer func() {
+		payload := map[string]interface{}{
+			"phase":          "finish",
+			"backend":        "ollama",
+			"model":          model,
+			"stream":         true,
+			"stream_started": err == nil,
+			"success":        err == nil,
+			"duration_ms":    time.Since(auditStart).Milliseconds(),
+			"correlation_id": correlationID,
+		}
+		if err != nil {
+			payload["error"] = err.Error()
+			_ = audit.LogEvent("", audit.EventTypeError, audit.ActorSystem, "ollama.stream", payload, nil)
+			return
+		}
+		_ = audit.LogEvent("", audit.EventTypeResponse, audit.ActorSystem, "ollama.stream", payload, nil)
+	}()
 
 	reqBody := ollamaGenerateRequest{
 		Model:  model,
@@ -449,6 +541,11 @@ func (a *Adapter) ListModels(ctx context.Context) ([]Model, error) {
 
 // PullModel downloads a model from the Ollama registry
 func (a *Adapter) PullModel(ctx context.Context, name string) error {
+	return a.PullModelWithProgress(ctx, name, nil)
+}
+
+// PullModelWithProgress downloads a model from the Ollama registry and emits progress callbacks.
+func (a *Adapter) PullModelWithProgress(ctx context.Context, name string, onProgress func(ModelPullProgress)) error {
 	a.mu.RLock()
 	if !a.connected {
 		a.mu.RUnlock()
@@ -506,6 +603,18 @@ func (a *Adapter) PullModel(ctx context.Context, name string) error {
 		}
 
 		lastStatus = pullResp.Status
+		done := pullResp.Status == "success" ||
+			strings.Contains(strings.ToLower(pullResp.Status), "done") ||
+			strings.Contains(strings.ToLower(pullResp.Status), "complete")
+		if onProgress != nil {
+			onProgress(ModelPullProgress{
+				Status:    pullResp.Status,
+				Digest:    pullResp.Digest,
+				Total:     pullResp.Total,
+				Completed: pullResp.Completed,
+				Done:      done,
+			})
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -518,6 +627,41 @@ func (a *Adapter) PullModel(ctx context.Context, name string) error {
 			!strings.Contains(strings.ToLower(lastStatus), "complete") {
 			return fmt.Errorf("%w: %s", ErrPullFailed, lastStatus)
 		}
+	}
+
+	return nil
+}
+
+// DeleteModel removes a local model from Ollama.
+func (a *Adapter) DeleteModel(ctx context.Context, name string) error {
+	a.mu.RLock()
+	if !a.connected {
+		a.mu.RUnlock()
+		return ErrNotConnected
+	}
+	host := a.host
+	a.mu.RUnlock()
+
+	reqBody := ollamaDeleteRequest{Name: name}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "DELETE", host+"/api/delete", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrDeleteFailed, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return a.parseErrorResponse(resp)
 	}
 
 	return nil

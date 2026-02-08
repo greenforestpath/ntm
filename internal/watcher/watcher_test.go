@@ -3,6 +3,7 @@ package watcher
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -123,6 +124,68 @@ func TestWatcherRecursive(t *testing.T) {
 	paths := w.WatchedPaths()
 	if len(paths) != 2 {
 		t.Errorf("WatchedPaths() = %v, want 2 paths (root + subdir)", paths)
+	}
+}
+
+func TestWatcherRecursiveRemove(t *testing.T) {
+	tmpDir := t.TempDir()
+	subDir := filepath.Join(tmpDir, "subdir")
+	if err := os.Mkdir(subDir, 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	nestedFile := filepath.Join(subDir, "file.txt")
+	if err := os.WriteFile(nestedFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		opts []Option
+	}{
+		{
+			name: "fsnotify-or-fallback",
+			opts: []Option{WithRecursive(true)},
+		},
+		{
+			name: "polling-forced",
+			opts: []Option{WithRecursive(true), WithPolling(true)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, err := New(func(events []Event) {}, tt.opts...)
+			if err != nil {
+				t.Fatalf("New() failed: %v", err)
+			}
+			defer w.Close()
+
+			if err := w.Add(tmpDir); err != nil {
+				t.Fatalf("Add() failed: %v", err)
+			}
+
+			paths := w.WatchedPaths()
+			if len(paths) != 2 {
+				t.Fatalf("WatchedPaths() = %v, want 2 paths (root + subdir)", paths)
+			}
+
+			if err := w.Remove(tmpDir); err != nil {
+				t.Fatalf("Remove() failed: %v", err)
+			}
+
+			paths = w.WatchedPaths()
+			if len(paths) != 0 {
+				t.Fatalf("WatchedPaths() after remove = %v, want 0 paths", paths)
+			}
+
+			if w.pollMode {
+				for p := range w.snapshots {
+					if strings.HasPrefix(p, tmpDir+string(os.PathSeparator)) || p == tmpDir {
+						t.Fatalf("expected poll snapshot cleanup, found %q", p)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -529,5 +592,38 @@ func TestWatcherIgnorePaths(t *testing.T) {
 		if e.Path == ignoredFile {
 			t.Errorf("received event for ignored file: %s", e.Path)
 		}
+	}
+}
+
+// =============================================================================
+// isPathUnderRoots — all branches (bd-4b4zf)
+// =============================================================================
+
+func TestIsPathUnderRoots_AllBranches(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		path  string
+		roots []string
+		want  bool
+	}{
+		{"empty roots", "/foo/bar", nil, false},
+		{"exact match", "/foo", []string{"/foo"}, true},
+		{"nested path", "/foo/bar/baz", []string{"/foo"}, true},
+		{"sibling path not matched", "/foobar", []string{"/foo"}, false},
+		{"no match", "/bar", []string{"/foo"}, false},
+		{"multiple roots match second", "/bar/baz", []string{"/foo", "/bar"}, true},
+		{"multiple roots no match", "/qux", []string{"/foo", "/bar"}, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := isPathUnderRoots(tc.path, tc.roots)
+			if got != tc.want {
+				t.Errorf("isPathUnderRoots(%q, %v) = %v, want %v", tc.path, tc.roots, got, tc.want)
+			}
+		})
 	}
 }

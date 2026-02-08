@@ -1158,6 +1158,98 @@ func TestDefaultHints(t *testing.T) {
 	})
 }
 
+func TestDashboardHelpOptionsFrom(t *testing.T) {
+	t.Run("minimal", func(t *testing.T) {
+		opts := DashboardHelpOptionsFrom(" minimal ", false)
+		if opts.Verbosity != DashboardHelpVerbosityMinimal {
+			t.Fatalf("expected minimal verbosity, got %v", opts.Verbosity)
+		}
+		if opts.Debug {
+			t.Fatal("expected debug false")
+		}
+	})
+
+	t.Run("full default", func(t *testing.T) {
+		opts := DashboardHelpOptionsFrom("full", false)
+		if opts.Verbosity != DashboardHelpVerbosityFull {
+			t.Fatalf("expected full verbosity, got %v", opts.Verbosity)
+		}
+	})
+
+	t.Run("debug forces full", func(t *testing.T) {
+		opts := DashboardHelpOptionsFrom("minimal", true)
+		if opts.Verbosity != DashboardHelpVerbosityFull {
+			t.Fatalf("expected full verbosity when debug, got %v", opts.Verbosity)
+		}
+		if !opts.Debug {
+			t.Fatal("expected debug true")
+		}
+	})
+}
+
+func TestCommonHintSets(t *testing.T) {
+	nav := CommonNavigationHints()
+	if len(nav) < 2 {
+		t.Fatalf("expected navigation hints, got %d", len(nav))
+	}
+	if nav[0].Desc != "navigate" {
+		t.Fatalf("expected navigate description, got %q", nav[0].Desc)
+	}
+
+	selectHints := CommonSelectionHints()
+	if len(selectHints) < 2 {
+		t.Fatalf("expected selection hints, got %d", len(selectHints))
+	}
+	if selectHints[0].Desc != "select" {
+		t.Fatalf("expected select description, got %q", selectHints[0].Desc)
+	}
+
+	quitHints := CommonQuitHints()
+	if len(quitHints) < 2 {
+		t.Fatalf("expected quit hints, got %d", len(quitHints))
+	}
+	if quitHints[0].Desc != "back" {
+		t.Fatalf("expected back description, got %q", quitHints[0].Desc)
+	}
+}
+
+func TestDashboardHelpVerbosityMapping(t *testing.T) {
+	t.Parallel()
+
+	hasDesc := func(hints []KeyHint, want string) bool {
+		for _, h := range hints {
+			if h.Desc == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("minimal", func(t *testing.T) {
+		hints := DashboardHelpBarHints(DashboardHelpOptions{Verbosity: DashboardHelpVerbosityMinimal})
+		if !hasDesc(hints, "navigate") || !hasDesc(hints, "select") || !hasDesc(hints, "help") || !hasDesc(hints, "quit") {
+			t.Fatalf("expected minimal hints to include navigate/select/help/quit, got %#v", hints)
+		}
+		if hasDesc(hints, "zoom") || hasDesc(hints, "refresh") {
+			t.Fatalf("expected minimal hints to exclude zoom/refresh, got %#v", hints)
+		}
+	})
+
+	t.Run("full", func(t *testing.T) {
+		hints := DashboardHelpBarHints(DashboardHelpOptions{Verbosity: DashboardHelpVerbosityFull})
+		if !hasDesc(hints, "zoom") || !hasDesc(hints, "refresh") {
+			t.Fatalf("expected full hints to include zoom/refresh, got %#v", hints)
+		}
+	})
+
+	t.Run("debug_adds_debug_hints", func(t *testing.T) {
+		hints := DashboardHelpBarHints(DashboardHelpOptions{Verbosity: DashboardHelpVerbosityFull, Debug: true})
+		if !hasDesc(hints, "diag") || !hasDesc(hints, "scan") || !hasDesc(hints, "checkpoint") {
+			t.Fatalf("expected debug hints to include diag/scan/checkpoint, got %#v", hints)
+		}
+	})
+}
+
 func TestHelpSections(t *testing.T) {
 	t.Run("palette sections", func(t *testing.T) {
 		sections := PaletteHelpSections()
@@ -1181,7 +1273,7 @@ func TestHelpSections(t *testing.T) {
 	})
 
 	t.Run("dashboard sections", func(t *testing.T) {
-		sections := DashboardHelpSections()
+		sections := DashboardHelpSections(DashboardHelpOptions{Verbosity: DashboardHelpVerbosityFull})
 		if len(sections) == 0 {
 			t.Error("expected non-empty dashboard sections")
 		}
@@ -1193,8 +1285,8 @@ func TestHelpSections(t *testing.T) {
 		if !titles["Navigation"] {
 			t.Error("expected Navigation section")
 		}
-		if !titles["Pane Actions"] {
-			t.Error("expected Pane Actions section")
+		if !titles["Actions"] {
+			t.Error("expected Actions section")
 		}
 	})
 }
@@ -1403,7 +1495,7 @@ func TestHelpOverlayAcrossTiers(t *testing.T) {
 func TestHelpOverlayStructureStability(t *testing.T) {
 	t.Parallel()
 
-	sections := DashboardHelpSections()
+	sections := DashboardHelpSections(DashboardHelpOptions{Verbosity: DashboardHelpVerbosityFull})
 	opts := HelpOverlayOptions{
 		Title:    "Dashboard Shortcuts",
 		Sections: sections,

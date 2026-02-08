@@ -1,6 +1,7 @@
 package ensemble
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -117,11 +118,11 @@ func TestContextCache_Prune(t *testing.T) {
 
 func TestContextFingerprint_CacheKey_Deterministic(t *testing.T) {
 	fp := ContextFingerprint{
-		ProjectRoot: "/tmp/demo",
-		GitHead:     "deadbeef",
-		ReadmeHash:  "abc",
+		ProjectRoot:  "/tmp/demo",
+		GitHead:      "deadbeef",
+		ReadmeHash:   "abc",
 		QuestionHash: "q1",
-		ModeKey:     "mode-a",
+		ModeKey:      "mode-a",
 	}
 
 	key1 := fp.cacheKey()
@@ -134,5 +135,52 @@ func TestContextFingerprint_CacheKey_Deterministic(t *testing.T) {
 	fp2.GitHead = "beadfeed"
 	if fp2.cacheKey() == key1 {
 		t.Fatal("expected cacheKey to change when fingerprint changes")
+	}
+}
+
+func TestNewContextPackCache_DefaultDirAndLogger(t *testing.T) {
+	cacheBase := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheBase)
+
+	cache, err := NewContextPackCache(CacheConfig{Enabled: true, TTL: time.Minute, MaxEntries: 1}, nil)
+	if err != nil {
+		t.Fatalf("NewContextPackCache error: %v", err)
+	}
+
+	if cache == nil {
+		t.Fatal("expected cache")
+	}
+	if cache.dir == "" {
+		t.Fatal("expected cache dir to be set")
+	}
+	if cache.loggerSafe() == nil {
+		t.Fatal("expected loggerSafe to return a logger")
+	}
+
+	// Coverage: ensure non-nil receiver returns configured logger.
+	cache.logger = slog.Default()
+	if cache.loggerSafe() != slog.Default() {
+		t.Fatal("expected loggerSafe to return configured logger")
+	}
+}
+
+func TestDefaultContextCacheDir_UsesXDGCacheHome(t *testing.T) {
+	cacheBase := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheBase)
+
+	got, err := defaultContextCacheDir()
+	if err != nil {
+		t.Fatalf("defaultContextCacheDir error: %v", err)
+	}
+	want := filepath.Join(cacheBase, "ntm", "context-packs")
+	if got != want {
+		t.Fatalf("defaultContextCacheDir = %q, want %q", got, want)
+	}
+}
+
+func TestContextPackCache_loggerSafe_NilReceiver(t *testing.T) {
+	var cache *ContextPackCache
+	if cache.loggerSafe() == nil {
+		t.Fatal("expected loggerSafe to return slog.Default for nil receiver")
 	}
 }

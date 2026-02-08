@@ -3,7 +3,12 @@ package serve
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
+	"log"
 	"net/http"
+	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -215,6 +220,9 @@ func (s *Server) handleAccountQuotaV1(w http.ResponseWriter, r *http.Request) {
 			RateLimited:       status.RateLimited,
 		})
 	}
+	sort.Slice(quotas, func(i, j int) bool {
+		return quotas[i].Provider < quotas[j].Provider
+	})
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"quotas": quotas,
@@ -269,6 +277,13 @@ func (s *Server) handlePatchAutoRotateConfigV1(w http.ResponseWriter, r *http.Re
 	config := accountState.config
 	accountState.mu.Unlock()
 
+	log.Printf("REST: accounts auto-rotate config updated enabled=%v cooldown_seconds=%d on_rate_limit=%v request_id=%s",
+		config.AutoRotateEnabled,
+		config.AutoRotateCooldownSeconds,
+		config.AutoRotateOnRateLimit,
+		reqID,
+	)
+
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"config": config,
 	}, reqID)
@@ -283,13 +298,14 @@ func (s *Server) handleAccountHistoryV1(w http.ResponseWriter, r *http.Request) 
 	limitStr := r.URL.Query().Get("limit")
 	limit := 50 // default
 	if limitStr != "" {
-		if parsed, err := json.Number(limitStr).Int64(); err == nil && parsed > 0 {
-			limit = int(parsed)
+		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 {
+			limit = parsed
 		}
 	}
 
 	accountState.mu.RLock()
-	history := accountState.history
+	history := append([]AccountRotationEvent(nil), accountState.history...)
+	total := len(history)
 	accountState.mu.RUnlock()
 
 	// Return most recent events first, limited
@@ -305,7 +321,7 @@ func (s *Server) handleAccountHistoryV1(w http.ResponseWriter, r *http.Request) 
 
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"history": reversed,
-		"total":   len(accountState.history),
+		"total":   total,
 	}, reqID)
 }
 
@@ -330,6 +346,7 @@ func (s *Server) handleRotateAccountV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("REST: account rotate requested provider=%s account_id=%s request_id=%s", req.Provider, req.AccountID, reqID)
 	output, err := robot.GetSwitchAccount(robot.SwitchAccountOptions{
 		Provider:  req.Provider,
 		AccountID: req.AccountID,
@@ -371,6 +388,16 @@ func (s *Server) handleRotateAccountV1(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	log.Printf("REST: account rotated provider=%s previous=%s new=%s success=%v automatic=%v request_id=%s",
+		req.Provider,
+		output.Switch.PreviousAccount,
+		output.Switch.NewAccount,
+		output.Switch.Success,
+		false,
+		reqID,
+	)
+	logAccountQuotaSnapshot(reqID, req.Provider)
+
 	if !output.Success {
 		statusCode := http.StatusInternalServerError
 		if output.ErrorCode == robot.ErrCodeDependencyMissing {
@@ -399,6 +426,7 @@ func (s *Server) handleListAccountsByProviderV1(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	log.Printf("REST: account list requested provider=%s request_id=%s", provider, reqID)
 	output, err := robot.GetAccountsList(robot.AccountsListOptions{
 		Provider: provider,
 	})
@@ -441,13 +469,14 @@ func (s *Server) handleRotateProviderAccountV1(w http.ResponseWriter, r *http.Re
 	}
 
 	// Request body is optional
-	if r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 			writeErrorResponse(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid JSON body", nil, reqID)
 			return
 		}
 	}
 
+	log.Printf("REST: account rotate requested provider=%s account_id=%s request_id=%s", provider, req.AccountID, reqID)
 	output, err := robot.GetSwitchAccount(robot.SwitchAccountOptions{
 		Provider:  provider,
 		AccountID: req.AccountID,
@@ -488,6 +517,16 @@ func (s *Server) handleRotateProviderAccountV1(w http.ResponseWriter, r *http.Re
 		})
 	}
 
+	log.Printf("REST: account rotated provider=%s previous=%s new=%s success=%v automatic=%v request_id=%s",
+		provider,
+		output.Switch.PreviousAccount,
+		output.Switch.NewAccount,
+		output.Switch.Success,
+		false,
+		reqID,
+	)
+	logAccountQuotaSnapshot(reqID, provider)
+
 	if !output.Success {
 		statusCode := http.StatusInternalServerError
 		if output.ErrorCode == robot.ErrCodeDependencyMissing {
@@ -503,4 +542,23 @@ func (s *Server) handleRotateProviderAccountV1(w http.ResponseWriter, r *http.Re
 	writeSuccessResponse(w, http.StatusOK, map[string]interface{}{
 		"switch": output.Switch,
 	}, reqID)
+}
+
+func logAccountQuotaSnapshot(reqID, provider string) {
+	output, err := robot.GetAccountStatus(robot.AccountStatusOptions{Provider: provider})
+	if err != nil || output == nil || !output.Success {
+		return
+	}
+	status, ok := output.Accounts[provider]
+	if !ok {
+		return
+	}
+	log.Printf("REST: account quota snapshot provider=%s current=%s rate_limited=%v available_accounts=%d limit_reset=%s request_id=%s",
+		provider,
+		status.Current,
+		status.RateLimited,
+		status.AvailableAccounts,
+		status.LimitReset,
+		reqID,
+	)
 }

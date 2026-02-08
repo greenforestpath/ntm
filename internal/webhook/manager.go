@@ -14,10 +14,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"text/template"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
 // Default configuration values
@@ -45,14 +48,17 @@ type Event struct {
 
 // WebhookConfig holds configuration for a single webhook endpoint
 type WebhookConfig struct {
-	ID       string            `toml:"id" json:"id"`
-	Name     string            `toml:"name" json:"name"`
-	URL      string            `toml:"url" json:"url"`
-	Method   string            `toml:"method" json:"method"`     // HTTP method (default POST)
-	Template string            `toml:"template" json:"template"` // Go template for payload
-	Headers  map[string]string `toml:"headers" json:"headers"`
-	Events   []string          `toml:"events" json:"events"` // Event types to receive (empty = all)
-	Enabled  bool              `toml:"enabled" json:"enabled"`
+	ID       string `toml:"id" json:"id"`
+	Name     string `toml:"name" json:"name"`
+	URL      string `toml:"url" json:"url"`
+	Method   string `toml:"method" json:"method"`     // HTTP method (default POST)
+	Template string `toml:"template" json:"template"` // Go template for payload
+	// Format selects a built-in JSON payload formatter when Template is empty.
+	// Supported: json, slack, discord, teams.
+	Format  string            `toml:"format" json:"format"`
+	Headers map[string]string `toml:"headers" json:"headers"`
+	Events  []string          `toml:"events" json:"events"` // Event types to receive (empty = all)
+	Enabled bool              `toml:"enabled" json:"enabled"`
 
 	// Per-webhook timeout (overrides default)
 	Timeout time.Duration `toml:"timeout" json:"timeout,omitempty"`
@@ -127,6 +133,33 @@ func DefaultManagerConfig() ManagerConfig {
 	}
 }
 
+type managerContext struct {
+	done     chan struct{}
+	canceled atomic.Bool
+	once     sync.Once
+}
+
+func newManagerContext() (*managerContext, context.CancelFunc) {
+	ctx := &managerContext{done: make(chan struct{})}
+	cancel := func() {
+		ctx.once.Do(func() {
+			ctx.canceled.Store(true)
+			close(ctx.done)
+		})
+	}
+	return ctx, cancel
+}
+
+func (c *managerContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *managerContext) Done() <-chan struct{}       { return c.done }
+func (c *managerContext) Err() error {
+	if c.canceled.Load() {
+		return context.Canceled
+	}
+	return nil
+}
+func (c *managerContext) Value(key any) any { return nil }
+
 // WebhookManager manages webhook registration and event dispatch
 type WebhookManager struct {
 	config ManagerConfig
@@ -161,6 +194,8 @@ type WebhookManager struct {
 
 	// Logging callback (optional)
 	Logger func(format string, args ...interface{})
+
+	redactionCfg *redaction.Config
 }
 
 // NewManager creates a new WebhookManager with the given configuration
@@ -198,6 +233,15 @@ func NewManager(cfg ManagerConfig) *WebhookManager {
 	return m
 }
 
+// NewManagerWithRedaction creates a webhook manager that redacts event content
+// (message + details) before serialization/dispatch.
+func NewManagerWithRedaction(cfg ManagerConfig, redactionCfg redaction.Config) *WebhookManager {
+	m := NewManager(cfg)
+	cfgCopy := redactionCfg
+	m.redactionCfg = &cfgCopy
+	return m
+}
+
 // Register adds a webhook configuration to the manager
 func (m *WebhookManager) Register(cfg WebhookConfig) error {
 	if cfg.URL == "" {
@@ -220,6 +264,11 @@ func (m *WebhookManager) Register(cfg WebhookConfig) error {
 	}
 	if cfg.Retry.MaxDelay <= 0 {
 		cfg.Retry.MaxDelay = DefaultMaxBackoff
+	}
+	if cfg.Template == "" && cfg.Format != "" {
+		if _, err := buildBuiltInPayload(Event{}, cfg.Format); err != nil {
+			return err
+		}
 	}
 
 	m.webhooksMu.Lock()
@@ -254,6 +303,8 @@ func (m *WebhookManager) Dispatch(event Event) error {
 		event.Timestamp = time.Now().UTC()
 	}
 
+	event = m.sanitizeEvent(event)
+
 	m.webhooksMu.RLock()
 	webhooks := make([]*WebhookConfig, 0, len(m.webhooks))
 	for _, wh := range m.webhooks {
@@ -281,13 +332,53 @@ func (m *WebhookManager) Dispatch(event Event) error {
 		case m.queue <- delivery:
 			// Successfully queued
 		default:
-			// Queue full, drop oldest if possible
-			m.queueFull.Add(1)
-			m.log("webhook queue full, dropping event %s for webhook %s", event.ID, wh.ID)
+			// Queue full. Drop the oldest delivery so we keep the newest.
+			select {
+			case <-m.queue:
+				// Count actual dropped deliveries (oldest).
+				m.queueFull.Add(1)
+			default:
+				// Race: another worker/drainer freed space before we could drop.
+			}
+			select {
+			case m.queue <- delivery:
+			default:
+				// Queue still full. Drop the new delivery too.
+				m.queueFull.Add(1)
+				m.log("webhook queue full, dropping event %s for webhook %s", event.ID, wh.ID)
+			}
 		}
 	}
 
 	return nil
+}
+
+func (m *WebhookManager) sanitizeEvent(event Event) Event {
+	if m.redactionCfg == nil || m.redactionCfg.Mode == redaction.ModeOff {
+		return event
+	}
+
+	cfg := *m.redactionCfg
+	if cfg.Mode != redaction.ModeOff {
+		cfg.Mode = redaction.ModeRedact
+	}
+
+	out := event
+	if out.Message != "" {
+		out.Message = redaction.ScanAndRedact(out.Message, cfg).Output
+	}
+	if len(out.Details) > 0 {
+		redactedDetails := make(map[string]string, len(out.Details))
+		for k, v := range out.Details {
+			if v == "" {
+				redactedDetails[k] = v
+				continue
+			}
+			redactedDetails[k] = redaction.ScanAndRedact(v, cfg).Output
+		}
+		out.Details = redactedDetails
+	}
+	return out
 }
 
 // Start begins background processing of the webhook queue
@@ -296,7 +387,7 @@ func (m *WebhookManager) Start() error {
 		return errors.New("webhook manager already started")
 	}
 
-	m.ctx, m.cancel = context.WithCancel(context.Background())
+	m.ctx, m.cancel = newManagerContext()
 
 	// Start worker goroutines
 	for i := 0; i < m.config.WorkerCount; i++ {
@@ -585,7 +676,9 @@ func (m *WebhookManager) send(d *Delivery) (int, error) {
 func (m *WebhookManager) buildPayload(d *Delivery) ([]byte, error) {
 	tmplStr := d.Webhook.Template
 	if tmplStr == "" {
-		// Default JSON payload
+		if d.Webhook.Format != "" {
+			return buildBuiltInPayload(d.Event, d.Webhook.Format)
+		}
 		return json.Marshal(d.Event)
 	}
 
@@ -678,9 +771,24 @@ func (m *WebhookManager) matchesEvent(wh *WebhookConfig, eventType string) bool 
 	if len(wh.Events) == 0 {
 		return true // Subscribe to all events
 	}
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	if eventType == "" {
+		return false
+	}
 	for _, e := range wh.Events {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if e == "" {
+			continue
+		}
 		if e == eventType || e == "*" {
 			return true
+		}
+		// Prefix wildcard match: "agent.*" matches "agent.started", etc.
+		if strings.HasSuffix(e, ".*") {
+			prefix := strings.TrimSuffix(e, "*")
+			if strings.HasPrefix(eventType, prefix) {
+				return true
+			}
 		}
 	}
 	return false

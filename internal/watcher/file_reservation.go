@@ -50,7 +50,7 @@ type FileReservationWatcher struct {
 	captureLines       int
 	activeReservations map[string]*PaneReservation // paneID -> reservation
 	mu                 sync.Mutex
-	cancelFunc         context.CancelFunc
+	stopCh             chan struct{}
 	wg                 sync.WaitGroup
 	debug              bool
 	conflictCallback   ConflictCallback // Called when conflicts are detected
@@ -149,11 +149,25 @@ func NewFileReservationWatcher(opts ...FileReservationWatcherOption) *FileReserv
 
 // Start begins the file reservation watcher in a background goroutine.
 func (w *FileReservationWatcher) Start(ctx context.Context) {
-	ctx, cancel := context.WithCancel(ctx)
-	w.cancelFunc = cancel
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	w.mu.Lock()
+	if w.stopCh != nil {
+		w.mu.Unlock()
+		if w.debug {
+			log.Printf("[FileReservationWatcher] Start called while already running")
+		}
+		return
+	}
+
+	stopCh := make(chan struct{})
+	w.stopCh = stopCh
+	w.mu.Unlock()
 
 	w.wg.Add(1)
-	go w.run(ctx)
+	go w.run(ctx, stopCh)
 
 	if w.debug {
 		log.Printf("[FileReservationWatcher] Started with pollInterval=%v idleTimeout=%v", w.pollInterval, w.idleTimeout)
@@ -162,8 +176,13 @@ func (w *FileReservationWatcher) Start(ctx context.Context) {
 
 // Stop halts the file reservation watcher and releases all reservations.
 func (w *FileReservationWatcher) Stop() {
-	if w.cancelFunc != nil {
-		w.cancelFunc()
+	w.mu.Lock()
+	stopCh := w.stopCh
+	w.stopCh = nil
+	w.mu.Unlock()
+
+	if stopCh != nil {
+		close(stopCh)
 	}
 	w.wg.Wait()
 
@@ -176,7 +195,7 @@ func (w *FileReservationWatcher) Stop() {
 }
 
 // run is the main polling loop.
-func (w *FileReservationWatcher) run(ctx context.Context) {
+func (w *FileReservationWatcher) run(ctx context.Context, stopCh <-chan struct{}) {
 	defer w.wg.Done()
 
 	ticker := time.NewTicker(w.pollInterval)
@@ -184,6 +203,8 @@ func (w *FileReservationWatcher) run(ctx context.Context) {
 
 	for {
 		select {
+		case <-stopCh:
+			return
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
@@ -353,8 +374,10 @@ func (w *FileReservationWatcher) OnFileEdit(ctx context.Context, sessionName str
 							if r.PathPattern == conflict.Path {
 								for _, holder := range conflict.Holders {
 									if r.AgentName == holder {
-										fc.ReservedSince = &r.CreatedTS
-										fc.ExpiresAt = &r.ExpiresTS
+										reservedSince := r.CreatedTS.Time
+										fc.ReservedSince = &reservedSince
+										expiresAt := r.ExpiresTS.Time
+										fc.ExpiresAt = &expiresAt
 										fc.HolderReservationIDs = append(fc.HolderReservationIDs, r.ID)
 									}
 								}

@@ -112,6 +112,53 @@ func (vt *VelocityTracker) Update() (*VelocitySample, error) {
 	return &sample, nil
 }
 
+// UpdateWithOutput calculates velocity from pre-captured output.
+// Use this when you've already captured the pane content externally.
+func (vt *VelocityTracker) UpdateWithOutput(output string) (*VelocitySample, error) {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+
+	now := time.Now()
+
+	// Strip ANSI escape sequences before counting
+	cleanOutput := status.StripANSI(output)
+
+	// Count runes (Unicode characters), not bytes
+	currentRunes := utf8.RuneCountInString(cleanOutput)
+	previousRunes := utf8.RuneCountInString(vt.LastCapture)
+
+	// Calculate chars added
+	// Handle shrinking buffer (scroll, clear) by treating negative delta as 0
+	charsAdded := currentRunes - previousRunes
+	if charsAdded < 0 {
+		charsAdded = 0
+	}
+
+	// Calculate velocity (chars/sec)
+	var velocity float64
+	if !vt.LastCaptureAt.IsZero() {
+		elapsed := now.Sub(vt.LastCaptureAt).Seconds()
+		if elapsed > 0 {
+			velocity = float64(charsAdded) / elapsed
+		}
+	}
+
+	sample := VelocitySample{
+		Timestamp:  now,
+		CharsAdded: charsAdded,
+		Velocity:   velocity,
+	}
+
+	// Add sample to circular buffer
+	vt.addSampleLocked(sample)
+
+	// Update last capture state
+	vt.LastCapture = cleanOutput
+	vt.LastCaptureAt = now
+
+	return &sample, nil
+}
+
 // addSampleLocked adds a sample to the circular buffer.
 // Must be called with mu held.
 func (vt *VelocityTracker) addSampleLocked(sample VelocitySample) {
@@ -471,6 +518,25 @@ func (sc *StateClassifier) Classify() (*AgentActivity, error) {
 		return nil, err
 	}
 
+	return sc.classifyInternal(sample)
+}
+
+// ClassifyWithOutput analyzes provided pane output and returns the agent's activity state.
+// Use this to avoid redundant tmux captures.
+func (sc *StateClassifier) ClassifyWithOutput(output string) (*AgentActivity, error) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+	// Update velocity tracker with provided output
+	sample, err := sc.velocityTracker.UpdateWithOutput(output)
+	if err != nil {
+		return nil, err
+	}
+
+	return sc.classifyInternal(sample)
+}
+
+func (sc *StateClassifier) classifyInternal(sample *VelocitySample) (*AgentActivity, error) {
 	// Get current content for pattern matching
 	content := sc.velocityTracker.LastCapture
 	velocity := sample.Velocity

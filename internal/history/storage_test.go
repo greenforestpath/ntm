@@ -1,10 +1,13 @@
 package history
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
 func TestNewEntry(t *testing.T) {
@@ -100,6 +103,37 @@ func TestStorageRoundTrip(t *testing.T) {
 	}
 	if entries[1].Success {
 		t.Error("expected second entry to be failed")
+	}
+}
+
+func TestAppend_RedactsPromptForStorage(t *testing.T) {
+	tmpDir := t.TempDir()
+	origPath := os.Getenv("XDG_DATA_HOME")
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Setenv("XDG_DATA_HOME", origPath)
+
+	Clear()
+
+	// Ensure persisted history never stores raw secrets when redaction is enabled.
+	SetRedactionConfig(&redaction.Config{Mode: redaction.ModeWarn})
+	defer SetRedactionConfig(nil)
+
+	secret := "sk-proj-FAKEtestkey1234567890123456789012345678901234"
+	entry := NewEntry("test-session", []string{"0"}, "please use "+secret, SourceCLI)
+	if err := Append(entry); err != nil {
+		t.Fatalf("Append() failed: %v", err)
+	}
+
+	data, err := os.ReadFile(StoragePath())
+	if err != nil {
+		t.Fatalf("ReadFile() failed: %v", err)
+	}
+
+	if bytes.Contains(data, []byte(secret)) {
+		t.Fatalf("history on disk contains raw secret; want redacted")
+	}
+	if !bytes.Contains(data, []byte("[REDACTED:")) {
+		t.Fatalf("expected redaction marker in persisted history")
 	}
 }
 
@@ -255,6 +289,32 @@ func TestSearch(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Errorf("expected 1 result, got %d", len(results))
+	}
+}
+
+func TestSearchRegex(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Unsetenv("XDG_DATA_HOME")
+
+	Clear()
+
+	// Add entries with different prompts
+	Append(NewEntry("session", nil, "implement authentication flow", SourceCLI))
+	Append(NewEntry("session", nil, "run tests", SourceCLI))
+	Append(NewEntry("session", nil, "fix authentication bug", SourceCLI))
+
+	results, err := SearchRegex(`auth.*(flow|bug)`)
+	if err != nil {
+		t.Fatalf("failed to regex search: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 results, got %d", len(results))
+	}
+
+	// Invalid regex should error
+	if _, err := SearchRegex(`(`); err == nil {
+		t.Fatalf("expected error for invalid regex")
 	}
 }
 

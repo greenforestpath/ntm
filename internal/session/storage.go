@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
@@ -31,7 +32,50 @@ func StorageDir() string {
 }
 
 // Save writes a session state to disk.
-func Save(state *SessionState, opts SaveOptions) (string, error) {
+func Save(state *SessionState, opts SaveOptions) (path string, err error) {
+	correlationID := audit.NewCorrelationID()
+	auditStart := time.Now()
+	sessionName := ""
+	if state != nil {
+		sessionName = state.Name
+	}
+	saveName := opts.Name
+	if saveName == "" {
+		saveName = sessionName
+	}
+	_ = audit.LogEvent(sessionName, audit.EventTypeCommand, audit.ActorSystem, "session.save", map[string]interface{}{
+		"phase":           "start",
+		"session":         sessionName,
+		"name":            saveName,
+		"overwrite":       opts.Overwrite,
+		"include_git":     opts.IncludeGit,
+		"description_set": opts.Description != "",
+		"correlation_id":  correlationID,
+	}, nil)
+	defer func() {
+		payload := map[string]interface{}{
+			"phase":          "finish",
+			"session":        sessionName,
+			"name":           saveName,
+			"overwrite":      opts.Overwrite,
+			"success":        err == nil,
+			"duration_ms":    time.Since(auditStart).Milliseconds(),
+			"correlation_id": correlationID,
+		}
+		if state != nil {
+			payload["agents"] = state.Agents.Total()
+			payload["panes"] = len(state.Panes)
+			payload["work_dir"] = state.WorkDir
+		}
+		if path != "" {
+			payload["path"] = path
+		}
+		if err != nil {
+			payload["error"] = err.Error()
+		}
+		_ = audit.LogEvent(sessionName, audit.EventTypeCommand, audit.ActorSystem, "session.save", payload, nil)
+	}()
+
 	unlock, err := acquireLock()
 	if err != nil {
 		return "", err
@@ -54,7 +98,7 @@ func Save(state *SessionState, opts SaveOptions) (string, error) {
 	// Sanitize filename
 	name = sanitizeFilename(name)
 	filename := name + fileExtension
-	path := filepath.Join(dir, filename)
+	path = filepath.Join(dir, filename)
 
 	// Check if file exists
 	if !opts.Overwrite {
@@ -78,7 +122,37 @@ func Save(state *SessionState, opts SaveOptions) (string, error) {
 }
 
 // Load reads a session state from disk.
-func Load(name string) (*SessionState, error) {
+func Load(name string) (state *SessionState, err error) {
+	correlationID := audit.NewCorrelationID()
+	auditStart := time.Now()
+	sanitized := sanitizeFilename(name)
+	_ = audit.LogEvent(name, audit.EventTypeCommand, audit.ActorSystem, "session.load", map[string]interface{}{
+		"phase":          "start",
+		"requested":      name,
+		"sanitized":      sanitized,
+		"correlation_id": correlationID,
+	}, nil)
+	defer func() {
+		payload := map[string]interface{}{
+			"phase":          "finish",
+			"requested":      name,
+			"sanitized":      sanitized,
+			"success":        err == nil,
+			"duration_ms":    time.Since(auditStart).Milliseconds(),
+			"correlation_id": correlationID,
+		}
+		if state != nil {
+			payload["session"] = state.Name
+			payload["agents"] = state.Agents.Total()
+			payload["panes"] = len(state.Panes)
+			payload["work_dir"] = state.WorkDir
+		}
+		if err != nil {
+			payload["error"] = err.Error()
+		}
+		_ = audit.LogEvent(name, audit.EventTypeCommand, audit.ActorSystem, "session.load", payload, nil)
+	}()
+
 	name = sanitizeFilename(name)
 	path := filepath.Join(StorageDir(), name+fileExtension)
 
@@ -90,16 +164,42 @@ func Load(name string) (*SessionState, error) {
 		return nil, fmt.Errorf("failed to read session file: %w", err)
 	}
 
-	var state SessionState
-	if err := json.Unmarshal(data, &state); err != nil {
+	var parsed SessionState
+	if err := json.Unmarshal(data, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to parse session file: %w", err)
 	}
 
-	return &state, nil
+	state = &parsed
+	return state, nil
 }
 
 // Delete removes a saved session.
-func Delete(name string) error {
+func Delete(name string) (err error) {
+	correlationID := audit.NewCorrelationID()
+	auditStart := time.Now()
+	sanitized := sanitizeFilename(name)
+	_ = audit.LogEvent(name, audit.EventTypeCommand, audit.ActorSystem, "session.delete", map[string]interface{}{
+		"phase":          "start",
+		"requested":      name,
+		"sanitized":      sanitized,
+		"correlation_id": correlationID,
+	}, nil)
+	defer func() {
+		payload := map[string]interface{}{
+			"phase":          "finish",
+			"requested":      name,
+			"sanitized":      sanitized,
+			"deleted":        err == nil,
+			"success":        err == nil,
+			"duration_ms":    time.Since(auditStart).Milliseconds(),
+			"correlation_id": correlationID,
+		}
+		if err != nil {
+			payload["error"] = err.Error()
+		}
+		_ = audit.LogEvent(name, audit.EventTypeCommand, audit.ActorSystem, "session.delete", payload, nil)
+	}()
+
 	unlock, err := acquireLock()
 	if err != nil {
 		return err
@@ -167,7 +267,9 @@ func List() ([]SavedSession, error) {
 		}
 
 		sessions = append(sessions, SavedSession{
-			Name:      state.Name,
+			// List/save/show/delete address saved sessions by the on-disk entry name (filename),
+			// not by the original tmux session name captured in the state.
+			Name:      name,
 			SavedAt:   state.SavedAt,
 			WorkDir:   state.WorkDir,
 			Agents:    state.Agents.Total(),

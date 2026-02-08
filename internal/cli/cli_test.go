@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"text/template"
@@ -23,6 +25,8 @@ import (
 func resetFlags() {
 	jsonOutput = false
 	noColor = false
+	redactMode = ""
+	allowSecret = false
 	robotHelp = false
 	robotStatus = false
 	robotVersion = false
@@ -30,6 +34,9 @@ func resetFlags() {
 	robotSnapshot = false
 	robotSince = ""
 	robotTail = ""
+	robotWatchBead = ""
+	robotWatchBeadID = ""
+	robotProxyStatus = false
 	robotLines = 20
 	robotPanes = ""
 	robotSend = ""
@@ -141,6 +148,18 @@ func TestResolveRobotFormat_ConfigFallback(t *testing.T) {
 	}
 }
 
+func TestRobotOutputFormatFlagAliasRegistered(t *testing.T) {
+	if rootCmd.Flags().Lookup("robot-output-format") == nil {
+		t.Fatal("expected --robot-output-format flag to be registered (alias for --robot-format)")
+	}
+}
+
+func TestRobotProxyStatusFlagRegistered(t *testing.T) {
+	if rootCmd.Flags().Lookup("robot-proxy-status") == nil {
+		t.Fatal("expected --robot-proxy-status flag to be registered")
+	}
+}
+
 // sessionAutoSelectPossible returns true if the CLI would auto-select a session.
 // This happens when exactly one tmux session is running.
 func sessionAutoSelectPossible() bool {
@@ -208,6 +227,49 @@ func TestConfigShowCmdExecutes(t *testing.T) {
 	err := rootCmd.Execute()
 	if err != nil {
 		t.Fatalf("Execute() failed: %v", err)
+	}
+}
+
+func TestConfigShowJSONIncludesSafetyProfile(t *testing.T) {
+	resetFlags()
+	cfg = config.Default()
+
+	output, err := captureStdout(t, func() error {
+		rootCmd.SetArgs([]string{"--json", "config", "show"})
+		return rootCmd.Execute()
+	})
+	if err != nil {
+		t.Fatalf("Execute() failed: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+		t.Fatalf("Failed to parse JSON output: %v\nOutput: %s", err, output)
+	}
+
+	safetyAny, ok := parsed["safety"]
+	if !ok {
+		t.Fatalf("expected safety key in output")
+	}
+	safety, ok := safetyAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected safety to be object, got %T", safetyAny)
+	}
+
+	profile, _ := safety["profile"].(string)
+	if profile == "" {
+		t.Fatalf("expected safety.profile to be non-empty")
+	}
+	if profile != config.SafetyProfileStandard {
+		t.Fatalf("safety.profile = %q, want %q", profile, config.SafetyProfileStandard)
+	}
+
+	preflight, ok := safety["preflight"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected safety.preflight to be object, got %T", safety["preflight"])
+	}
+	if enabled, ok := preflight["enabled"].(bool); !ok || !enabled {
+		t.Fatalf("expected safety.preflight.enabled=true, got %v", preflight["enabled"])
 	}
 }
 
@@ -1506,6 +1568,39 @@ func TestDepsVerboseExecutes(t *testing.T) {
 
 	// Should execute without panicking
 	_ = rootCmd.Execute()
+}
+
+func TestCheckDepWithPathTimesOut(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+
+	old := depVersionTimeout
+	depVersionTimeout = 25 * time.Millisecond
+	t.Cleanup(func() { depVersionTimeout = old })
+
+	start := time.Now()
+	status, version, path := checkDepWithPath(depCheck{
+		Name:        "sleepy",
+		Command:     "sh",
+		VersionArgs: []string{"-c", "while :; do :; done"},
+	})
+	elapsed := time.Since(start)
+
+	// If sh isn't available in the test environment, just skip.
+	if status == "not found" {
+		t.Skip("sh not found")
+	}
+
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("expected version probe to time out quickly; elapsed=%s", elapsed)
+	}
+	if path == "" {
+		t.Fatalf("expected path for sh to be non-empty")
+	}
+	if version != "" {
+		t.Fatalf("expected empty version on timeout; got %q", version)
+	}
 }
 
 // TestConfigInitCreatesFile tests config init creates a config file

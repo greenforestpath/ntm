@@ -2,8 +2,12 @@ package serve
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/kernel"
 )
 
 func TestGenerateOpenAPISpec(t *testing.T) {
@@ -122,6 +126,7 @@ func TestBuildDescription(t *testing.T) {
 		description string
 		safetyLevel string
 		idempotent  bool
+		emits       []string
 		wantParts   []string
 	}{
 		{
@@ -141,12 +146,127 @@ func TestBuildDescription(t *testing.T) {
 			idempotent:  true,
 			wantParts:   []string{"Test command", "Idempotent:", "safe to retry"},
 		},
+		{
+			name:        "with-events",
+			description: "Test command",
+			emits:       []string{"agent.started", "agent.stopped"},
+			wantParts:   []string{"Test command", "Emits Events:", "agent.started", "agent.stopped"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Import the kernel package for Command type
-			// For this test, we just verify the helper functions work
+			cmd := kernel.Command{
+				Name:        "test.command",
+				Description: tt.description,
+				SafetyLevel: kernel.SafetyLevel(tt.safetyLevel),
+				Idempotent:  tt.idempotent,
+				EmitsEvents: tt.emits,
+			}
+			desc := buildDescription(cmd)
+			for _, part := range tt.wantParts {
+				if !strings.Contains(desc, part) {
+					t.Errorf("description missing %q in %q", part, desc)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildResponseSchema(t *testing.T) {
+	tests := []struct {
+		name      string
+		command   kernel.Command
+		expectRef string
+	}{
+		{
+			name: "default-success",
+			command: kernel.Command{
+				Name: "robot.status",
+			},
+			expectRef: "#/components/schemas/SuccessResponse",
+		},
+		{
+			name: "output-ref-with-name",
+			command: kernel.Command{
+				Name:   "robot.status",
+				Output: &kernel.SchemaRef{Name: "RobotStatus", Ref: "#/schemas/RobotStatus"},
+			},
+			expectRef: "#/components/schemas/RobotStatus",
+		},
+		{
+			name: "output-ref-without-name",
+			command: kernel.Command{
+				Name:   "robot.status",
+				Output: &kernel.SchemaRef{Ref: "#/schemas/RobotStatus"},
+			},
+			expectRef: "#/components/schemas/robot_status_Response",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schema := buildResponseSchema(tt.command)
+			if schema == nil {
+				t.Fatalf("expected schema, got nil")
+			}
+			if schema.Ref != tt.expectRef {
+				t.Errorf("schema.Ref = %q, want %q", schema.Ref, tt.expectRef)
+			}
+		})
+	}
+}
+
+func TestBuildInputSchema(t *testing.T) {
+	tests := []struct {
+		name      string
+		command   kernel.Command
+		expectRef string
+		wantType  string
+	}{
+		{
+			name: "default-object",
+			command: kernel.Command{
+				Name: "robot.status",
+			},
+			wantType: "object",
+		},
+		{
+			name: "input-ref-with-name",
+			command: kernel.Command{
+				Name:  "robot.status",
+				Input: &kernel.SchemaRef{Name: "RobotStatusRequest", Ref: "#/schemas/RobotStatusRequest"},
+			},
+			expectRef: "#/components/schemas/RobotStatusRequest",
+		},
+		{
+			name: "input-ref-without-name",
+			command: kernel.Command{
+				Name:  "robot.status",
+				Input: &kernel.SchemaRef{Ref: "#/schemas/RobotStatusRequest"},
+			},
+			expectRef: "#/components/schemas/robot_status_Request",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schema := buildInputSchema(tt.command)
+			if schema == nil {
+				t.Fatalf("expected schema, got nil")
+			}
+			if tt.expectRef != "" {
+				if schema.Ref != tt.expectRef {
+					t.Errorf("schema.Ref = %q, want %q", schema.Ref, tt.expectRef)
+				}
+				return
+			}
+			if schema.Type != tt.wantType {
+				t.Errorf("schema.Type = %q, want %q", schema.Type, tt.wantType)
+			}
+			if schema.AdditionalProperties != true {
+				t.Errorf("schema.AdditionalProperties = %v, want true", schema.AdditionalProperties)
+			}
 		})
 	}
 }
@@ -286,5 +406,209 @@ func TestOperationIDFormat(t *testing.T) {
 				t.Errorf("operationId %q at %s contains dots", op.OperationID, path)
 			}
 		}
+	}
+}
+
+// TestGenerateOpenAPISpec_WithRESTCommands exercises the loop body of
+// GenerateOpenAPISpec by registering test kernel commands with REST bindings.
+func TestGenerateOpenAPISpec_WithRESTCommands(t *testing.T) {
+	// Register test commands with REST bindings to exercise the loop body
+	ex := []kernel.Example{{Name: "test", Description: "test", Output: `{"ok":true}`}}
+
+	testCmds := []kernel.Command{
+		{
+			Name:        "test.get.items",
+			Description: "List items for testing",
+			Category:    "testing",
+			REST:        &kernel.RESTBinding{Method: "GET", Path: "/items"},
+			Examples:    ex,
+		},
+		{
+			Name:        "test.create.item",
+			Description: "Create a new item",
+			Category:    "testing",
+			REST:        &kernel.RESTBinding{Method: "POST", Path: "/items"},
+			Input:       &kernel.SchemaRef{Name: "CreateItemInput", Description: "item data"},
+			Examples:    ex,
+		},
+		{
+			Name:        "test.update.item",
+			Description: "Update an item",
+			Category:    "testing",
+			REST:        &kernel.RESTBinding{Method: "PUT", Path: "/items/{itemId}"},
+			Input:       &kernel.SchemaRef{Name: "UpdateItemInput", Description: "item update"},
+			Examples:    ex,
+		},
+		{
+			Name:        "test.patch.item",
+			Description: "Patch an item",
+			Category:    "testing",
+			REST:        &kernel.RESTBinding{Method: "PATCH", Path: "/items/{itemId}"},
+			Input:       &kernel.SchemaRef{Name: "PatchItemInput", Description: "partial update"},
+			Examples:    ex,
+		},
+		{
+			Name:        "test.delete.item",
+			Description: "Delete an item",
+			Category:    "testing",
+			REST:        &kernel.RESTBinding{Method: "DELETE", Path: "/items/{itemId}"},
+			Examples:    ex,
+		},
+		{
+			Name:        "test.no.rest",
+			Description: "Command without REST binding",
+			Category:    "internal",
+			Examples:    ex,
+		},
+		{
+			Name:        "test.with.examples",
+			Description: "Command with examples",
+			Category:    "demo",
+			REST:        &kernel.RESTBinding{Method: "GET", Path: "/demo"},
+			Examples: []kernel.Example{
+				{Name: "basic", Description: "basic usage", Output: `{"result":"ok"}`},
+			},
+		},
+	}
+
+	for _, cmd := range testCmds {
+		_ = kernel.Register(cmd)
+	}
+
+	spec := GenerateOpenAPISpec("test", "http://localhost:9999")
+
+	// Verify paths were generated for REST commands
+	if len(spec.Paths) == 0 {
+		t.Fatal("expected paths to be populated")
+	}
+
+	// Check /api/v1/items has both GET and POST
+	itemsPath, ok := spec.Paths["/api/v1/items"]
+	if !ok {
+		t.Fatal("expected /api/v1/items path")
+	}
+	if itemsPath.Get == nil {
+		t.Error("expected GET operation on /api/v1/items")
+	}
+	if itemsPath.Post == nil {
+		t.Error("expected POST operation on /api/v1/items")
+	}
+	if itemsPath.Post != nil && itemsPath.Post.RequestBody == nil {
+		t.Error("expected POST to have request body")
+	}
+
+	// Check /api/v1/items/{itemId} has PUT, PATCH, DELETE
+	itemPath, ok := spec.Paths["/api/v1/items/{itemId}"]
+	if !ok {
+		t.Fatal("expected /api/v1/items/{itemId} path")
+	}
+	if itemPath.Put == nil {
+		t.Error("expected PUT operation")
+	}
+	if itemPath.Patch == nil {
+		t.Error("expected PATCH operation")
+	}
+	if itemPath.Delete == nil {
+		t.Error("expected DELETE operation")
+	}
+
+	// Verify path parameters
+	if itemPath.Put != nil {
+		foundParam := false
+		for _, p := range itemPath.Put.Parameters {
+			if p.Name == "itemId" {
+				foundParam = true
+			}
+		}
+		if !foundParam {
+			t.Error("expected itemId path parameter on PUT")
+		}
+	}
+
+	// Verify tags were collected
+	if len(spec.Tags) == 0 {
+		t.Error("expected tags to be populated")
+	}
+	foundTesting := false
+	for _, tag := range spec.Tags {
+		if tag.Name == "testing" {
+			foundTesting = true
+		}
+	}
+	if !foundTesting {
+		t.Error("expected 'testing' tag")
+	}
+
+	// Verify examples were included
+	demoPath, ok := spec.Paths["/api/v1/demo"]
+	if ok && demoPath.Get != nil {
+		resp200, ok := demoPath.Get.Responses["200"]
+		if ok {
+			content, ok := resp200.Content["application/json"]
+			if ok && len(content.Examples) == 0 {
+				t.Error("expected examples in demo GET 200 response")
+			}
+		}
+	}
+
+	// Verify operation IDs have dots replaced
+	if itemsPath.Get != nil && strings.Contains(itemsPath.Get.OperationID, ".") {
+		t.Errorf("operation ID should not contain dots: %s", itemsPath.Get.OperationID)
+	}
+}
+
+// TestHandleOpenAPISpec exercises the handler that serves the OpenAPI JSON.
+func TestHandleOpenAPISpec_Handler(t *testing.T) {
+	t.Parallel()
+	srv := New(Config{})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/openapi.json", nil)
+
+	srv.handleOpenAPISpec(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	if cors := rr.Header().Get("Access-Control-Allow-Origin"); cors != "*" {
+		t.Errorf("CORS header = %q, want *", cors)
+	}
+
+	// Verify valid JSON
+	var spec map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &spec); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+	if spec["openapi"] != "3.1.0" {
+		t.Errorf("openapi = %v, want 3.1.0", spec["openapi"])
+	}
+}
+
+// TestHandleSwaggerUI exercises the Swagger UI HTML handler.
+func TestHandleSwaggerUI_Handler(t *testing.T) {
+	t.Parallel()
+	srv := New(Config{})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/docs", nil)
+
+	srv.handleSwaggerUI(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", ct)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "NTM API Documentation") {
+		t.Error("expected title in HTML")
+	}
+	if !strings.Contains(body, "swagger-ui") {
+		t.Error("expected swagger-ui reference in HTML")
 	}
 }

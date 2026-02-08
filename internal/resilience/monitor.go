@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/config"
+	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/notify"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
@@ -63,7 +64,7 @@ type Monitor struct {
 func NewMonitor(session, projectDir string, cfg *config.Config, autoRestart bool) *Monitor {
 	var notifier *notify.Notifier
 	if cfg.Notifications.Enabled {
-		notifier = notify.New(cfg.Notifications)
+		notifier = notify.NewWithRedaction(cfg.Notifications, cfg.Redaction.ToRedactionLibConfig())
 	}
 
 	var tracker *ratelimit.RateLimitTracker
@@ -182,19 +183,35 @@ func (m *Monitor) ScanAndRegisterAgents() error {
 
 // Start begins monitoring agent health in the background
 func (m *Monitor) Start(ctx context.Context) {
-	ctx, m.cancel = context.WithCancel(ctx)
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
-	go m.monitorLoop(ctx)
+	m.mu.Lock()
+	if m.cancel != nil {
+		m.mu.Unlock()
+		return
+	}
+
+	childCtx, cancel := context.WithCancel(ctx)
+	m.cancel = cancel
+	m.mu.Unlock()
+
+	go m.monitorLoop(childCtx)
 }
 
 // Stop stops the monitor gracefully.
 // Safe to call even if Start() was never called.
 func (m *Monitor) Stop() {
-	if m.cancel == nil {
-		// Start() was never called, nothing to stop
+	m.mu.Lock()
+	cancel := m.cancel
+	m.mu.Unlock()
+
+	if cancel == nil {
 		return
 	}
-	m.cancel()
+
+	cancel()
 	<-m.done
 	m.wg.Wait()
 }
@@ -252,7 +269,7 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 	hooksMu.RUnlock()
 
 	// Get health status for the session
-	sessionHealth, err := checkFn(m.session)
+	sessionHealth, err := checkFn(ctx, m.session)
 	if err != nil {
 		log.Printf("[resilience] health check failed: %v", err)
 		return
@@ -325,6 +342,19 @@ func (m *Monitor) handleRateLimit(agent *AgentState, waitSeconds int) {
 
 	log.Printf("[resilience] Agent %s (pane %d, type %s) hit rate limit (wait %ds)",
 		agent.PaneID, agent.PaneIndex, agent.AgentType, waitSeconds)
+
+	events.DefaultEmitter().Emit(events.NewWebhookEvent(
+		events.WebhookAgentRateLimit,
+		m.session,
+		agent.PaneID,
+		agent.AgentType,
+		fmt.Sprintf("Agent %s hit rate limit (wait %ds)", agent.AgentType, waitSeconds),
+		map[string]string{
+			"project_dir":  m.projectDir,
+			"pane_index":   fmt.Sprintf("%d", agent.PaneIndex),
+			"wait_seconds": fmt.Sprintf("%d", waitSeconds),
+		},
+	))
 
 	m.recordRateLimitHit(agent.AgentType, waitSeconds)
 
@@ -400,6 +430,22 @@ func (m *Monitor) triggerRotationAssistance(session string, paneIndex int, agent
 
 	log.Printf("[resilience] Suggesting rotation: %s", rotateCmd)
 
+	events.DefaultEmitter().Emit(events.NewWebhookEvent(
+		events.WebhookRotationNeeded,
+		session,
+		fmt.Sprintf("%d", paneIndex),
+		agentType,
+		"Rotation recommended",
+		map[string]string{
+			"project_dir":   m.projectDir,
+			"rotate_cmd":    rotateCmd,
+			"pane_index":    fmt.Sprintf("%d", paneIndex),
+			"agent_type":    agentType,
+			"auto_trigger":  fmt.Sprintf("%t", rotateConfig.AutoTrigger),
+			"auto_initiate": fmt.Sprintf("%t", rotateConfig.AutoInitiate),
+		},
+	))
+
 	// Send rotation notification with command
 	if m.notifier != nil {
 		event := notify.NewRotationNeededEvent(session, paneIndex, agentType, rotateCmd)
@@ -444,6 +490,19 @@ func (m *Monitor) handleCrash(ctx context.Context, agent *AgentState, reason str
 	log.Printf("[resilience] Agent %s (pane %d, type %s) crashed: %s",
 		agent.PaneID, agent.PaneIndex, agent.AgentType, reason)
 
+	events.DefaultEmitter().Emit(events.NewWebhookEvent(
+		events.WebhookAgentCrashed,
+		m.session,
+		agent.PaneID,
+		agent.AgentType,
+		fmt.Sprintf("Agent %s crashed: %s", agent.AgentType, reason),
+		map[string]string{
+			"project_dir": m.projectDir,
+			"pane_index":  fmt.Sprintf("%d", agent.PaneIndex),
+			"reason":      reason,
+		},
+	))
+
 	// Snapshot values for async operations
 	session := m.session
 	paneID := agent.PaneID
@@ -481,6 +540,25 @@ func (m *Monitor) handleCrash(ctx context.Context, agent *AgentState, reason str
 			}
 		}
 	}()
+
+	if currentRestarts >= maxRestarts {
+		events.DefaultEmitter().Emit(events.NewWebhookEvent(
+			events.WebhookAgentError,
+			m.session,
+			agent.PaneID,
+			agent.AgentType,
+			fmt.Sprintf("Agent %s exceeded max restart attempts (%d)", agent.AgentType, maxRestarts),
+			map[string]string{
+				"project_dir":     m.projectDir,
+				"pane_index":      fmt.Sprintf("%d", agent.PaneIndex),
+				"restart_count":   fmt.Sprintf("%d", currentRestarts),
+				"max_restarts":    fmt.Sprintf("%d", maxRestarts),
+				"crash_reason":    reason,
+				"auto_restart":    fmt.Sprintf("%t", m.autoRestart),
+				"notify_on_crash": fmt.Sprintf("%t", notifyCrash),
+			},
+		))
+	}
 
 	// Offer manual respawn if auto-restart is disabled or max restarts reached
 	if !m.autoRestart || agent.RestartCount >= m.cfg.Resilience.MaxRestarts {
@@ -560,6 +638,21 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 
 	log.Printf("[resilience] Agent %s restarted (attempt %d/%d)",
 		agent.PaneID, currentAgent.RestartCount, m.cfg.Resilience.MaxRestarts)
+
+	events.DefaultEmitter().Emit(events.NewWebhookEvent(
+		events.WebhookAgentRestarted,
+		m.session,
+		agent.PaneID,
+		agent.AgentType,
+		fmt.Sprintf("Agent %s restarted (attempt %d/%d)", agent.AgentType, currentAgent.RestartCount, m.cfg.Resilience.MaxRestarts),
+		map[string]string{
+			"project_dir":   m.projectDir,
+			"pane_index":    fmt.Sprintf("%d", agent.PaneIndex),
+			"restart_count": fmt.Sprintf("%d", currentAgent.RestartCount),
+			"max_restarts":  fmt.Sprintf("%d", m.cfg.Resilience.MaxRestarts),
+			"auto_restart":  fmt.Sprintf("%t", m.autoRestart),
+		},
+	))
 
 	// Send restart notification
 	if m.notifier != nil {

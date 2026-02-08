@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/Dicklesworthstone/ntm/internal/assignment"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/privacy"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -42,6 +44,11 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 	options := defaultOptions()
 	for _, opt := range opts {
 		opt(&options)
+	}
+
+	// Check privacy mode before creating checkpoint
+	if err := privacy.GetDefaultManager().CanPersist(sessionName, privacy.OpCheckpoint); err != nil {
+		return nil, fmt.Errorf("checkpoint blocked: %w", err)
 	}
 
 	// Check session exists
@@ -91,14 +98,14 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 	}
 	if err := c.captureScrollbackEnhanced(cp, scrollbackConfig); err != nil {
 		// Non-fatal, continue
-		fmt.Fprintf(os.Stderr, "Warning: failed to capture some scrollback: %v\n", err)
+		slog.Warn("failed to capture some scrollback", "error", err)
 	}
 
 	// Capture git state if enabled and in a git repo
 	if options.captureGit && workingDir != "" {
 		gitState, err := c.captureGitState(workingDir, sessionName, checkpointID)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to capture git state: %v\n", err)
+			slog.Warn("failed to capture git state", "error", err)
 		} else {
 			cp.Git = gitState
 		}
@@ -108,7 +115,7 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 	if options.captureAssignments {
 		assignments, err := c.captureAssignments(sessionName)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to capture assignments: %v\n", err)
+			slog.Warn("failed to capture assignments", "error", err)
 		} else if len(assignments) > 0 {
 			cp.Assignments = assignments
 		}
@@ -118,7 +125,7 @@ func (c *Capturer) Create(sessionName, name string, opts ...CheckpointOption) (*
 	if options.captureBVSnapshot && workingDir != "" {
 		bvSnapshot, err := c.captureBVSnapshot(workingDir)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to capture BV snapshot: %v\n", err)
+			slog.Warn("failed to capture BV snapshot", "error", err)
 		} else if bvSnapshot != nil {
 			cp.BVSummary = bvSnapshot
 		}
@@ -142,10 +149,10 @@ func (c *Capturer) captureSessionState(sessionName string) (SessionState, error)
 	var paneStates []PaneState
 	activeIndex := 0
 
-	for _, p := range panes {
+	for i, p := range panes {
 		state := FromTmuxPane(p)
 		if p.Active {
-			activeIndex = p.Index
+			activeIndex = i
 		}
 		paneStates = append(paneStates, state)
 	}
@@ -153,7 +160,7 @@ func (c *Capturer) captureSessionState(sessionName string) (SessionState, error)
 	// Get layout string
 	layout, err := getSessionLayout(sessionName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to capture session layout: %v\n", err)
+		slog.Warn("failed to capture session layout", "error", err)
 	}
 
 	return SessionState{
@@ -204,7 +211,7 @@ func (c *Capturer) captureGitState(workingDir, sessionName, checkpointID string)
 	if state.IsDirty {
 		// Warn about untracked files if any
 		if state.UntrackedCount > 0 {
-			fmt.Fprintf(os.Stderr, "Warning: %d untracked file(s) will not be captured in git patch (only staged/unstaged tracked changes)\n", state.UntrackedCount)
+			slog.Warn("untracked files will not be captured in git patch", "count", state.UntrackedCount)
 		}
 
 		// Get diff of tracked changes (both staged and unstaged)

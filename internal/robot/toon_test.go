@@ -159,3 +159,94 @@ func TestToonEncode_JSONMarshalError(t *testing.T) {
 		t.Fatal("expected json marshal error, got nil")
 	}
 }
+
+// =============================================================================
+// Pure Helper Function Tests
+// =============================================================================
+
+func TestFilepathBase(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"simple filename", "file.txt", "file.txt"},
+		{"unix path", "/usr/bin/tru", "tru"},
+		{"windows path", `C:\Program Files\tru.exe`, "tru.exe"},
+		{"mixed slashes", `C:\Users/bin\tru`, "tru"},
+		{"trailing slash unix", "/usr/bin/", ""},
+		{"just filename no path", "binary", "binary"},
+		{"empty string", "", ""},
+		{"root slash", "/", ""},
+		{"relative path", "foo/bar/baz", "baz"},
+		{"double slashes", "//foo//bar", "bar"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filepathBase(tt.input)
+			if got != tt.want {
+				t.Errorf("filepathBase(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLooksLikeToonRustVersion(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"tru version", "tru 0.1.0", true},
+		{"tru version 1.x", "tru 1.2.3", true},
+		{"tru with suffix", "tru 0.1.0-beta", true},
+		{"coreutils tr", "tr (gnu coreutils) 9.1", false},
+		{"empty string", "", false},
+		{"just tru", "tru", false},
+		{"tru space no version", "tru ", false},
+		{"toon_rust prefix", "toon_rust 0.1.0", false},
+		{"wrong format", "version 1.0", false},
+		{"tru with letter after space", "tru abc", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := looksLikeToonRustVersion(tt.input)
+			if got != tt.want {
+				t.Errorf("looksLikeToonRustVersion(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestToonDelimiterArg(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty string", "", ","},
+		{"comma", ",", ","},
+		{"tab character", "\t", "tab"},
+		{"pipe", "|", "|"},
+		{"tab keyword", "tab", "tab"},
+		{"comma keyword", "comma", "comma"},
+		{"pipe keyword", "pipe", "pipe"},
+		{"whitespace trimmed", "  custom  ", "custom"},
+		{"semicolon", ";", ";"},
+		{"colon", ":", ":"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toonDelimiterArg(tt.input)
+			if got != tt.want {
+				t.Errorf("toonDelimiterArg(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

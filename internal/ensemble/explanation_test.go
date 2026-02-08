@@ -217,6 +217,74 @@ func TestExplanationTracker_NilSafe(t *testing.T) {
 	t.Logf("TEST: %s - assertion: nil receiver is safe", t.Name())
 }
 
+func TestExplanation_SingleConclusion(t *testing.T) {
+	input := map[string]any{"id": "c-single", "type": ConclusionFinding}
+	logTestStartExplanation(t, input)
+
+	tracker := NewExplanationTracker(nil)
+	tracker.RecordConclusion("c-single", ConclusionFinding, "Single conclusion", []string{"mode-a"}, 0.7)
+	layer := tracker.GenerateLayer()
+	logTestResultExplanation(t, layer)
+
+	assertTrueExplanation(t, "layer generated", layer != nil)
+	assertEqualExplanation(t, "conclusion count", len(layer.Conclusions), 1)
+	assertEqualExplanation(t, "conclusion id", layer.Conclusions[0].ConclusionID, "c-single")
+}
+
+func TestExplanation_ConflictResolution(t *testing.T) {
+	input := map[string]any{"topic": "conflict topic"}
+	logTestStartExplanation(t, input)
+
+	tracker := NewExplanationTracker(nil)
+	tracker.RecordConflictResolution("conflict topic", []PositionSummary{{ModeID: "mode-a", Position: "A", Strength: 0.7}}, "resolved", ResolutionConsensus)
+	layer := tracker.GenerateLayer()
+	logTestResultExplanation(t, layer)
+
+	assertEqualExplanation(t, "conflicts count", len(layer.ConflictsResolved), 1)
+	assertEqualExplanation(t, "resolution method", layer.ConflictsResolved[0].Method, ResolutionConsensus)
+}
+
+func TestExplanation_ConfidenceDerivation(t *testing.T) {
+	input := map[string]any{"id": "c-confidence"}
+	logTestStartExplanation(t, input)
+
+	tracker := NewExplanationTracker(nil)
+	tracker.RecordConclusion("c-confidence", ConclusionFinding, "Confidence text", []string{"mode-a"}, 0.9)
+	tracker.SetConfidenceBasis("c-confidence", "Multiple modes agree")
+	tracker.AddSupportingEvidence("c-confidence", "Evidence A")
+	layer := tracker.GenerateLayer()
+	logTestResultExplanation(t, layer)
+
+	assertEqualExplanation(t, "confidence basis", layer.Conclusions[0].ConfidenceBasis, "Multiple modes agree")
+	assertEqualExplanation(t, "supporting evidence count", len(layer.Conclusions[0].SupportingEvidence), 1)
+}
+
+func logTestStartExplanation(t *testing.T, input any) {
+	t.Helper()
+	t.Logf("TEST: %s - starting with input: %v", t.Name(), input)
+}
+
+func logTestResultExplanation(t *testing.T, result any) {
+	t.Helper()
+	t.Logf("TEST: %s - got result: %v", t.Name(), result)
+}
+
+func assertTrueExplanation(t *testing.T, desc string, ok bool) {
+	t.Helper()
+	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
+	if !ok {
+		t.Fatalf("assertion failed: %s", desc)
+	}
+}
+
+func assertEqualExplanation(t *testing.T, desc string, got, want any) {
+	t.Helper()
+	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
+	if got != want {
+		t.Fatalf("%s: got %v want %v", desc, got, want)
+	}
+}
+
 func TestFormatExplanation(t *testing.T) {
 	t.Logf("TEST: %s - starting", t.Name())
 
@@ -424,4 +492,34 @@ func TestInferResolutionMethod(t *testing.T) {
 	}
 
 	t.Logf("TEST: %s - assertion: resolution methods inferred correctly", t.Name())
+}
+
+// =============================================================================
+// sanitizeID
+// =============================================================================
+
+func TestSanitizeID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"simple", "hello", "hello"},
+		{"uppercase", "HELLO", "hello"},
+		{"spaces replaced", "hello world", "hello-world"},
+		{"long truncated", "this is a very long string that goes beyond twenty", "this-is-a-very-long-"},
+		{"empty", "", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := sanitizeID(tc.input)
+			if got != tc.want {
+				t.Errorf("sanitizeID(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
 }

@@ -6,17 +6,59 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // Restore recreates a session from saved state.
-func Restore(state *SessionState, opts RestoreOptions) error {
+func Restore(state *SessionState, opts RestoreOptions) (err error) {
 	name := opts.Name
 	if name == "" {
 		name = state.Name
 	}
+
+	correlationID := audit.NewCorrelationID()
+	auditStart := time.Now()
+	sessionCreated := false
+	killedExisting := false
+	panesPlanned := 0
+	if state != nil {
+		panesPlanned = len(state.Panes)
+	}
+	_ = audit.LogEvent(name, audit.EventTypeCommand, audit.ActorSystem, "session.restore", map[string]interface{}{
+		"phase":          "start",
+		"session":        name,
+		"force":          opts.Force,
+		"skip_git_check": opts.SkipGitCheck,
+		"panes_planned":  panesPlanned,
+		"correlation_id": correlationID,
+	}, nil)
+	defer func() {
+		payload := map[string]interface{}{
+			"phase":           "finish",
+			"session":         name,
+			"force":           opts.Force,
+			"skip_git_check":  opts.SkipGitCheck,
+			"panes_planned":   panesPlanned,
+			"session_created": sessionCreated,
+			"killed_existing": killedExisting,
+			"success":         err == nil,
+			"duration_ms":     time.Since(auditStart).Milliseconds(),
+			"correlation_id":  correlationID,
+		}
+		if state != nil {
+			payload["work_dir"] = state.WorkDir
+			payload["layout"] = state.Layout
+		}
+		if err != nil {
+			payload["error"] = err.Error()
+		}
+		_ = audit.LogEvent(name, audit.EventTypeCommand, audit.ActorSystem, "session.restore", payload, nil)
+	}()
 
 	// Check if session already exists
 	if tmux.SessionExists(name) {
@@ -26,6 +68,7 @@ func Restore(state *SessionState, opts RestoreOptions) error {
 		if err := tmux.KillSession(name); err != nil {
 			return fmt.Errorf("killing existing session: %w", err)
 		}
+		killedExisting = true
 	}
 
 	// Validate and prepare working directory
@@ -52,17 +95,45 @@ func Restore(state *SessionState, opts RestoreOptions) error {
 		}
 	}
 
-	// Create the session
-	if err := tmux.CreateSession(name, workDir); err != nil {
-		return fmt.Errorf("creating session: %w", err)
-	}
+	// Sort panes by WindowIndex, then Index to ensure creation order matches structure
+	sort.Slice(state.Panes, func(i, j int) bool {
+		if state.Panes[i].WindowIndex != state.Panes[j].WindowIndex {
+			return state.Panes[i].WindowIndex < state.Panes[j].WindowIndex
+		}
+		return state.Panes[i].Index < state.Panes[j].Index
+	})
 
-	// Create additional panes
-	totalPanes := len(state.Panes)
-	if totalPanes > 1 {
-		for i := 1; i < totalPanes; i++ {
-			if _, err := tmux.SplitWindow(name, workDir); err != nil {
-				return fmt.Errorf("creating pane %d: %w", i+1, err)
+	if len(state.Panes) == 0 {
+		// Create empty session if no panes
+		if err := tmux.CreateSession(name, workDir); err != nil {
+			return fmt.Errorf("creating session: %w", err)
+		}
+		sessionCreated = true
+	} else {
+		lastWindowIndex := -1
+		for i, p := range state.Panes {
+			if i == 0 {
+				// First pane of first window -> Create Session
+				if err := tmux.CreateSession(name, workDir); err != nil {
+					return fmt.Errorf("creating session: %w", err)
+				}
+				sessionCreated = true
+				lastWindowIndex = p.WindowIndex
+				continue
+			}
+
+			if p.WindowIndex != lastWindowIndex {
+				// New window
+				if err := tmux.DefaultClient.RunSilent("new-window", "-t", name, "-c", workDir); err != nil {
+					return fmt.Errorf("creating window for pane %d: %w", i+1, err)
+				}
+				lastWindowIndex = p.WindowIndex
+			} else {
+				// Split window
+				// We target the session, which defaults to the active window (the one we just created or split)
+				if _, err := tmux.DefaultClient.Run("split-window", "-t", name, "-c", workDir); err != nil {
+					return fmt.Errorf("creating pane %d: %w", i+1, err)
+				}
 			}
 		}
 	}
@@ -105,7 +176,38 @@ func Restore(state *SessionState, opts RestoreOptions) error {
 
 // RestoreAgents launches the agents in the restored session.
 // This is separated from Restore to allow for customization.
-func RestoreAgents(sessionName string, state *SessionState, cmds AgentCommands) error {
+func RestoreAgents(sessionName string, state *SessionState, cmds AgentCommands) (err error) {
+	correlationID := audit.NewCorrelationID()
+	auditStart := time.Now()
+	attempted := 0
+	launched := 0
+	planned := 0
+	if state != nil {
+		planned = len(state.Panes)
+	}
+	_ = audit.LogEvent(sessionName, audit.EventTypeSpawn, audit.ActorSystem, "session.restore.agents", map[string]interface{}{
+		"phase":          "start",
+		"session":        sessionName,
+		"agents_planned": planned,
+		"correlation_id": correlationID,
+	}, nil)
+	defer func() {
+		payload := map[string]interface{}{
+			"phase":            "finish",
+			"session":          sessionName,
+			"agents_planned":   planned,
+			"agents_attempted": attempted,
+			"agents_launched":  launched,
+			"success":          err == nil,
+			"duration_ms":      time.Since(auditStart).Milliseconds(),
+			"correlation_id":   correlationID,
+		}
+		if err != nil {
+			payload["error"] = err.Error()
+		}
+		_ = audit.LogEvent(sessionName, audit.EventTypeSpawn, audit.ActorSystem, "session.restore.agents", payload, nil)
+	}()
+
 	panes, err := tmux.GetPanes(sessionName)
 	if err != nil {
 		return fmt.Errorf("getting panes: %w", err)
@@ -127,21 +229,51 @@ func RestoreAgents(sessionName string, state *SessionState, cmds AgentCommands) 
 			continue
 		}
 
+		attempted++
+
 		// Launch agent
 		safeAgentCmd, err := tmux.SanitizePaneCommand(agentCmd)
 		if err != nil {
+			_ = audit.LogEvent(sessionName, audit.EventTypeError, audit.ActorSystem, "agent.restore", map[string]interface{}{
+				"agent_type":     paneState.AgentType,
+				"pane_index":     paneState.Index,
+				"pane_title":     paneState.Title,
+				"error":          err.Error(),
+				"correlation_id": correlationID,
+			}, nil)
 			continue
 		}
 
 		cmd, err := tmux.BuildPaneCommand(state.WorkDir, safeAgentCmd)
 		if err != nil {
+			_ = audit.LogEvent(sessionName, audit.EventTypeError, audit.ActorSystem, "agent.restore", map[string]interface{}{
+				"agent_type":     paneState.AgentType,
+				"pane_index":     paneState.Index,
+				"pane_title":     paneState.Title,
+				"error":          err.Error(),
+				"correlation_id": correlationID,
+			}, nil)
 			continue
 		}
 
 		if err := tmux.SendKeys(panes[i].ID, cmd, true); err != nil {
+			_ = audit.LogEvent(sessionName, audit.EventTypeError, audit.ActorSystem, "agent.restore", map[string]interface{}{
+				"agent_type":     paneState.AgentType,
+				"pane_index":     paneState.Index,
+				"pane_title":     paneState.Title,
+				"error":          err.Error(),
+				"correlation_id": correlationID,
+			}, nil)
 			// Non-fatal - continue with other agents
 			continue
 		}
+		launched++
+		_ = audit.LogEvent(sessionName, audit.EventTypeSpawn, audit.ActorSystem, "agent.restore", map[string]interface{}{
+			"agent_type":     paneState.AgentType,
+			"pane_index":     paneState.Index,
+			"pane_title":     paneState.Title,
+			"correlation_id": correlationID,
+		}, nil)
 	}
 
 	return nil

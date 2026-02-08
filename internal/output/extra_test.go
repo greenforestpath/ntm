@@ -121,6 +121,59 @@ func TestPrintJSON(t *testing.T) {
 	}
 }
 
+func TestWriteJSONPrettyAndCompact(t *testing.T) {
+	payload := map[string]string{"foo": "bar"}
+
+	var prettyBuf bytes.Buffer
+	if err := WriteJSON(&prettyBuf, payload, true); err != nil {
+		t.Fatalf("WriteJSON pretty error: %v", err)
+	}
+	prettyOut := prettyBuf.String()
+	if !strings.Contains(prettyOut, "\n  \"foo\"") {
+		t.Errorf("pretty JSON should be indented, got: %q", prettyOut)
+	}
+
+	var compactBuf bytes.Buffer
+	if err := WriteJSON(&compactBuf, payload, false); err != nil {
+		t.Fatalf("WriteJSON compact error: %v", err)
+	}
+	compactOut := compactBuf.String()
+	if strings.Contains(compactOut, "\n  \"foo\"") {
+		t.Errorf("compact JSON should not be indented, got: %q", compactOut)
+	}
+}
+
+func TestPrintJSONCompactOutput(t *testing.T) {
+	stdout, _ := captureOutput(func() {
+		if err := PrintJSONCompact(map[string]string{"foo": "bar"}); err != nil {
+			t.Fatalf("PrintJSONCompact error: %v", err)
+		}
+	})
+	if strings.Contains(stdout, "\n  \"foo\"") {
+		t.Errorf("PrintJSONCompact output should not be indented: %q", stdout)
+	}
+}
+
+func TestMarshalJSONPrettyAndCompact(t *testing.T) {
+	payload := map[string]string{"foo": "bar"}
+
+	pretty, err := MarshalJSON(payload, true)
+	if err != nil {
+		t.Fatalf("MarshalJSON pretty error: %v", err)
+	}
+	if !strings.Contains(string(pretty), "\n  \"foo\"") {
+		t.Errorf("MarshalJSON pretty should be indented, got: %q", string(pretty))
+	}
+
+	compact, err := MarshalJSON(payload, false)
+	if err != nil {
+		t.Fatalf("MarshalJSON compact error: %v", err)
+	}
+	if strings.Contains(string(compact), "\n  \"foo\"") {
+		t.Errorf("MarshalJSON compact should not be indented, got: %q", string(compact))
+	}
+}
+
 func TestOutputOrText(t *testing.T) {
 	data := map[string]string{"key": "val"}
 	textCalled := false
@@ -231,6 +284,86 @@ func TestDetectFormatEnv(t *testing.T) {
 	os.Unsetenv("NTM_OUTPUT_FORMAT")
 }
 
+func TestTerminalHelpersWithPipeStdout(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error: %v", err)
+	}
+	os.Stdout = w
+	defer func() {
+		os.Stdout = oldStdout
+		w.Close()
+		r.Close()
+	}()
+
+	if IsTerminal() {
+		t.Error("IsTerminal() should be false for pipe stdout")
+	}
+	if isStdoutTerminal() {
+		t.Error("isStdoutTerminal() should be false for pipe stdout")
+	}
+
+	os.Unsetenv("NTM_OUTPUT_FORMAT")
+	if f := DetectFormat(false); f != FormatJSON {
+		t.Errorf("DetectFormat(false) with pipe stdout = %v, want FormatJSON", f)
+	}
+}
+
+func TestTerminalHelpersWithPipeStderr(t *testing.T) {
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error: %v", err)
+	}
+	os.Stderr = w
+	defer func() {
+		os.Stderr = oldStderr
+		w.Close()
+		r.Close()
+	}()
+
+	if isStderrTerminal() {
+		t.Error("isStderrTerminal() should be false for pipe stderr")
+	}
+}
+
+func TestConfirmWriterDefaults(t *testing.T) {
+	var buf bytes.Buffer
+
+	ok := ConfirmWriter(&buf, strings.NewReader("\n"), "Proceed?", ConfirmOptions{
+		Default: true,
+	})
+	if !ok {
+		t.Error("ConfirmWriter should return default true on empty input")
+	}
+	if !strings.Contains(buf.String(), "[Y/n]") {
+		t.Errorf("ConfirmWriter output missing default hint: %q", buf.String())
+	}
+
+	buf.Reset()
+	ok = ConfirmWriter(&buf, strings.NewReader("n\n"), "Proceed?", ConfirmOptions{
+		Default: true,
+	})
+	if ok {
+		t.Error("ConfirmWriter should return false for explicit 'n'")
+	}
+	if !strings.Contains(buf.String(), "[Y/n]") {
+		t.Errorf("ConfirmWriter output missing default hint: %q", buf.String())
+	}
+
+	buf.Reset()
+	ok = ConfirmWriter(&buf, strings.NewReader("\n"), "Proceed?", ConfirmOptions{
+		Default: false,
+	})
+	if ok {
+		t.Error("ConfirmWriter should return default false on empty input")
+	}
+	if !strings.Contains(buf.String(), "[y/N]") {
+		t.Errorf("ConfirmWriter output missing default hint: %q", buf.String())
+	}
+}
+
 func TestTableAlignment(t *testing.T) {
 	var buf bytes.Buffer
 	tbl := NewTable(&buf, "Col1", "Col2")
@@ -244,6 +377,21 @@ func TestTableAlignment(t *testing.T) {
 	// Check for padding/alignment (heuristic)
 	if !strings.Contains(output, "Short ") { // Should have padding
 		t.Error("Table row padding seems missing")
+	}
+}
+
+func TestTableRenderMissingColumns(t *testing.T) {
+	var buf bytes.Buffer
+	tbl := NewTable(&buf, "A", "B", "C")
+	tbl.AddRow("one", "two")
+	tbl.Render()
+
+	output := buf.String()
+	if !strings.Contains(output, "A") || !strings.Contains(output, "B") || !strings.Contains(output, "C") {
+		t.Fatalf("expected headers in output, got: %q", output)
+	}
+	if !strings.Contains(output, "one") || !strings.Contains(output, "two") {
+		t.Fatalf("expected row values in output, got: %q", output)
 	}
 }
 
@@ -561,6 +709,30 @@ func TestPrintSuccessFooterToBuffer(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "What's next?") {
 		t.Errorf("Expected 'What's next?' in output, got: %q", output)
+	}
+}
+
+func TestPrintSuccessFooterSkipsNonTerminalFile(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error: %v", err)
+	}
+
+	suggestions := []Suggestion{
+		{Command: "ntm attach demo", Description: "Attach to session"},
+	}
+
+	PrintSuccessFooter(w, suggestions...)
+	w.Close()
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom pipe error: %v", err)
+	}
+	r.Close()
+
+	if buf.Len() != 0 {
+		t.Errorf("Expected no output for non-terminal *os.File, got: %q", buf.String())
 	}
 }
 

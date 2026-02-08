@@ -15,6 +15,7 @@ func createTestSession(t *testing.T) string {
 	if !IsInstalled() {
 		t.Skip("tmux not installed")
 	}
+	acquireGlobalTmuxTestLock(t)
 	name := fmt.Sprintf("ntm_test_%d", time.Now().UnixNano())
 	t.Cleanup(func() {
 		_ = KillSession(name) // ignore error on cleanup
@@ -158,6 +159,7 @@ func TestCreateSession(t *testing.T) {
 
 func TestCreateSessionWithDir(t *testing.T) {
 	skipIfNoTmux(t)
+	acquireGlobalTmuxTestLock(t)
 
 	// Create temp directory
 	tmpDir := t.TempDir()
@@ -187,6 +189,7 @@ func TestSessionExistsNonExistent(t *testing.T) {
 
 func TestKillSession(t *testing.T) {
 	skipIfNoTmux(t)
+	acquireGlobalTmuxTestLock(t)
 
 	name := fmt.Sprintf("ntm_test_kill_%d", time.Now().UnixNano())
 
@@ -230,6 +233,24 @@ func TestListSessions(t *testing.T) {
 
 	if !found {
 		t.Errorf("session %s not found in ListSessions result", session)
+	}
+}
+
+func TestGetAllPanes_NoServerReturnsEmpty(t *testing.T) {
+	skipIfNoTmux(t)
+
+	// Point tmux at an empty socket directory so no server exists.
+	t.Setenv("TMUX_TMPDIR", t.TempDir())
+
+	panes, err := GetAllPanes()
+	if err != nil {
+		t.Fatalf("GetAllPanes error: %v", err)
+	}
+	if panes == nil {
+		t.Fatal("expected non-nil panes map")
+	}
+	if len(panes) != 0 {
+		t.Fatalf("expected no panes, got %d", len(panes))
 	}
 }
 
@@ -929,4 +950,538 @@ func TestBinaryPathPreferredLocations(t *testing.T) {
 	if IsInstalled() && !isPreferred {
 		t.Logf("BinaryPath returned non-standard path: %q (this is fine if tmux is installed elsewhere)", path)
 	}
+}
+
+// ============== Pure Function Tests ==============
+
+func TestTagsFromTitle(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		title string
+		want  []string
+	}{
+		{"simple tags", "session__cc_1[frontend]", []string{"frontend"}},
+		{"multiple tags", "session__cc_1[frontend,api]", []string{"frontend", "api"}},
+		{"no tags", "session__cc_1", nil},
+		{"empty tags", "session__cc_1[]", nil},
+		{"not NTM format", "just_a_title", nil},
+		{"with variant and tags", "session__cc_1_opus[backend]", []string{"backend"}},
+		{"tags with spaces", "session__cc_1[tag1, tag2]", []string{"tag1", "tag2"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tagsFromTitle(tt.title)
+			if len(got) != len(tt.want) {
+				t.Errorf("tagsFromTitle(%q) = %v, want %v", tt.title, got, tt.want)
+				return
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("tagsFromTitle(%q)[%d] = %q, want %q", tt.title, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestParseAgentFromTitleEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		title       string
+		wantType    AgentType
+		wantIndex   int
+		wantVariant string
+		wantTags    []string
+	}{
+		{
+			name:        "basic claude",
+			title:       "myproject__cc_1",
+			wantType:    AgentType("cc"),
+			wantIndex:   1,
+			wantVariant: "",
+			wantTags:    nil,
+		},
+		{
+			name:        "codex with variant",
+			title:       "myproject__cod_2_gpt4o",
+			wantType:    AgentType("cod"),
+			wantIndex:   2,
+			wantVariant: "gpt4o",
+			wantTags:    nil,
+		},
+		{
+			name:        "gemini with tags",
+			title:       "myproject__gmi_3[api,backend]",
+			wantType:    AgentType("gmi"),
+			wantIndex:   3,
+			wantVariant: "",
+			wantTags:    []string{"api", "backend"},
+		},
+		{
+			name:        "full format",
+			title:       "myproject__cc_1_opus[frontend,ui]",
+			wantType:    AgentType("cc"),
+			wantIndex:   1,
+			wantVariant: "opus",
+			wantTags:    []string{"frontend", "ui"},
+		},
+		{
+			name:        "non-NTM format",
+			title:       "zsh",
+			wantType:    AgentUser,
+			wantIndex:   0,
+			wantVariant: "",
+			wantTags:    nil,
+		},
+		{
+			name:        "double underscore no suffix",
+			title:       "just__",
+			wantType:    AgentUser,
+			wantIndex:   0,
+			wantVariant: "",
+			wantTags:    nil,
+		},
+		{
+			name:        "single underscore",
+			title:       "project_name",
+			wantType:    AgentUser,
+			wantIndex:   0,
+			wantVariant: "",
+			wantTags:    nil,
+		},
+		{
+			name:        "high index",
+			title:       "session__cc_999",
+			wantType:    AgentType("cc"),
+			wantIndex:   999,
+			wantVariant: "",
+			wantTags:    nil,
+		},
+		{
+			name:        "custom agent type",
+			title:       "session__aider_1",
+			wantType:    AgentType("aider"),
+			wantIndex:   1,
+			wantVariant: "",
+			wantTags:    nil,
+		},
+		{
+			name:        "variant with special chars",
+			title:       "session__cc_1_opus-4.5",
+			wantType:    AgentType("cc"),
+			wantIndex:   1,
+			wantVariant: "opus-4.5",
+			wantTags:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotType, gotIndex, gotVariant, gotTags := parseAgentFromTitle(tt.title)
+			if gotType != tt.wantType {
+				t.Errorf("parseAgentFromTitle(%q) type = %q, want %q", tt.title, gotType, tt.wantType)
+			}
+			if gotIndex != tt.wantIndex {
+				t.Errorf("parseAgentFromTitle(%q) index = %d, want %d", tt.title, gotIndex, tt.wantIndex)
+			}
+			if gotVariant != tt.wantVariant {
+				t.Errorf("parseAgentFromTitle(%q) variant = %q, want %q", tt.title, gotVariant, tt.wantVariant)
+			}
+			if len(gotTags) != len(tt.wantTags) {
+				t.Errorf("parseAgentFromTitle(%q) tags = %v, want %v", tt.title, gotTags, tt.wantTags)
+			} else {
+				for i := range gotTags {
+					if gotTags[i] != tt.wantTags[i] {
+						t.Errorf("parseAgentFromTitle(%q) tags[%d] = %q, want %q", tt.title, i, gotTags[i], tt.wantTags[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestDetectAgentFromCommandEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		command string
+		want    AgentType
+	}{
+		// Claude variants
+		{"claude bare", "claude", AgentClaude},
+		{"claude with args", "claude --model opus", AgentClaude},
+		{"claude path", "/usr/bin/claude", AgentClaude},
+		{"cc alias", "cc", AgentClaude},
+		{"cc with args", "cc --resume", AgentClaude},
+
+		// Codex variants
+		{"codex bare", "codex", AgentCodex},
+		{"codex with args", "codex --model gpt4o", AgentCodex},
+		{"codex path", "/opt/codex", AgentCodex},
+		{"cod alias", "cod", AgentCodex},
+		{"cod with args", "cod --dangerously-bypass", AgentCodex},
+
+		// Gemini variants
+		{"gemini bare", "gemini", AgentGemini},
+		{"gemini with args", "gemini --model flash", AgentGemini},
+		{"gemini path", "/bin/gemini", AgentGemini},
+		{"gmi alias", "gmi", AgentGemini},
+		{"gmi with args", "gmi start", AgentGemini},
+
+		// Cursor
+		{"cursor bare", "cursor", AgentCursor},
+		{"cursor with args", "cursor .", AgentCursor},
+		{"cursor path", "/Applications/cursor", AgentCursor},
+
+		// Windsurf
+		{"windsurf bare", "windsurf", AgentWindsurf},
+		{"windsurf with args", "windsurf --new-window", AgentWindsurf},
+		{"windsurf path", "/snap/bin/windsurf", AgentWindsurf},
+
+		// Aider
+		{"aider bare", "aider", AgentAider},
+		{"aider with args", "aider --watch", AgentAider},
+		{"aider path", "/home/user/.local/bin/aider", AgentAider},
+
+		// User fallback
+		{"bash", "bash", AgentUser},
+		{"zsh", "zsh", AgentUser},
+		{"vim", "vim", AgentUser},
+		{"empty", "", AgentUser},
+		{"random command", "some_random_program", AgentUser},
+
+		// Case insensitivity
+		{"CLAUDE uppercase", "CLAUDE", AgentClaude},
+		{"Claude mixed", "Claude", AgentClaude},
+		{"CODEX uppercase", "CODEX", AgentCodex},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectAgentFromCommand(tt.command)
+			if got != tt.want {
+				t.Errorf("detectAgentFromCommand(%q) = %q, want %q", tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatTagsEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		tags []string
+		want string
+	}{
+		{"nil", nil, ""},
+		{"empty slice", []string{}, ""},
+		{"single tag", []string{"frontend"}, "[frontend]"},
+		{"two tags", []string{"api", "backend"}, "[api,backend]"},
+		{"three tags", []string{"a", "b", "c"}, "[a,b,c]"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatTags(tt.tags)
+			if got != tt.want {
+				t.Errorf("FormatTags(%v) = %q, want %q", tt.tags, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseTagsEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		tagStr string
+		want   []string
+	}{
+		{"empty", "", nil},
+		{"single", "frontend", []string{"frontend"}},
+		{"multiple", "a,b,c", []string{"a", "b", "c"}},
+		{"with spaces", "a, b, c", []string{"a", "b", "c"}},
+		{"trailing comma", "a,b,", []string{"a", "b"}},
+		{"leading comma", ",a,b", []string{"a", "b"}},
+		{"only commas", ",,", nil},
+		{"whitespace only entries", "a, ,b", []string{"a", "b"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseTags(tt.tagStr)
+			if len(got) != len(tt.want) {
+				t.Errorf("parseTags(%q) = %v, want %v", tt.tagStr, got, tt.want)
+				return
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("parseTags(%q)[%d] = %q, want %q", tt.tagStr, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// ============== Pure Function Tests ==============
+
+func TestFormatPaneName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		session   string
+		agentType string
+		index     int
+		variant   string
+		want      string
+	}{
+		{
+			name:      "claude agent no variant",
+			session:   "myproject",
+			agentType: "cc",
+			index:     1,
+			variant:   "",
+			want:      "myproject__cc_1",
+		},
+		{
+			name:      "codex agent no variant",
+			session:   "myproject",
+			agentType: "cod",
+			index:     2,
+			variant:   "",
+			want:      "myproject__cod_2",
+		},
+		{
+			name:      "gemini agent no variant",
+			session:   "backend",
+			agentType: "gmi",
+			index:     3,
+			variant:   "",
+			want:      "backend__gmi_3",
+		},
+		{
+			name:      "claude with variant",
+			session:   "myproject",
+			agentType: "cc",
+			index:     1,
+			variant:   "opus",
+			want:      "myproject__cc_1_opus",
+		},
+		{
+			name:      "codex with variant",
+			session:   "frontend",
+			agentType: "cod",
+			index:     4,
+			variant:   "gpt5",
+			want:      "frontend__cod_4_gpt5",
+		},
+		{
+			name:      "user pane",
+			session:   "test",
+			agentType: "user",
+			index:     0,
+			variant:   "",
+			want:      "test__user_0",
+		},
+		{
+			name:      "hyphenated session name",
+			session:   "my-cool-project",
+			agentType: "cc",
+			index:     1,
+			variant:   "",
+			want:      "my-cool-project__cc_1",
+		},
+		{
+			name:      "underscore session name",
+			session:   "my_other_project",
+			agentType: "gmi",
+			index:     5,
+			variant:   "pro",
+			want:      "my_other_project__gmi_5_pro",
+		},
+		{
+			name:      "high index",
+			session:   "swarm",
+			agentType: "cc",
+			index:     100,
+			variant:   "",
+			want:      "swarm__cc_100",
+		},
+		{
+			name:      "zero index",
+			session:   "proj",
+			agentType: "user",
+			index:     0,
+			variant:   "",
+			want:      "proj__user_0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatPaneName(tt.session, tt.agentType, tt.index, tt.variant)
+			if got != tt.want {
+				t.Errorf("FormatPaneName(%q, %q, %d, %q) = %q, want %q",
+					tt.session, tt.agentType, tt.index, tt.variant, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNeedsBufferSend(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		agentType AgentType
+		content   string
+		want      bool
+	}{
+		// Gemini cases - uses buffer for newlines
+		{
+			name:      "gemini single line",
+			agentType: AgentGemini,
+			content:   "hello world",
+			want:      false,
+		},
+		{
+			name:      "gemini with newline",
+			agentType: AgentGemini,
+			content:   "line1\nline2",
+			want:      true,
+		},
+		{
+			name:      "gemini multiple newlines",
+			agentType: AgentGemini,
+			content:   "a\nb\nc\nd",
+			want:      true,
+		},
+		{
+			name:      "gemini empty string",
+			agentType: AgentGemini,
+			content:   "",
+			want:      false,
+		},
+		// Codex cases - uses buffer for newlines or large content (>512)
+		{
+			name:      "codex single line short",
+			agentType: AgentCodex,
+			content:   "hello world",
+			want:      false,
+		},
+		{
+			name:      "codex with newline",
+			agentType: AgentCodex,
+			content:   "line1\nline2",
+			want:      true,
+		},
+		{
+			name:      "codex long content no newline",
+			agentType: AgentCodex,
+			content:   strings.Repeat("a", 513),
+			want:      true,
+		},
+		{
+			name:      "codex exactly 512 chars",
+			agentType: AgentCodex,
+			content:   strings.Repeat("b", 512),
+			want:      false,
+		},
+		{
+			name:      "codex 511 chars",
+			agentType: AgentCodex,
+			content:   strings.Repeat("c", 511),
+			want:      false,
+		},
+		{
+			name:      "codex empty string",
+			agentType: AgentCodex,
+			content:   "",
+			want:      false,
+		},
+		// Claude cases - never uses buffer
+		{
+			name:      "claude single line",
+			agentType: AgentClaude,
+			content:   "hello world",
+			want:      false,
+		},
+		{
+			name:      "claude with newline",
+			agentType: AgentClaude,
+			content:   "line1\nline2",
+			want:      false,
+		},
+		{
+			name:      "claude long content",
+			agentType: AgentClaude,
+			content:   strings.Repeat("x", 1000),
+			want:      false,
+		},
+		// User pane - never uses buffer
+		{
+			name:      "user single line",
+			agentType: AgentUser,
+			content:   "echo hello",
+			want:      false,
+		},
+		{
+			name:      "user with newline",
+			agentType: AgentUser,
+			content:   "echo line1\necho line2",
+			want:      false,
+		},
+		// Other agent types - never uses buffer
+		{
+			name:      "cursor single line",
+			agentType: AgentCursor,
+			content:   "test",
+			want:      false,
+		},
+		{
+			name:      "cursor with newline",
+			agentType: AgentCursor,
+			content:   "a\nb",
+			want:      false,
+		},
+		{
+			name:      "windsurf with newline",
+			agentType: AgentWindsurf,
+			content:   "x\ny",
+			want:      false,
+		},
+		{
+			name:      "aider with newline",
+			agentType: AgentAider,
+			content:   "test\ndata",
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := needsBufferSend(tt.agentType, tt.content)
+			if got != tt.want {
+				t.Errorf("needsBufferSend(%v, %q) = %v, want %v",
+					tt.agentType, truncateForLog(tt.content), got, tt.want)
+			}
+		})
+	}
+}
+
+// truncateForLog truncates long strings for readable test output
+func truncateForLog(s string) string {
+	if len(s) > 50 {
+		return s[:47] + "..."
+	}
+	return s
 }

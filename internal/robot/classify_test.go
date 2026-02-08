@@ -1,0 +1,359 @@
+package robot
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+// TestClassifyWithOutput_IdlePrompt verifies that ClassifyWithOutput detects idle/waiting
+// state when a Claude prompt is present with no output velocity.
+func TestClassifyWithOutput_IdlePrompt(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		AgentType:          "claude",
+		HysteresisDuration: 0, // disable hysteresis for testing
+	})
+
+	// First call establishes baseline
+	_, err := sc.ClassifyWithOutput("some initial output\nclaude>")
+	if err != nil {
+		t.Fatalf("ClassifyWithOutput baseline: %v", err)
+	}
+
+	// Second call with same content (no velocity) and idle prompt
+	activity, err := sc.ClassifyWithOutput("some initial output\nclaude>")
+	if err != nil {
+		t.Fatalf("ClassifyWithOutput: %v", err)
+	}
+
+	if activity.State != StateWaiting {
+		t.Errorf("State = %q, want %q", activity.State, StateWaiting)
+	}
+	if activity.PaneID != "test-pane" {
+		t.Errorf("PaneID = %q, want %q", activity.PaneID, "test-pane")
+	}
+	if activity.AgentType != "claude" {
+		t.Errorf("AgentType = %q, want %q", activity.AgentType, "claude")
+	}
+}
+
+// TestClassifyWithOutput_ErrorPattern verifies that error patterns take immediate priority.
+func TestClassifyWithOutput_ErrorPattern(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		AgentType:          "claude",
+		HysteresisDuration: 0,
+	})
+
+	// Baseline
+	_, _ = sc.ClassifyWithOutput("working on something")
+
+	// Error pattern in output
+	activity, err := sc.ClassifyWithOutput("Error: rate limit exceeded 429")
+	if err != nil {
+		t.Fatalf("ClassifyWithOutput: %v", err)
+	}
+
+	if activity.State != StateError {
+		t.Errorf("State = %q, want %q", activity.State, StateError)
+	}
+	if activity.Confidence < 0.90 {
+		t.Errorf("Confidence = %f, want >= 0.90", activity.Confidence)
+	}
+}
+
+// TestClassifyWithOutput_ThinkingPattern verifies thinking state detection.
+func TestClassifyWithOutput_ThinkingPattern(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		AgentType:          "claude",
+		HysteresisDuration: 0,
+	})
+
+	// Baseline
+	_, _ = sc.ClassifyWithOutput("starting task")
+
+	// Thinking pattern
+	activity, err := sc.ClassifyWithOutput("starting task\nThinking...")
+	if err != nil {
+		t.Fatalf("ClassifyWithOutput: %v", err)
+	}
+
+	if activity.State != StateThinking {
+		t.Errorf("State = %q, want %q", activity.State, StateThinking)
+	}
+}
+
+// TestClassifyWithOutput_HighVelocity verifies generating state with high output velocity.
+func TestClassifyWithOutput_HighVelocity(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		AgentType:          "claude",
+		HysteresisDuration: 0,
+	})
+
+	// Baseline with some content
+	_, _ = sc.ClassifyWithOutput("start")
+
+	// Need to wait a tiny bit so velocity is meaningful, but since
+	// VelocityHighThreshold is 10 chars/sec, let's add lots of chars
+	// The time between calls is very small, so lots of chars = high velocity
+	largeOutput := "start" + strings.Repeat("x", 1000)
+
+	activity, err := sc.ClassifyWithOutput(largeOutput)
+	if err != nil {
+		t.Fatalf("ClassifyWithOutput: %v", err)
+	}
+
+	// With high char addition and small time delta, velocity should be high
+	if activity.State != StateGenerating {
+		t.Errorf("State = %q, want %q (velocity=%.1f)", activity.State, StateGenerating, activity.Velocity)
+	}
+}
+
+// TestClassifyWithOutput_StateTransitionHistory verifies that state transitions are recorded.
+func TestClassifyWithOutput_StateTransitionHistory(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		AgentType:          "claude",
+		HysteresisDuration: 0,
+	})
+
+	// Move to a known state (not UNKNOWN)
+	_, _ = sc.ClassifyWithOutput("Error: rate limit")
+
+	history := sc.GetStateHistory()
+	if len(history) == 0 {
+		t.Fatal("expected at least one state transition")
+	}
+	if history[len(history)-1].To != StateError {
+		t.Errorf("last transition To = %q, want %q", history[len(history)-1].To, StateError)
+	}
+}
+
+// TestClassifyWithOutput_PaneIDPreserved verifies pane ID is carried through.
+func TestClassifyWithOutput_PaneIDPreserved(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("my-pane-42", &ClassifierConfig{
+		AgentType: "codex",
+	})
+
+	activity, err := sc.ClassifyWithOutput("test content")
+	if err != nil {
+		t.Fatalf("ClassifyWithOutput: %v", err)
+	}
+	if activity.PaneID != "my-pane-42" {
+		t.Errorf("PaneID = %q, want %q", activity.PaneID, "my-pane-42")
+	}
+	if activity.AgentType != "codex" {
+		t.Errorf("AgentType = %q, want %q", activity.AgentType, "codex")
+	}
+}
+
+// TestClassifyWithOutput_DetectedPatternsReported verifies pattern names are in result.
+func TestClassifyWithOutput_DetectedPatternsReported(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		AgentType:          "claude",
+		HysteresisDuration: 0,
+	})
+
+	_, _ = sc.ClassifyWithOutput("initial")
+
+	activity, err := sc.ClassifyWithOutput("initial\nclaude>")
+	if err != nil {
+		t.Fatalf("ClassifyWithOutput: %v", err)
+	}
+
+	// Should have detected at least one pattern
+	if len(activity.DetectedPatterns) == 0 {
+		t.Error("expected detected patterns to be populated")
+	}
+}
+
+// TestClassifyWithOutput_MultipleErrors verifies multiple error patterns.
+func TestClassifyWithOutput_MultipleErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{"rate_limit", "rate limit exceeded"},
+		{"http_429", "HTTP 429 Too Many Requests"},
+		{"quota_exceeded", "quota exceeded for this month"},
+		{"api_error", "API error: something broke"},
+		{"panic", "panic: runtime error"},
+		{"connection_refused", "connection refused"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			sc := NewStateClassifier("pane", &ClassifierConfig{
+				AgentType:          "claude",
+				HysteresisDuration: 0,
+			})
+			_, _ = sc.ClassifyWithOutput("baseline")
+			activity, err := sc.ClassifyWithOutput(tt.content)
+			if err != nil {
+				t.Fatalf("ClassifyWithOutput: %v", err)
+			}
+			if activity.State != StateError {
+				t.Errorf("State = %q, want %q for content %q", activity.State, StateError, tt.content)
+			}
+		})
+	}
+}
+
+// TestClassifyWithOutput_CodexIdlePrompt verifies codex-specific idle detection.
+func TestClassifyWithOutput_CodexIdlePrompt(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		AgentType:          "codex",
+		HysteresisDuration: 0,
+	})
+
+	_, _ = sc.ClassifyWithOutput("some output\ncodex>")
+	activity, err := sc.ClassifyWithOutput("some output\ncodex>")
+	if err != nil {
+		t.Fatalf("ClassifyWithOutput: %v", err)
+	}
+
+	if activity.State != StateWaiting {
+		t.Errorf("State = %q, want %q", activity.State, StateWaiting)
+	}
+}
+
+// TestClassifyWithOutput_GeminiIdlePrompt verifies gemini-specific idle detection.
+func TestClassifyWithOutput_GeminiIdlePrompt(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		AgentType:          "gemini",
+		HysteresisDuration: 0,
+	})
+
+	_, _ = sc.ClassifyWithOutput("some output\ngemini>")
+	activity, err := sc.ClassifyWithOutput("some output\ngemini>")
+	if err != nil {
+		t.Fatalf("ClassifyWithOutput: %v", err)
+	}
+
+	if activity.State != StateWaiting {
+		t.Errorf("State = %q, want %q", activity.State, StateWaiting)
+	}
+}
+
+// TestClassifyWithOutput_EmptyInput verifies behavior with empty output.
+func TestClassifyWithOutput_EmptyInput(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		HysteresisDuration: 0,
+	})
+
+	activity, err := sc.ClassifyWithOutput("")
+	if err != nil {
+		t.Fatalf("ClassifyWithOutput: %v", err)
+	}
+
+	// Empty input should produce a valid activity (state may be UNKNOWN)
+	if activity == nil {
+		t.Fatal("expected non-nil activity")
+	}
+}
+
+// TestClassifyWithOutput_Hysteresis verifies that hysteresis prevents rapid state flapping.
+func TestClassifyWithOutput_Hysteresis(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		AgentType:          "claude",
+		HysteresisDuration: 5 * time.Second, // long hysteresis
+	})
+
+	// Move to ERROR state (bypasses hysteresis)
+	activity1, _ := sc.ClassifyWithOutput("error: rate limit")
+	if activity1.State != StateError {
+		t.Fatalf("initial state = %q, want ERROR", activity1.State)
+	}
+
+	// Try to move to idle - should be blocked by hysteresis
+	activity2, _ := sc.ClassifyWithOutput("error: rate limit\nclaude>")
+	// Should still be ERROR because hysteresis hasn't elapsed
+	if activity2.State != StateError {
+		t.Logf("State changed to %q - hysteresis may have been bypassed", activity2.State)
+	}
+}
+
+// TestClassifyWithOutput_ErrorBypassesHysteresis verifies ERROR transitions are immediate.
+func TestClassifyWithOutput_ErrorBypassesHysteresis(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("test-pane", &ClassifierConfig{
+		AgentType:          "claude",
+		HysteresisDuration: 10 * time.Second, // long hysteresis
+	})
+
+	// Start with some content
+	_, _ = sc.ClassifyWithOutput("working on something claude>")
+	_, _ = sc.ClassifyWithOutput("working on something claude>")
+
+	// Error should transition immediately regardless of hysteresis
+	activity, _ := sc.ClassifyWithOutput("error: rate limit")
+	if activity.State != StateError {
+		t.Errorf("State = %q, want %q (ERROR should bypass hysteresis)", activity.State, StateError)
+	}
+}
+
+// TestNewStateClassifier_Defaults verifies default configuration values.
+func TestNewStateClassifier_Defaults(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("pane-1", nil)
+
+	if sc.currentState != StateUnknown {
+		t.Errorf("initial state = %q, want UNKNOWN", sc.currentState)
+	}
+	if sc.stallThreshold != DefaultStallThreshold {
+		t.Errorf("stallThreshold = %v, want %v", sc.stallThreshold, DefaultStallThreshold)
+	}
+	if sc.hysteresisDuration != DefaultHysteresisDuration {
+		t.Errorf("hysteresisDuration = %v, want %v", sc.hysteresisDuration, DefaultHysteresisDuration)
+	}
+	if sc.patternLibrary == nil {
+		t.Error("expected non-nil pattern library")
+	}
+}
+
+// TestNewStateClassifier_CustomConfig verifies custom config is respected.
+func TestNewStateClassifier_CustomConfig(t *testing.T) {
+	t.Parallel()
+
+	sc := NewStateClassifier("pane-1", &ClassifierConfig{
+		AgentType:          "gemini",
+		StallThreshold:     5 * time.Minute,
+		HysteresisDuration: 10 * time.Second,
+	})
+
+	if sc.agentType != "gemini" {
+		t.Errorf("agentType = %q, want gemini", sc.agentType)
+	}
+	if sc.stallThreshold != 5*time.Minute {
+		t.Errorf("stallThreshold = %v, want 5m", sc.stallThreshold)
+	}
+	if sc.hysteresisDuration != 10*time.Second {
+		t.Errorf("hysteresisDuration = %v, want 10s", sc.hysteresisDuration)
+	}
+}

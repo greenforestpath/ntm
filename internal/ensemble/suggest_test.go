@@ -1,6 +1,7 @@
 package ensemble
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -206,6 +207,97 @@ func TestSuggestionEngine_ListPresets(t *testing.T) {
 	t.Logf("Available presets (%d):", len(presets))
 	for _, p := range presets {
 		t.Logf("  - %s", p)
+	}
+}
+
+func TestSuggest_SecurityKeywords(t *testing.T) {
+	engine := NewSuggestionEngine()
+	input := "Check for security vulnerabilities and XSS risk"
+	logTestStartSuggest(t, input)
+
+	result := engine.Suggest(input)
+	logTestResultSuggest(t, result.TopPick)
+	assertTrueSuggest(t, "top pick present", result.TopPick != nil)
+	assertEqualSuggest(t, "top pick preset", result.TopPick.PresetName, "safety-risk")
+}
+
+func TestSuggest_BugKeywords(t *testing.T) {
+	engine := NewSuggestionEngine()
+	input := "Debug the crash and fix the bug"
+	logTestStartSuggest(t, input)
+
+	result := engine.Suggest(input)
+	logTestResultSuggest(t, result.TopPick)
+	assertTrueSuggest(t, "top pick present", result.TopPick != nil)
+	assertTrueSuggest(t, "bug-related preset", result.TopPick.PresetName == "bug-hunt" || result.TopPick.PresetName == "root-cause-analysis")
+}
+
+func TestSuggest_ArchitectureKeywords(t *testing.T) {
+	engine := NewSuggestionEngine()
+	input := "Review the architecture and system design"
+	logTestStartSuggest(t, input)
+
+	result := engine.Suggest(input)
+	logTestResultSuggest(t, result.TopPick)
+	assertTrueSuggest(t, "top pick present", result.TopPick != nil)
+	assertEqualSuggest(t, "architecture preset", result.TopPick.PresetName, "architecture-review")
+}
+
+func TestSuggest_AmbiguousQuestion(t *testing.T) {
+	engine := NewSuggestionEngine()
+	input := "We need a security review and architecture assessment"
+	logTestStartSuggest(t, input)
+
+	result := engine.Suggest(input)
+	logTestResultSuggest(t, result.Suggestions)
+	assertTrueSuggest(t, "has suggestions", len(result.Suggestions) > 0)
+	assertTrueSuggest(t, "top pick present", result.TopPick != nil)
+}
+
+func TestSuggest_EmptyQuestion(t *testing.T) {
+	engine := NewSuggestionEngine()
+	input := ""
+	logTestStartSuggest(t, input)
+
+	result := engine.Suggest(input)
+	logTestResultSuggest(t, result.NoMatchReason)
+	assertEqualSuggest(t, "empty question reason", result.NoMatchReason, "empty question")
+}
+
+func TestSuggest_IDOnly(t *testing.T) {
+	engine := NewSuggestionEngine()
+	input := "safety-risk"
+	logTestStartSuggest(t, input)
+
+	result := engine.Suggest(input)
+	logTestResultSuggest(t, result.TopPick)
+	assertTrueSuggest(t, "top pick present", result.TopPick != nil)
+	assertTrueSuggest(t, "preset name matches input", strings.Contains(result.TopPick.PresetName, "safety"))
+}
+
+func logTestStartSuggest(t *testing.T, input any) {
+	t.Helper()
+	t.Logf("TEST: %s - starting with input: %v", t.Name(), input)
+}
+
+func logTestResultSuggest(t *testing.T, result any) {
+	t.Helper()
+	t.Logf("TEST: %s - got result: %v", t.Name(), result)
+}
+
+func assertTrueSuggest(t *testing.T, desc string, ok bool) {
+	t.Helper()
+	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
+	if !ok {
+		t.Fatalf("assertion failed: %s", desc)
+	}
+}
+
+func assertEqualSuggest(t *testing.T, desc string, got, want any) {
+	t.Helper()
+	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
+	if got != want {
+		t.Fatalf("%s: got %v want %v", desc, got, want)
 	}
 }
 

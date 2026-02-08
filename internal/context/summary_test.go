@@ -451,3 +451,37 @@ func TestHandoffSummary_EmptyValues(t *testing.T) {
 		t.Error("formatted output missing header")
 	}
 }
+
+// =============================================================================
+// truncateAtRuneBoundary
+// =============================================================================
+
+func TestTruncateAtRuneBoundary(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		maxBytes int
+		want     string
+	}{
+		{"within limit", "hello", 10, "hello"},
+		{"exact limit", "hello", 5, "hello"},
+		{"truncated ASCII", "hello world", 5, "hello"},
+		{"zero max", "hello", 0, ""},
+		{"empty string", "", 10, ""},
+		{"multi-byte rune boundary", "héllo", 2, "h"},
+		{"full multi-byte", "héllo", 3, "hé"},
+		{"CJK characters", "你好世界", 6, "你好"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := truncateAtRuneBoundary(tc.input, tc.maxBytes)
+			if got != tc.want {
+				t.Errorf("truncateAtRuneBoundary(%q, %d) = %q, want %q", tc.input, tc.maxBytes, got, tc.want)
+			}
+		})
+	}
+}

@@ -104,7 +104,7 @@ func (a *AMAdapter) isServerHealthy(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", a.serverURL+"/health", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", a.serverURL+"/health/liveness", nil)
 	if err != nil {
 		return false
 	}
@@ -145,12 +145,12 @@ func (a *AMAdapter) HealthCheck(ctx context.Context) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", a.serverURL+"/health", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", a.serverURL+"/health/liveness", nil)
 	if err != nil {
 		return nil, err
 	}
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("agent mail server not responding: %w", err)

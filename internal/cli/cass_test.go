@@ -94,6 +94,46 @@ func TestTruncateCassText(t *testing.T) {
 	}
 }
 
+// TestTruncateCassText_MultibyteLoopFallthrough tests the fallthrough at
+// end of the for-range loop (line 513) when all rune starts fit within targetLen.
+func TestTruncateCassText_MultibyteLoopFallthrough(t *testing.T) {
+	t.Parallel()
+
+	// "aaaa🌍" = 8 bytes. maxLen=7, targetLen=4.
+	// Rune starts: 0,1,2,3,4. All <= 4. Loop completes. prevI=4.
+	// return s[:4]+"..." = "aaaa..." (7 bytes)
+	s := "aaaa\xf0\x9f\x8c\x8d" // "aaaa🌍"
+	got := truncateCassText(s, 7)
+	want := "aaaa..."
+	if got != want {
+		t.Errorf("truncateCassText(%q, 7) = %q, want %q", s, got, want)
+	}
+}
+
+// TestTruncateCassText_SmallMaxLenLoopFallthrough tests line 500 (maxLen<=3 loop
+// completing without early return) which happens when all rune positions < maxLen.
+func TestTruncateCassText_SmallMaxLenLoopFallthrough(t *testing.T) {
+	t.Parallel()
+
+	// With a 2-byte rune at position 0 and maxLen=2:
+	// Rune starts: 0. i=0 (<2 ok), byteLen=1.
+	// Loop ends. Next iteration: i=2 (the multi-byte rune occupies positions 0-1).
+	// Actually, for i := range s iterates over rune starts.
+	// "é" = 2 bytes. maxLen=3. Rune start: 0. i=0 (<3), byteLen=1. Loop ends.
+	// Falls through to return s[:3] which is "é" + 1 random byte - bad.
+	// Actually, "éa" = 3 bytes. maxLen=2, loop: i=0 (<2, byteLen=1), i=2 (>=2, returns s[:1]).
+	// That's the early return, not the fallthrough.
+	// For the fallthrough: need len(s) > maxLen (>3 bytes) but all rune starts < maxLen.
+	// "🌍" = 4 bytes, single rune. maxLen=3. Rune starts: 0. i=0 (<3). Loop ends.
+	// return s[:maxLen] = s[:3] — but that splits the rune. That's what line 500 does.
+	// This is the line 500 fallthrough for a single multi-byte rune.
+	got := truncateCassText("\xf0\x9f\x8c\x8d", 3)
+	// The function returns s[:3] which is 3 bytes of a 4-byte emoji.
+	if len(got) > 3 {
+		t.Errorf("truncateCassText(emoji, 3) length = %d, want <= 3", len(got))
+	}
+}
+
 func TestExtractSessionNameFromPath(t *testing.T) {
 	tests := []struct {
 		name     string

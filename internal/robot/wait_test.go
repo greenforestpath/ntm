@@ -3,6 +3,8 @@ package robot
 import (
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestIsValidWaitCondition(t *testing.T) {
@@ -276,4 +278,159 @@ func TestWaitOptionsDefaults(t *testing.T) {
 	if opts.ExitOnError {
 		t.Error("Default ExitOnError should be false")
 	}
+}
+
+// =============================================================================
+// filterWaitPanes Tests
+// =============================================================================
+
+func TestFilterWaitPanes(t *testing.T) {
+	t.Parallel()
+
+	// Create test panes with various agent types and indices
+	// Note: detectAgentType looks for patterns like "claude", "codex", "gemini" in title
+	// or short forms like "__cc_", "__cod_", "__gmi_" with word boundaries
+	testPanes := []tmux.Pane{
+		{Index: 0, Title: "user_0"},                             // User pane, should be filtered out
+		{Index: 1, Title: "myproject__cc_1"},                    // Claude agent (short form with prefix)
+		{Index: 2, Title: "myproject__cod_2"},                   // Codex agent (short form with prefix)
+		{Index: 3, Title: "myproject__gmi_3"},                   // Gemini agent (short form with prefix)
+		{Index: 4, Title: "myproject__cc_4"},                    // Another Claude agent
+		{Index: 5, Title: "unknown_agent"},                      // Unknown, should be filtered out
+		{Index: 6, Title: "bash"},                               // Non-agent pane
+		{Index: 7, Title: "claude_session", Type: tmux.AgentClaude}, // Using full type name
+	}
+
+	t.Run("no_filters_returns_only_agents", func(t *testing.T) {
+		opts := WaitOptions{}
+		result := filterWaitPanes(testPanes, opts)
+
+		// Should exclude user_0, unknown_agent, bash
+		// Should include cc_1, cod_2, gmi_3, cc_4, claude_7
+		if len(result) != 5 {
+			t.Errorf("filterWaitPanes() returned %d panes, want 5", len(result))
+			for _, p := range result {
+				t.Logf("  included: Index=%d Title=%q", p.Index, p.Title)
+			}
+		}
+	})
+
+	t.Run("filter_by_pane_indices", func(t *testing.T) {
+		opts := WaitOptions{
+			PaneIndices: []int{1, 3},
+		}
+		result := filterWaitPanes(testPanes, opts)
+
+		if len(result) != 2 {
+			t.Errorf("filterWaitPanes() returned %d panes, want 2", len(result))
+		}
+
+		// Verify correct panes selected
+		indices := make(map[int]bool)
+		for _, p := range result {
+			indices[p.Index] = true
+		}
+		if !indices[1] || !indices[3] {
+			t.Errorf("Expected panes 1 and 3, got indices: %v", indices)
+		}
+	})
+
+	t.Run("filter_by_agent_type_claude", func(t *testing.T) {
+		opts := WaitOptions{
+			AgentType: "claude", // detectAgentType returns canonical names like "claude" not "cc"
+		}
+		result := filterWaitPanes(testPanes, opts)
+
+		// myproject__cc_1, myproject__cc_4, and claude_session should match "claude" type
+		if len(result) != 3 {
+			t.Errorf("filterWaitPanes(AgentType=claude) returned %d panes, want 3", len(result))
+		}
+	})
+
+	t.Run("filter_by_agent_type_codex", func(t *testing.T) {
+		opts := WaitOptions{
+			AgentType: "codex",
+		}
+		result := filterWaitPanes(testPanes, opts)
+
+		// cod_2 should match "codex" type (detectAgentType maps cod->codex)
+		if len(result) != 1 {
+			t.Errorf("filterWaitPanes(AgentType=codex) returned %d panes, want 1", len(result))
+		}
+		if len(result) > 0 && result[0].Index != 2 {
+			t.Errorf("Expected pane index 2, got %d", result[0].Index)
+		}
+	})
+
+	t.Run("filter_by_agent_type_gemini", func(t *testing.T) {
+		opts := WaitOptions{
+			AgentType: "gemini",
+		}
+		result := filterWaitPanes(testPanes, opts)
+
+		// gmi_3 should match "gemini" type (detectAgentType maps gmi->gemini)
+		if len(result) != 1 {
+			t.Errorf("filterWaitPanes(AgentType=gemini) returned %d panes, want 1", len(result))
+		}
+		if len(result) > 0 && result[0].Index != 3 {
+			t.Errorf("Expected pane index 3, got %d", result[0].Index)
+		}
+	})
+
+	t.Run("filter_by_both_indices_and_type", func(t *testing.T) {
+		opts := WaitOptions{
+			PaneIndices: []int{1, 2, 3, 4},
+			AgentType:   "claude", // Use canonical name
+		}
+		result := filterWaitPanes(testPanes, opts)
+
+		// Only myproject__cc_1 and myproject__cc_4 should match (both in indices AND type=claude)
+		if len(result) != 2 {
+			t.Errorf("filterWaitPanes() returned %d panes, want 2", len(result))
+		}
+	})
+
+	t.Run("empty_panes_input", func(t *testing.T) {
+		opts := WaitOptions{}
+		result := filterWaitPanes([]tmux.Pane{}, opts)
+
+		if len(result) != 0 {
+			t.Errorf("filterWaitPanes() with empty input returned %d panes, want 0", len(result))
+		}
+	})
+
+	t.Run("no_matching_indices", func(t *testing.T) {
+		opts := WaitOptions{
+			PaneIndices: []int{99, 100},
+		}
+		result := filterWaitPanes(testPanes, opts)
+
+		if len(result) != 0 {
+			t.Errorf("filterWaitPanes() returned %d panes, want 0", len(result))
+		}
+	})
+
+	t.Run("case_insensitive_agent_type", func(t *testing.T) {
+		opts := WaitOptions{
+			AgentType: "CLAUDE", // uppercase canonical name
+		}
+		result := filterWaitPanes(testPanes, opts)
+
+		// Should still match claude agents (case insensitive via strings.EqualFold)
+		if len(result) != 3 {
+			t.Errorf("filterWaitPanes(AgentType=CLAUDE) returned %d panes, want 3 (case insensitive)", len(result))
+		}
+	})
+
+	t.Run("user_pane_always_filtered", func(t *testing.T) {
+		// Even if explicitly requested by index, user pane should be excluded
+		opts := WaitOptions{
+			PaneIndices: []int{0}, // user_0 pane
+		}
+		result := filterWaitPanes(testPanes, opts)
+
+		if len(result) != 0 {
+			t.Errorf("User pane should be filtered out, got %d panes", len(result))
+		}
+	})
 }

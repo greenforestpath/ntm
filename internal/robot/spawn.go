@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	"github.com/Dicklesworthstone/ntm/internal/handoff"
@@ -88,6 +89,11 @@ type SpawnedAgent struct {
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetSpawn(opts SpawnOptions, cfg *config.Config) (*SpawnOutput, error) {
 	startTime := time.Now()
+	correlationID := audit.NewCorrelationID()
+	auditStart := time.Now()
+	auditWorkingDir := ""
+	auditSessionCreated := false
+	auditPanesAdded := 0
 
 	output := &SpawnOutput{
 		RobotResponse: NewRobotResponse(true),
@@ -97,6 +103,47 @@ func GetSpawn(opts SpawnOptions, cfg *config.Config) (*SpawnOutput, error) {
 		Agents:        []SpawnedAgent{},
 		Layout:        "tiled",
 	}
+	_ = audit.LogEvent(opts.Session, audit.EventTypeSpawn, audit.ActorSystem, "robot.spawn", map[string]interface{}{
+		"phase":           "start",
+		"session":         opts.Session,
+		"total_agents":    opts.CCCount + opts.CodCount + opts.GmiCount,
+		"preset":          opts.Preset,
+		"no_user_pane":    opts.NoUserPane,
+		"dry_run":         opts.DryRun,
+		"safety":          opts.Safety,
+		"assign_work":     opts.AssignWork,
+		"assign_strategy": opts.AssignStrategy,
+		"correlation_id":  correlationID,
+	}, nil)
+	defer func() {
+		agentsLaunched := 0
+		if output != nil {
+			agentsLaunched = len(output.Agents)
+		}
+		success := output != nil && output.RobotResponse.Success
+		payload := map[string]interface{}{
+			"phase":           "finish",
+			"session":         opts.Session,
+			"total_agents":    opts.CCCount + opts.CodCount + opts.GmiCount,
+			"preset":          opts.Preset,
+			"no_user_pane":    opts.NoUserPane,
+			"dry_run":         opts.DryRun,
+			"safety":          opts.Safety,
+			"assign_work":     opts.AssignWork,
+			"assign_strategy": opts.AssignStrategy,
+			"session_created": auditSessionCreated,
+			"panes_added":     auditPanesAdded,
+			"agents_launched": agentsLaunched,
+			"success":         success,
+			"duration_ms":     time.Since(auditStart).Milliseconds(),
+			"working_dir":     auditWorkingDir,
+			"correlation_id":  correlationID,
+		}
+		if output != nil && output.Error != "" {
+			payload["error"] = output.Error
+		}
+		_ = audit.LogEvent(opts.Session, audit.EventTypeSpawn, audit.ActorSystem, "robot.spawn", payload, nil)
+	}()
 
 	// Validate session name
 	if err := tmux.ValidateSessionName(opts.Session); err != nil {
@@ -134,6 +181,7 @@ func GetSpawn(opts SpawnOptions, cfg *config.Config) (*SpawnOutput, error) {
 		}
 	}
 	output.WorkingDir = dir
+	auditWorkingDir = dir
 
 	// Load handoff context for session recovery (non-fatal if not found)
 	spawnRecovery, handoffCtx := loadLatestHandoff(dir, opts.Session)
@@ -220,6 +268,7 @@ func GetSpawn(opts SpawnOptions, cfg *config.Config) (*SpawnOutput, error) {
 			return output, nil
 		}
 		sessionCreated = true
+		auditSessionCreated = true
 	}
 
 	// Get current panes
@@ -234,6 +283,7 @@ func GetSpawn(opts SpawnOptions, cfg *config.Config) (*SpawnOutput, error) {
 	existingPanes := len(panes)
 	if existingPanes < totalPanes {
 		toAdd := totalPanes - existingPanes
+		auditPanesAdded = toAdd
 		for i := 0; i < toAdd; i++ {
 			if _, err := tmux.SplitWindow(opts.Session, dir); err != nil {
 				output.Error = fmt.Sprintf("creating pane: %v", err)
@@ -812,7 +862,7 @@ func generateWorkPrompt(item workItem) string {
 		}
 	}
 
-	sb.WriteString("\nWhen done, mark it completed with: `br update " + item.ID + " --status done`")
+	sb.WriteString("\nWhen done, close it with: `br close " + item.ID + " --reason \"Completed\"`")
 
 	return sb.String()
 }

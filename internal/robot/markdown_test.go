@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/Dicklesworthstone/ntm/internal/alerts"
+	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func TestRenderAgentTable(t *testing.T) {
@@ -111,6 +113,36 @@ func TestTruncateStr(t *testing.T) {
 	}
 }
 
+// TestTruncateStr_EdgeCases tests uncovered branches of truncateStr.
+func TestTruncateStr_EdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+		want   string
+	}{
+		{"maxLen zero", "hello", 0, ""},
+		{"maxLen negative", "hello", -5, ""},
+		{"maxLen 1", "hello", 1, "h"},
+		{"maxLen 2", "hello", 2, "he"},
+		{"maxLen 3 exact", "abc", 3, "abc"},
+		{"multibyte loop fallthrough", "aaaa\xf0\x9f\x8c\x8d", 7, "aaaa..."},
+		{"single multibyte maxLen 3", "\xf0\x9f\x8c\x8d", 3, ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := truncateStr(tc.input, tc.maxLen)
+			if got != tc.want {
+				t.Errorf("truncateStr(%q, %d) = %q, want %q", tc.input, tc.maxLen, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestAlertSeverityOrder(t *testing.T) {
 	tests := []struct {
 		severity alerts.Severity
@@ -147,4 +179,253 @@ func TestAlertSeverityIcon(t *testing.T) {
 			t.Errorf("alertSeverityIcon(%v) = %q, want %q", tc.severity, got, tc.want)
 		}
 	}
+}
+
+// =============================================================================
+// countAgentsByType
+// =============================================================================
+
+func TestCountAgentsByType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		panes  []tmux.Pane
+		expect map[string]int
+	}{
+		{
+			name:  "empty",
+			panes: nil,
+			expect: map[string]int{
+				"claude": 0, "codex": 0, "gemini": 0, "user": 0, "other": 0,
+			},
+		},
+		{
+			name: "mixed types",
+			panes: []tmux.Pane{
+				{Type: tmux.AgentClaude},
+				{Type: tmux.AgentClaude},
+				{Type: tmux.AgentCodex},
+				{Type: tmux.AgentGemini},
+				{Type: tmux.AgentUser},
+				{Type: tmux.AgentUnknown},
+			},
+			expect: map[string]int{
+				"claude": 2, "codex": 1, "gemini": 1, "user": 1, "other": 1,
+			},
+		},
+		{
+			name: "all claude",
+			panes: []tmux.Pane{
+				{Type: tmux.AgentClaude},
+				{Type: tmux.AgentClaude},
+				{Type: tmux.AgentClaude},
+			},
+			expect: map[string]int{
+				"claude": 3, "codex": 0, "gemini": 0, "user": 0, "other": 0,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := countAgentsByType(tt.panes)
+			for k, want := range tt.expect {
+				if result[k] != want {
+					t.Errorf("countAgentsByType[%q] = %d, want %d", k, result[k], want)
+				}
+			}
+		})
+	}
+}
+
+// =============================================================================
+// AgentTable
+// =============================================================================
+
+func TestAgentTable(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
+		out := AgentTable(nil)
+		if !strings.Contains(out, "| Session | Pane | Type | Variant | State |") {
+			t.Error("expected table header even for empty input")
+		}
+	})
+
+	t.Run("with agents", func(t *testing.T) {
+		t.Parallel()
+		sessions := []SnapshotSession{
+			{
+				Name: "myproj",
+				Agents: []SnapshotAgent{
+					{Pane: "%0", Type: "claude", Variant: "opus", State: "working"},
+					{Pane: "%1", Type: "codex", Variant: "", State: "idle"},
+				},
+			},
+			{
+				Name: "other",
+				Agents: []SnapshotAgent{
+					{Pane: "%2", Type: "gemini", Variant: "pro", State: "error"},
+				},
+			},
+		}
+		out := AgentTable(sessions)
+
+		checks := []string{
+			"| myproj | %0 | claude | opus | working |",
+			"| myproj | %1 | codex |  | idle |",
+			"| other | %2 | gemini | pro | error |",
+		}
+		for _, want := range checks {
+			if !strings.Contains(out, want) {
+				t.Errorf("missing row %q in:\n%s", want, out)
+			}
+		}
+	})
+}
+
+// =============================================================================
+// AlertsList
+// =============================================================================
+
+func TestAlertsList(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
+		out := AlertsList(nil)
+		if out != "_No active alerts._" {
+			t.Errorf("expected no-alerts message, got %q", out)
+		}
+	})
+
+	t.Run("with session and pane", func(t *testing.T) {
+		t.Parallel()
+		alerts := []AlertInfo{
+			{Severity: "critical", Message: "Agent crashed", Session: "proj1", Pane: "%0"},
+		}
+		out := AlertsList(alerts)
+		if !strings.Contains(out, "[CRITICAL] Agent crashed") {
+			t.Errorf("missing severity+message in: %s", out)
+		}
+		if !strings.Contains(out, "(session: proj1, pane: %0)") {
+			t.Errorf("missing session/pane context in: %s", out)
+		}
+	})
+
+	t.Run("with bead ID", func(t *testing.T) {
+		t.Parallel()
+		alerts := []AlertInfo{
+			{Severity: "warning", Message: "Stale bead", BeadID: "br-42"},
+		}
+		out := AlertsList(alerts)
+		if !strings.Contains(out, "[bead: br-42]") {
+			t.Errorf("missing bead ID in: %s", out)
+		}
+	})
+
+	t.Run("session without pane", func(t *testing.T) {
+		t.Parallel()
+		alerts := []AlertInfo{
+			{Severity: "info", Message: "Check disk", Session: "s1"},
+		}
+		out := AlertsList(alerts)
+		if !strings.Contains(out, "(session: s1)") {
+			t.Errorf("missing session-only context in: %s", out)
+		}
+		if strings.Contains(out, "pane:") {
+			t.Errorf("should not contain pane when empty: %s", out)
+		}
+	})
+}
+
+// =============================================================================
+// BeadsSummary
+// =============================================================================
+
+func TestBeadsSummary(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil", func(t *testing.T) {
+		t.Parallel()
+		out := BeadsSummary(nil)
+		if out != "_Beads summary unavailable._" {
+			t.Errorf("expected unavailable message for nil, got %q", out)
+		}
+	})
+
+	t.Run("not available", func(t *testing.T) {
+		t.Parallel()
+		out := BeadsSummary(&bv.BeadsSummary{Available: false})
+		if out != "_Beads summary unavailable._" {
+			t.Errorf("expected unavailable message, got %q", out)
+		}
+	})
+
+	t.Run("available with counts", func(t *testing.T) {
+		t.Parallel()
+		out := BeadsSummary(&bv.BeadsSummary{
+			Available:  true,
+			Total:      20,
+			Open:       5,
+			InProgress: 3,
+			Blocked:    2,
+			Ready:      4,
+			Closed:     6,
+		})
+		if !strings.Contains(out, "Total: 20") {
+			t.Errorf("missing total in: %s", out)
+		}
+		if !strings.Contains(out, "Open: 5") {
+			t.Errorf("missing open in: %s", out)
+		}
+		if !strings.Contains(out, "In Progress: 3") {
+			t.Errorf("missing in-progress in: %s", out)
+		}
+		if !strings.Contains(out, "Ready: 4") {
+			t.Errorf("missing ready in: %s", out)
+		}
+	})
+}
+
+// =============================================================================
+// SuggestedActions
+// =============================================================================
+
+func TestSuggestedActions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
+		out := SuggestedActions(nil)
+		if out != "_No suggested actions._" {
+			t.Errorf("expected no-actions message, got %q", out)
+		}
+	})
+
+	t.Run("with actions", func(t *testing.T) {
+		t.Parallel()
+		actions := []BeadAction{
+			{BeadID: "br-1", Title: "Fix auth", Command: "br update br-1 --status in_progress"},
+			{BeadID: "br-2", Title: "Add tests", BlockedBy: []string{"br-1", "br-3"}},
+			{BeadID: "br-3", Title: "Simple task"},
+		}
+		out := SuggestedActions(actions)
+
+		if !strings.Contains(out, "- br-1: Fix auth") {
+			t.Errorf("missing first action in: %s", out)
+		}
+		if !strings.Contains(out, "`br update br-1 --status in_progress`") {
+			t.Errorf("missing command in: %s", out)
+		}
+		if !strings.Contains(out, "(blocked by: br-1, br-3)") {
+			t.Errorf("missing blocked-by in: %s", out)
+		}
+		if !strings.Contains(out, "- br-3: Simple task\n") {
+			t.Errorf("missing simple action in: %s", out)
+		}
+	})
 }

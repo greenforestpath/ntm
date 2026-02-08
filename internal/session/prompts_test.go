@@ -3,9 +3,48 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
+
+func TestGetRedactionConfig_NilByDefault(t *testing.T) {
+	// Not parallel: modifies package-level redactionConfig
+	origCfg := GetRedactionConfig()
+	SetRedactionConfig(nil)
+	t.Cleanup(func() { SetRedactionConfig(origCfg) })
+
+	got := GetRedactionConfig()
+	if got != nil {
+		t.Errorf("GetRedactionConfig() = %v, want nil when not configured", got)
+	}
+}
+
+func TestGetRedactionConfig_ReturnsCopy(t *testing.T) {
+	// Not parallel: modifies package-level redactionConfig
+	origCfg := GetRedactionConfig()
+	t.Cleanup(func() { SetRedactionConfig(origCfg) })
+
+	cfg := &redaction.Config{Mode: redaction.ModeWarn}
+	SetRedactionConfig(cfg)
+
+	got := GetRedactionConfig()
+	if got == nil {
+		t.Fatal("GetRedactionConfig() = nil, want non-nil after SetRedactionConfig")
+	}
+	if got.Mode != redaction.ModeWarn {
+		t.Errorf("GetRedactionConfig().Mode = %v, want %v", got.Mode, redaction.ModeWarn)
+	}
+
+	// Verify it returns a copy, not the original pointer
+	got.Mode = redaction.ModeRedact
+	got2 := GetRedactionConfig()
+	if got2.Mode != redaction.ModeWarn {
+		t.Error("GetRedactionConfig() should return a copy; mutation affected the original")
+	}
+}
 
 func TestSaveAndLoadPromptHistory(t *testing.T) {
 	// Create temp dir for test
@@ -52,6 +91,52 @@ func TestSaveAndLoadPromptHistory(t *testing.T) {
 
 	if history.Session != sessionName {
 		t.Errorf("expected session '%s', got '%s'", sessionName, history.Session)
+	}
+}
+
+func TestSavePrompt_RedactsOnWriteWhenConfigured(t *testing.T) {
+	// Create temp dir for test
+	tmpDir, err := os.MkdirTemp("", "ntm-prompts-redact-test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Override home directory for test
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	SetRedactionConfig(&redaction.Config{Mode: redaction.ModeWarn})
+	t.Cleanup(func() { SetRedactionConfig(nil) })
+
+	secret := "sk-" + strings.Repeat("A", 48)
+	sessionName := "test-session-redact"
+
+	entry := PromptEntry{
+		Session: sessionName,
+		Content: "token=" + secret,
+		Targets: []string{"1"},
+		Source:  "cli",
+	}
+	if err := SavePrompt(entry); err != nil {
+		t.Fatalf("SavePrompt failed: %v", err)
+	}
+
+	history, err := LoadPromptHistory(sessionName)
+	if err != nil {
+		t.Fatalf("LoadPromptHistory failed: %v", err)
+	}
+	if len(history.Prompts) != 1 {
+		t.Fatalf("expected 1 prompt, got %d", len(history.Prompts))
+	}
+
+	got := history.Prompts[0].Content
+	if strings.Contains(got, secret) {
+		t.Fatalf("expected persisted prompt to be redacted, but it still contained the secret")
+	}
+	if !strings.Contains(got, "[REDACTED:") {
+		t.Fatalf("expected persisted prompt to contain a redaction placeholder, got: %q", got)
 	}
 }
 

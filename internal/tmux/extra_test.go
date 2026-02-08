@@ -256,6 +256,12 @@ func TestStripTags(t *testing.T) {
 		{"session__cc_1[]", "session__cc_1"},
 		{"title_with[brackets]_in_middle[tags]", "title_with[brackets]_in_middle"},
 		{"no_tags_at_all", "no_tags_at_all"},
+		// Edge case: [ found but no closing ]
+		{"session__cc_1[incomplete", "session__cc_1[incomplete"},
+		// Edge case: [ at the end with nothing after
+		{"session__cc_1[", "session__cc_1["},
+		// Edge case: ] without matching [ at end
+		{"session__cc_1]", "session__cc_1]"},
 	}
 
 	for _, tt := range tests {

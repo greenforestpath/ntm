@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/agentmail"
+	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/persona"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -129,6 +130,14 @@ type CoordinatorEvent struct {
 	Timestamp time.Time            `json:"timestamp"`
 	AgentID   string               `json:"agent_id,omitempty"`
 	Details   map[string]any       `json:"details,omitempty"`
+}
+
+type busCoordinatorEvent struct {
+	events.BaseEvent
+	AgentID  string         `json:"agent_id,omitempty"`
+	Details  map[string]any `json:"details,omitempty"`
+	PrevType string         `json:"prev_status,omitempty"`
+	NewType  string         `json:"new_status,omitempty"`
 }
 
 // New creates a new SessionCoordinator.
@@ -264,10 +273,89 @@ func (c *SessionCoordinator) monitorLoop() {
 
 // updateAgentStates refreshes the state of all agents.
 func (c *SessionCoordinator) updateAgentStates() {
-	// Get panes from tmux
-	panes, err := tmux.GetPanes(c.session)
+	// 1. Get panes with activity from tmux (single call)
+	// This returns both pane metadata and last activity timestamp
+	panes, err := tmux.GetPanesWithActivity(c.session)
 	if err != nil {
 		return
+	}
+
+	// Filter for agent panes to capture
+	var agentPanes []tmux.PaneActivity
+	for _, p := range panes {
+		if p.Pane.Type != tmux.AgentUser && p.Pane.Type != tmux.AgentUnknown {
+			agentPanes = append(agentPanes, p)
+		}
+	}
+
+	// 2. Parallel capture of pane outputs
+	// We use HealthCheck (50 lines) to provide enough context for both
+	// the UnifiedDetector (patterns) and ActivityMonitor (velocity).
+	type captureResult struct {
+		paneID string
+		output string
+		err    error
+	}
+
+	resultsCh := make(chan captureResult, len(agentPanes))
+	var wg sync.WaitGroup
+
+	for _, p := range agentPanes {
+		wg.Add(1)
+		go func(paneID string) {
+			defer wg.Done()
+			// Short timeout for capture to prevent holding up the cycle
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			output, err := tmux.CaptureForHealthCheckContext(ctx, paneID)
+			resultsCh <- captureResult{paneID: paneID, output: output, err: err}
+		}(p.Pane.ID)
+	}
+
+	wg.Wait()
+	close(resultsCh)
+
+	outputs := make(map[string]string)
+	for res := range resultsCh {
+		if res.err == nil {
+			outputs[res.paneID] = res.output
+		}
+	}
+
+	// 3. Calculate status updates (CPU bound, fast)
+	type agentUpdate struct {
+		paneID    string
+		paneIndex int
+		agentType string
+		status    AgentStatusResult
+	}
+
+	var updates []agentUpdate
+	if c.monitor != nil {
+		updates = make([]agentUpdate, 0, len(agentPanes))
+		for _, p := range agentPanes {
+			output, ok := outputs[p.Pane.ID]
+			if !ok {
+				continue // Skip if capture failed
+			}
+
+			// Use the optimized method that accepts pre-captured output and activity
+			state := c.monitor.GetAgentStatusWithOutput(
+				p.Pane.ID,
+				p.Pane.Title,
+				string(p.Pane.Type),
+				output,
+				p.LastActivity,
+			)
+
+			updates = append(updates, agentUpdate{
+				paneID:    p.Pane.ID,
+				paneIndex: p.Pane.Index,
+				agentType: string(p.Pane.Type),
+				status:    state,
+			})
+		}
 	}
 
 	c.mu.Lock()
@@ -276,40 +364,32 @@ func (c *SessionCoordinator) updateAgentStates() {
 	// Track which panes we've seen
 	seenPanes := make(map[string]bool)
 
-	for _, pane := range panes {
-		seenPanes[pane.ID] = true
-
-		// Use pre-parsed agent type from tmux
-		if pane.Type == tmux.AgentUser {
-			continue // Not an agent pane
-		}
-		agentType := string(pane.Type)
+	for _, update := range updates {
+		seenPanes[update.paneID] = true
 
 		// Get or create agent state
-		agent, exists := c.agents[pane.ID]
+		agent, exists := c.agents[update.paneID]
 		if !exists {
 			agent = &AgentState{
-				PaneID:    pane.ID,
-				PaneIndex: pane.Index,
-				AgentType: agentType,
+				PaneID:    update.paneID,
+				PaneIndex: update.paneIndex,
+				AgentType: update.agentType,
 				Healthy:   true,
 			}
-			c.agents[pane.ID] = agent
+			c.agents[update.paneID] = agent
 		}
 
-		// Update state using the monitor
-		if c.monitor != nil {
-			state := c.monitor.GetAgentStatus(pane.ID, agentType)
-			prevStatus := agent.Status
-			agent.Status = state.Status
-			agent.ContextUsage = state.ContextUsage
-			agent.LastActivity = state.LastActivity
-			agent.Healthy = state.Healthy
+		// Update state using pre-calculated status
+		state := update.status
+		prevStatus := agent.Status
+		agent.Status = state.Status
+		agent.ContextUsage = state.ContextUsage
+		agent.LastActivity = state.LastActivity
+		agent.Healthy = state.Healthy
 
-			// Emit events for state transitions
-			if exists && prevStatus != agent.Status {
-				c.emitEvent(agent, prevStatus)
-			}
+		// Emit events for state transitions
+		if exists && prevStatus != agent.Status {
+			c.emitEvent(agent, prevStatus)
 		}
 	}
 
@@ -327,23 +407,34 @@ func (c *SessionCoordinator) updateAgentStates() {
 func (c *SessionCoordinator) emitEvent(agent *AgentState, prevStatus robot.AgentState) {
 	var eventType CoordinatorEventType
 
+	var busType string
 	switch {
 	case agent.Status == robot.StateWaiting && prevStatus != robot.StateWaiting:
 		eventType = EventAgentIdle
+		busType = "agent.idle"
 	case agent.Status == robot.StateGenerating || agent.Status == robot.StateThinking:
 		eventType = EventAgentBusy
+		busType = "agent.busy"
 	case agent.Status == robot.StateError:
 		eventType = EventAgentError
+		busType = "agent.error"
 	case prevStatus == robot.StateError && agent.Status != robot.StateError:
 		eventType = EventAgentRecovered
+		busType = "agent.recovered"
 	default:
 		return // No event for this transition
+	}
+
+	now := time.Now().UTC()
+	details := map[string]any{
+		"agent_type": agent.AgentType,
+		"pane_index": agent.PaneIndex,
 	}
 
 	select {
 	case c.events <- CoordinatorEvent{
 		Type:      eventType,
-		Timestamp: time.Now(),
+		Timestamp: now,
 		AgentID:   agent.PaneID,
 		Details: map[string]any{
 			"agent_type":  agent.AgentType,
@@ -355,6 +446,18 @@ func (c *SessionCoordinator) emitEvent(agent *AgentState, prevStatus robot.Agent
 	default:
 		// Channel full, drop event
 	}
+
+	events.Publish(busCoordinatorEvent{
+		BaseEvent: events.BaseEvent{
+			Type:      busType,
+			Timestamp: now,
+			Session:   c.session,
+		},
+		AgentID:  agent.PaneID,
+		Details:  details,
+		PrevType: string(prevStatus),
+		NewType:  string(agent.Status),
+	})
 }
 
 // digestLoop periodically sends digest summaries.

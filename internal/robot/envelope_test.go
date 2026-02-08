@@ -151,6 +151,7 @@ func TestOutputTypesEmbedRobotResponse(t *testing.T) {
 		{"CASSInsightsOutput", reflect.TypeOf(CASSInsightsOutput{})},
 		{"CASSSearchOutput", reflect.TypeOf(CASSSearchOutput{})},
 		{"CASSStatusOutput", reflect.TypeOf(CASSStatusOutput{})},
+		{"ACFSStatusOutput", reflect.TypeOf(ACFSStatusOutput{})},
 		{"CapabilitiesOutput", reflect.TypeOf(CapabilitiesOutput{})},
 		{"ContextOutput", reflect.TypeOf(ContextOutput{})},
 		{"DCGStatusOutput", reflect.TypeOf(DCGStatusOutput{})},
@@ -165,6 +166,7 @@ func TestOutputTypesEmbedRobotResponse(t *testing.T) {
 		{"ErrorsOutput", reflect.TypeOf(ErrorsOutput{})},
 		{"FilesOutput", reflect.TypeOf(FilesOutput{})},
 		{"GraphOutput", reflect.TypeOf(GraphOutput{})},
+		{"GIILFetchOutput", reflect.TypeOf(GIILFetchOutput{})},
 		{"HealthOutput", reflect.TypeOf(HealthOutput{})},
 		{"HistoryOutput", reflect.TypeOf(HistoryOutput{})},
 		{"InspectPaneOutput", reflect.TypeOf(InspectPaneOutput{})},
@@ -172,13 +174,16 @@ func TestOutputTypesEmbedRobotResponse(t *testing.T) {
 		{"IsWorkingOutput", reflect.TypeOf(IsWorkingOutput{})},
 		{"JFPBundlesOutput", reflect.TypeOf(JFPBundlesOutput{})},
 		{"JFPCategoriesOutput", reflect.TypeOf(JFPCategoriesOutput{})},
+		{"JFPExportOutput", reflect.TypeOf(JFPExportOutput{})},
 		{"JFPInstalledOutput", reflect.TypeOf(JFPInstalledOutput{})},
+		{"JFPInstallOutput", reflect.TypeOf(JFPInstallOutput{})},
 		{"JFPListOutput", reflect.TypeOf(JFPListOutput{})},
 		{"JFPSearchOutput", reflect.TypeOf(JFPSearchOutput{})},
 		{"JFPShowOutput", reflect.TypeOf(JFPShowOutput{})},
 		{"JFPStatusOutput", reflect.TypeOf(JFPStatusOutput{})},
 		{"JFPSuggestOutput", reflect.TypeOf(JFPSuggestOutput{})},
 		{"JFPTagsOutput", reflect.TypeOf(JFPTagsOutput{})},
+		{"JFPUpdateOutput", reflect.TypeOf(JFPUpdateOutput{})},
 		{"MSSearchOutput", reflect.TypeOf(MSSearchOutput{})},
 		{"MSShowOutput", reflect.TypeOf(MSShowOutput{})},
 		{"MailOutput", reflect.TypeOf(MailOutput{})},
@@ -194,6 +199,8 @@ func TestOutputTypesEmbedRobotResponse(t *testing.T) {
 		{"RestartPaneOutput", reflect.TypeOf(RestartPaneOutput{})},
 		{"RouteOutput", reflect.TypeOf(RouteOutput{})},
 		{"RUSyncOutput", reflect.TypeOf(RUSyncOutput{})},
+		{"SLBActionOutput", reflect.TypeOf(SLBActionOutput{})},
+		{"SLBPendingOutput", reflect.TypeOf(SLBPendingOutput{})},
 		{"SchemaOutput", reflect.TypeOf(SchemaOutput{})},
 		{"SendAndAckOutput", reflect.TypeOf(SendAndAckOutput{})},
 		{"SendOutput", reflect.TypeOf(SendOutput{})},
@@ -302,6 +309,9 @@ func TestArrayFieldsNeverNull(t *testing.T) {
 		output := SendOutput{
 			RobotResponse: NewRobotResponse(true),
 			Session:       "test",
+			Blocked:       false,
+			Redaction:     RedactionSummary{Mode: "off", Findings: 0, Action: "off"},
+			Warnings:      []string{},    // Empty but present
 			Targets:       []string{},    // Empty but present
 			Successful:    []string{},    // Empty but present
 			Failed:        []SendError{}, // Empty but present
@@ -318,7 +328,7 @@ func TestArrayFieldsNeverNull(t *testing.T) {
 		}
 
 		// These arrays should be present as [] not null
-		for _, field := range []string{"targets", "successful", "failed"} {
+		for _, field := range []string{"warnings", "targets", "successful", "failed"} {
 			val, exists := unmarshaled[field]
 			if !exists {
 				t.Errorf("SendOutput.%s should be present in JSON", field)

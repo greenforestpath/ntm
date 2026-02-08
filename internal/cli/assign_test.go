@@ -726,3 +726,93 @@ func TestAssignAgentInfoHasPane(t *testing.T) {
 		t.Errorf("Expected pane index 5, got %d", agent.pane.Index)
 	}
 }
+
+// ============================================================================
+// Pure Function Tests
+// ============================================================================
+
+func TestDetectModelFromTitle(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		agentType string
+		title     string
+		expected  string
+	}{
+		// Opus detection
+		{name: "opus lowercase", agentType: "claude", title: "myproject__cc_1_opus", expected: "opus"},
+		{name: "opus uppercase", agentType: "claude", title: "myproject__cc_1_OPUS", expected: "opus"},
+		{name: "opus mixed case", agentType: "claude", title: "myproject__cc_1_Opus", expected: "opus"},
+
+		// Sonnet detection
+		{name: "sonnet lowercase", agentType: "claude", title: "myproject__cc_1_sonnet", expected: "sonnet"},
+		{name: "sonnet uppercase", agentType: "claude", title: "myproject__cc_1_SONNET", expected: "sonnet"},
+		{name: "sonnet mixed case", agentType: "claude", title: "project_Sonnet_v3", expected: "sonnet"},
+
+		// Haiku detection
+		{name: "haiku lowercase", agentType: "claude", title: "myproject__cc_1_haiku", expected: "haiku"},
+		{name: "haiku uppercase", agentType: "claude", title: "myproject__cc_1_HAIKU", expected: "haiku"},
+		{name: "haiku mixed case", agentType: "claude", title: "project_Haiku", expected: "haiku"},
+
+		// No model detected
+		{name: "no model", agentType: "claude", title: "myproject__cc_1", expected: ""},
+		{name: "empty title", agentType: "claude", title: "", expected: ""},
+		{name: "codex agent", agentType: "codex", title: "myproject__cod_1", expected: ""},
+		{name: "gemini agent", agentType: "gemini", title: "myproject__gmi_1", expected: ""},
+
+		// Partial matches (should still match)
+		{name: "opus in middle", agentType: "claude", title: "test_opus_session", expected: "opus"},
+		{name: "sonnet at start", agentType: "claude", title: "sonnetproject__cc", expected: "sonnet"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := detectModelFromTitle(tc.agentType, tc.title)
+			if result != tc.expected {
+				t.Errorf("detectModelFromTitle(%q, %q) = %q; want %q",
+					tc.agentType, tc.title, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestParsePriorityString(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected int
+	}{
+		// Valid priorities
+		{name: "P0 critical", input: "P0", expected: 0},
+		{name: "P1 high", input: "P1", expected: 1},
+		{name: "P2 medium", input: "P2", expected: 2},
+		{name: "P3 low", input: "P3", expected: 3},
+		{name: "P4 backlog", input: "P4", expected: 4},
+
+		// Invalid - returns default (2)
+		{name: "P5 out of range", input: "P5", expected: 2},
+		{name: "P9 out of range", input: "P9", expected: 2},
+		{name: "empty string", input: "", expected: 2},
+		{name: "just P", input: "P", expected: 2},
+		{name: "lowercase p0", input: "p0", expected: 2},
+		{name: "no P prefix", input: "0", expected: 2},
+		{name: "too long", input: "P01", expected: 2},
+		{name: "word priority", input: "high", expected: 2},
+		{name: "negative-like", input: "P-1", expected: 2},
+		{name: "spaces", input: " P1", expected: 2},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := parsePriorityString(tc.input)
+			if result != tc.expected {
+				t.Errorf("parsePriorityString(%q) = %d; want %d", tc.input, result, tc.expected)
+			}
+		})
+	}
+}

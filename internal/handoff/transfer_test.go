@@ -2,6 +2,7 @@ package handoff
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -25,6 +26,8 @@ type fakeTransferClient struct {
 	releaseCalls []releaseCall
 	renewCalls   []renewCall
 	reserveFn    func(opts agentmail.FileReservationOptions) (*agentmail.ReservationResult, error)
+	releaseFn    func(projectKey, agentName string, paths []string, ids []int) error
+	renewFn      func(opts agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error)
 }
 
 func (f *fakeTransferClient) ReservePaths(ctx context.Context, opts agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
@@ -45,6 +48,9 @@ func (f *fakeTransferClient) ReleaseReservations(ctx context.Context, projectKey
 		agentName:  agentName,
 		paths:      paths,
 	})
+	if f.releaseFn != nil {
+		return f.releaseFn(projectKey, agentName, paths, ids)
+	}
 	return nil
 }
 
@@ -54,6 +60,9 @@ func (f *fakeTransferClient) RenewReservations(ctx context.Context, opts agentma
 		agentName:     opts.AgentName,
 		extendSeconds: opts.ExtendSeconds,
 	})
+	if f.renewFn != nil {
+		return f.renewFn(opts)
+	}
 	return &agentmail.RenewReservationsResult{}, nil
 }
 
@@ -157,6 +166,110 @@ func TestTransferReservationsSameAgentRefresh(t *testing.T) {
 	}
 	if len(client.releaseCalls) != 0 || len(client.reserveCalls) != 0 {
 		t.Fatalf("expected no release/reserve calls for same-agent refresh")
+	}
+}
+
+func TestTransferReservationsReleaseFailure(t *testing.T) {
+	client := &fakeTransferClient{}
+	client.releaseFn = func(projectKey, agentName string, paths []string, ids []int) error {
+		return errors.New("release failed")
+	}
+
+	opts := TransferReservationsOptions{
+		ProjectKey: "proj",
+		FromAgent:  "old",
+		ToAgent:    "new",
+		Reservations: []ReservationSnapshot{
+			{PathPattern: "internal/a.go", Exclusive: true},
+		},
+	}
+
+	result, err := TransferReservations(context.Background(), client, opts)
+	if err == nil {
+		t.Fatal("expected release error")
+	}
+	if result.Success {
+		t.Fatal("expected Success=false on release error")
+	}
+	if len(client.reserveCalls) != 0 {
+		t.Fatalf("expected no reserve calls on release failure, got %d", len(client.reserveCalls))
+	}
+}
+
+func TestTransferReservationsRenewFailure(t *testing.T) {
+	client := &fakeTransferClient{}
+	client.renewFn = func(opts agentmail.RenewReservationsOptions) (*agentmail.RenewReservationsResult, error) {
+		return nil, errors.New("renew failed")
+	}
+
+	opts := TransferReservationsOptions{
+		ProjectKey: "proj",
+		FromAgent:  "same",
+		ToAgent:    "same",
+		Reservations: []ReservationSnapshot{
+			{PathPattern: "internal/a.go", Exclusive: true},
+		},
+		TTLSeconds: 60,
+	}
+
+	result, err := TransferReservations(context.Background(), client, opts)
+	if err == nil {
+		t.Fatal("expected renew error")
+	}
+	if result.Success {
+		t.Fatal("expected Success=false on renew error")
+	}
+	if len(client.releaseCalls) != 0 || len(client.reserveCalls) != 0 {
+		t.Fatal("expected no release/reserve calls for renew failure")
+	}
+}
+
+func TestTransferReservationsGraceRetrySuccess(t *testing.T) {
+	client := &fakeTransferClient{}
+	callCount := 0
+	client.reserveFn = func(opts agentmail.FileReservationOptions) (*agentmail.ReservationResult, error) {
+		if opts.AgentName != "new" {
+			return &agentmail.ReservationResult{
+				Granted: []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+			}, nil
+		}
+		callCount++
+		if callCount == 1 {
+			return &agentmail.ReservationResult{
+				Granted:   []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+				Conflicts: []agentmail.ReservationConflict{{Path: "internal/a.go", Holders: []string{"other"}}},
+			}, agentmail.ErrReservationConflict
+		}
+		return &agentmail.ReservationResult{
+			Granted: []agentmail.FileReservation{{PathPattern: "internal/a.go"}},
+		}, nil
+	}
+
+	opts := TransferReservationsOptions{
+		ProjectKey: "proj",
+		FromAgent:  "old",
+		ToAgent:    "new",
+		Reservations: []ReservationSnapshot{
+			{PathPattern: "internal/a.go", Exclusive: true},
+		},
+		GracePeriod: 5 * time.Millisecond,
+	}
+
+	result, err := TransferReservations(context.Background(), client, opts)
+	if err != nil {
+		t.Fatalf("unexpected error after retry: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected success after retry, got %s", result.Error)
+	}
+	if result.RolledBack {
+		t.Fatal("did not expect rollback on successful retry")
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 reserve attempts for new agent, got %d", callCount)
+	}
+	if len(client.releaseCalls) < 2 {
+		t.Fatalf("expected release for old agent and partial retry, got %d", len(client.releaseCalls))
 	}
 }
 

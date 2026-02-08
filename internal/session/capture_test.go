@@ -1,0 +1,192 @@
+package session
+
+import (
+	"os"
+	"os/exec"
+	"testing"
+)
+
+// setupSessionGitRepo creates a temp git repo with an initial commit and
+// a configured remote. Skips if git is not available.
+func setupSessionGitRepo(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+
+	cmds := [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.name", "Test"},
+		{"git", "commit", "--allow-empty", "-m", "init"},
+		{"git", "remote", "add", "origin", "https://github.com/test/repo.git"},
+	}
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = tmp
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("%v failed: %v\n%s", args, err, out)
+		}
+	}
+	return tmp
+}
+
+// =============================================================================
+// getGitInfo — 0% → 100%
+// =============================================================================
+
+func TestGetGitInfo_ValidRepo(t *testing.T) {
+	t.Parallel()
+	repoDir := setupSessionGitRepo(t)
+
+	branch, remote, commit := getGitInfo(repoDir)
+
+	// Should detect branch
+	if branch == "" {
+		t.Error("expected non-empty branch")
+	}
+	// Most git repos default to "main" or "master"
+	if branch != "main" && branch != "master" {
+		t.Logf("branch = %q (may vary by git config)", branch)
+	}
+
+	// Should detect remote
+	if remote != "https://github.com/test/repo.git" {
+		t.Errorf("remote = %q, want test repo URL", remote)
+	}
+
+	// Should detect commit hash
+	if commit == "" {
+		t.Error("expected non-empty commit hash")
+	}
+	if len(commit) < 7 {
+		t.Errorf("commit = %q, expected at least 7 chars", commit)
+	}
+}
+
+func TestGetGitInfo_EmptyDir(t *testing.T) {
+	t.Parallel()
+
+	branch, remote, commit := getGitInfo("")
+	if branch != "" || remote != "" || commit != "" {
+		t.Errorf("expected all empty for empty dir, got branch=%q remote=%q commit=%q", branch, remote, commit)
+	}
+}
+
+func TestGetGitInfo_NonGitDir(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+
+	branch, remote, commit := getGitInfo(tmp)
+	// Should return empty strings gracefully (no panic)
+	if branch != "" {
+		t.Errorf("branch = %q, want empty for non-git dir", branch)
+	}
+	if commit != "" {
+		t.Errorf("commit = %q, want empty for non-git dir", commit)
+	}
+	_ = remote // remote may also be empty
+}
+
+func TestGetGitInfo_NonExistentDir(t *testing.T) {
+	t.Parallel()
+
+	branch, remote, commit := getGitInfo("/tmp/nonexistent-session-test-dir-99999")
+	if branch != "" || remote != "" || commit != "" {
+		t.Error("expected all empty for nonexistent dir")
+	}
+}
+
+// =============================================================================
+// getCurrentGitBranch — 0% → 100%
+// =============================================================================
+
+func TestGetCurrentGitBranch_ValidRepo(t *testing.T) {
+	t.Parallel()
+	repoDir := setupSessionGitRepo(t)
+
+	branch := getCurrentGitBranch(repoDir)
+	if branch == "" {
+		t.Error("expected non-empty branch")
+	}
+}
+
+func TestGetCurrentGitBranch_NonGitDir(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+
+	branch := getCurrentGitBranch(tmp)
+	if branch != "" {
+		t.Errorf("branch = %q, want empty for non-git dir", branch)
+	}
+}
+
+func TestGetCurrentGitBranch_NonExistentDir(t *testing.T) {
+	t.Parallel()
+
+	branch := getCurrentGitBranch("/tmp/nonexistent-session-test-dir-88888")
+	if branch != "" {
+		t.Errorf("branch = %q, want empty", branch)
+	}
+}
+
+// =============================================================================
+// detectWorkDir — 0% partial (only non-tmux fallback paths)
+// Without tmux, we can't test the tmux path, but we can test the fallbacks.
+// =============================================================================
+
+func TestDetectWorkDir_NoPanes(t *testing.T) {
+	// Without tmux running, the fallback should be os.Getwd()
+	result := detectWorkDir("nonexistent-session", nil)
+	cwd, _ := os.Getwd()
+	if result != cwd {
+		home, _ := os.UserHomeDir()
+		// Could be cwd or home dir depending on environment
+		if result != home && result != "" {
+			t.Errorf("detectWorkDir = %q, expected cwd (%q) or home (%q)", result, cwd, home)
+		}
+	}
+}
+
+// =============================================================================
+// shouldCreateDir — edge cases (80% → 100%)
+// =============================================================================
+
+func TestShouldCreateDir_ShallowPath(t *testing.T) {
+	t.Parallel()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir")
+	}
+
+	// One level deep should not be created
+	if shouldCreateDir(home + "/project") {
+		t.Error("should not create dir one level from home")
+	}
+
+	// Two levels deep should be ok
+	if !shouldCreateDir(home + "/Dev/project") {
+		t.Error("should create dir two levels from home")
+	}
+}
+
+func TestShouldCreateDir_OutsideHome(t *testing.T) {
+	t.Parallel()
+
+	// Path outside home should not be created
+	if shouldCreateDir("/tmp/some/project") {
+		t.Error("should not create dir outside home")
+	}
+}
+
+func TestShouldCreateDir_ExactHome(t *testing.T) {
+	t.Parallel()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir")
+	}
+
+	if shouldCreateDir(home) {
+		t.Error("should not create home dir itself")
+	}
+}

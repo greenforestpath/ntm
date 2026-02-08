@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -96,6 +98,43 @@ func (c *Client) GetContext(ctx context.Context, task string) (*ContextResult, e
 		return nil, err
 	}
 	return &result, nil
+}
+
+// Health checks whether the CM daemon is responding at /health.
+func (c *Client) Health(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("cm health failed: %s", resp.Status)
+	}
+	return nil
+}
+
+// Port returns the daemon port extracted from the client's base URL.
+// Returns 0 when the URL cannot be parsed or has no valid port.
+func (c *Client) Port() int {
+	u, err := url.Parse(c.baseURL)
+	if err != nil {
+		return 0
+	}
+	p := u.Port()
+	if p == "" {
+		return 0
+	}
+	port, err := strconv.Atoi(p)
+	if err != nil {
+		return 0
+	}
+	return port
 }
 
 type OutcomeStatus string
@@ -219,6 +258,10 @@ func (c *CLIClient) GetContext(ctx context.Context, task string) (*CLIContextRes
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, c.binaryPath, "context", task, "--json")
+	// Run from a stable directory. Some environments (and some tests) temporarily
+	// chdir into directories that may later be removed; if that happens, `cm`
+	// can fail even though it doesn't need the current project directory.
+	cmd.Dir = os.TempDir()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -303,9 +346,15 @@ func (c *CLIClient) FormatForRecovery(result *CLIContextResponse) string {
 
 // truncate shortens a string to maxLen runes, adding ellipsis if needed
 func truncate(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
 	runes := []rune(s)
 	if len(runes) <= maxLen {
 		return s
+	}
+	if maxLen <= 3 {
+		return string(runes[:maxLen])
 	}
 	return string(runes[:maxLen-3]) + "..."
 }

@@ -194,7 +194,8 @@ func (ws *WorktreeService) CleanupSessionWorktrees(ctx context.Context, sessionN
 				sessionID := parts[1]
 
 				// Extract session name from session ID (format: sessionName-agentType-num)
-				if len(sessionID) > len(sessionName) && sessionID[:len(sessionName)] == sessionName {
+				// Ensure we match the full session name prefix (avoid matching "app" with "app2").
+				if sessionName != "" && strings.HasPrefix(sessionID, sessionName+"-") {
 					// This worktree belongs to our session
 					if err := manager.RemoveWorktree(ctx, agentType, sessionID); err != nil {
 						log.Printf("Warning: failed to remove worktree for %s: %v", sessionID, err)
@@ -233,7 +234,7 @@ func (ws *WorktreeService) GetSessionWorktreeStatus(ctx context.Context, session
 
 			if len(parts) >= 2 {
 				sessionID := parts[1]
-				if len(sessionID) > len(sessionName) && sessionID[:len(sessionName)] == sessionName {
+				if sessionName != "" && strings.HasPrefix(sessionID, sessionName+"-") {
 					sessionWorktrees[wt.Agent] = wt
 				}
 			}

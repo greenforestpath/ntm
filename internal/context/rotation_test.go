@@ -525,3 +525,119 @@ func TestDefaultPaneSpawnerGetAgentCommand(t *testing.T) {
 		t.Errorf("expected custom-gemini, got %q", got)
 	}
 }
+
+// =============================================================================
+// ToPendingRotation / FromPendingRotation
+// =============================================================================
+
+func TestToPendingRotation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	timeout := now.Add(5 * time.Minute)
+
+	stored := &StoredPendingRotation{
+		AgentID:        "agent-1",
+		SessionName:    "session-1",
+		PaneID:         "pane-1",
+		ContextPercent: 85.5,
+		CreatedAt:      now,
+		TimeoutAt:      timeout,
+		DefaultAction:  ConfirmRotate,
+		WorkDir:        "/data/project",
+	}
+
+	pending := stored.ToPendingRotation()
+
+	if pending.AgentID != stored.AgentID {
+		t.Errorf("AgentID = %q, want %q", pending.AgentID, stored.AgentID)
+	}
+	if pending.SessionName != stored.SessionName {
+		t.Errorf("SessionName = %q, want %q", pending.SessionName, stored.SessionName)
+	}
+	if pending.PaneID != stored.PaneID {
+		t.Errorf("PaneID = %q, want %q", pending.PaneID, stored.PaneID)
+	}
+	if pending.ContextPercent != stored.ContextPercent {
+		t.Errorf("ContextPercent = %f, want %f", pending.ContextPercent, stored.ContextPercent)
+	}
+	if !pending.CreatedAt.Equal(stored.CreatedAt) {
+		t.Errorf("CreatedAt mismatch")
+	}
+	if !pending.TimeoutAt.Equal(stored.TimeoutAt) {
+		t.Errorf("TimeoutAt mismatch")
+	}
+	if pending.DefaultAction != stored.DefaultAction {
+		t.Errorf("DefaultAction = %q, want %q", pending.DefaultAction, stored.DefaultAction)
+	}
+	if pending.WorkDir != stored.WorkDir {
+		t.Errorf("WorkDir = %q, want %q", pending.WorkDir, stored.WorkDir)
+	}
+}
+
+func TestFromPendingRotation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	timeout := now.Add(10 * time.Minute)
+
+	pending := &PendingRotation{
+		AgentID:        "agent-2",
+		SessionName:    "session-2",
+		PaneID:         "pane-2",
+		ContextPercent: 92.0,
+		CreatedAt:      now,
+		TimeoutAt:      timeout,
+		DefaultAction:  ConfirmCompact,
+		WorkDir:        "/home/user/project",
+	}
+
+	stored := FromPendingRotation(pending)
+
+	if stored.AgentID != pending.AgentID {
+		t.Errorf("AgentID = %q, want %q", stored.AgentID, pending.AgentID)
+	}
+	if stored.ContextPercent != pending.ContextPercent {
+		t.Errorf("ContextPercent = %f, want %f", stored.ContextPercent, pending.ContextPercent)
+	}
+	if stored.DefaultAction != pending.DefaultAction {
+		t.Errorf("DefaultAction = %q, want %q", stored.DefaultAction, pending.DefaultAction)
+	}
+}
+
+func TestPendingRotationRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().Truncate(time.Second) // Truncate for comparison safety
+	timeout := now.Add(30 * time.Minute)
+
+	original := &PendingRotation{
+		AgentID:        "round-trip-agent",
+		SessionName:    "round-trip-session",
+		PaneID:         "round-trip-pane",
+		ContextPercent: 77.3,
+		CreatedAt:      now,
+		TimeoutAt:      timeout,
+		DefaultAction:  ConfirmIgnore,
+		WorkDir:        "/tmp/round-trip",
+	}
+
+	stored := FromPendingRotation(original)
+	restored := stored.ToPendingRotation()
+
+	if restored.AgentID != original.AgentID {
+		t.Errorf("AgentID mismatch after round trip")
+	}
+	if restored.SessionName != original.SessionName {
+		t.Errorf("SessionName mismatch after round trip")
+	}
+	if restored.ContextPercent != original.ContextPercent {
+		t.Errorf("ContextPercent mismatch after round trip")
+	}
+	if restored.DefaultAction != original.DefaultAction {
+		t.Errorf("DefaultAction mismatch after round trip")
+	}
+	if restored.WorkDir != original.WorkDir {
+		t.Errorf("WorkDir mismatch after round trip")
+	}
+}

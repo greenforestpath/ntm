@@ -1872,6 +1872,7 @@ func TestCASSContextGetValue(t *testing.T) {
 		{"cass.context.min_relevance", 0.5},
 		{"cass.context.skip_if_context_above", float64(80)},
 		{"cass.context.prefer_same_project", true},
+		{"context.ms_skills", false},
 	}
 
 	for _, tt := range tests {
@@ -1884,6 +1885,28 @@ func TestCASSContextGetValue(t *testing.T) {
 				t.Errorf("GetValue(%q) = %v (%T), want %v (%T)", tt.path, got, got, tt.want, tt.want)
 			}
 		})
+	}
+}
+
+func TestContextPackOptionsDefaults(t *testing.T) {
+	cfg := Default()
+	if cfg.Context.MSSkills {
+		t.Error("Context.MSSkills should default to false")
+	}
+}
+
+func TestContextPackOptionsFromTOML(t *testing.T) {
+	configContent := `
+[context]
+ms_skills = true
+`
+	configPath := createTempConfig(t, configContent)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+	if !cfg.Context.MSSkills {
+		t.Error("Expected context.ms_skills = true")
 	}
 }
 
@@ -1908,6 +1931,12 @@ func TestCASSContextPrintOutput(t *testing.T) {
 	}
 	if !strings.Contains(output, "prefer_same_project") {
 		t.Error("Expected output to contain prefer_same_project")
+	}
+	if !strings.Contains(output, "[context]") {
+		t.Error("Expected output to contain [context]")
+	}
+	if !strings.Contains(output, "ms_skills") {
+		t.Error("Expected output to contain context.ms_skills")
 	}
 }
 
@@ -2247,6 +2276,31 @@ func TestDefaultIntegrationsConfig(t *testing.T) {
 	if !cfg.CAAM.AutoRotate {
 		t.Error("Expected CAAM AutoRotate to be enabled by default")
 	}
+
+	// Verify XF config defaults are present
+	if !cfg.XF.Enabled {
+		t.Error("Expected XF integration to be enabled by default")
+	}
+	if cfg.XF.BinPath != "xf" {
+		t.Errorf("Expected XF bin_path 'xf', got %q", cfg.XF.BinPath)
+	}
+	if cfg.XF.ArchivePath != "~/.xf/archive" {
+		t.Errorf("Expected XF archive_path '~/.xf/archive', got %q", cfg.XF.ArchivePath)
+	}
+	if cfg.XF.DefaultMode != "hybrid" {
+		t.Errorf("Expected XF default_mode 'hybrid', got %q", cfg.XF.DefaultMode)
+	}
+
+	// Verify Proxy config defaults are present
+	if !cfg.Proxy.Enabled {
+		t.Error("Expected Proxy integration to be enabled by default")
+	}
+	if cfg.Proxy.BinPath != "rust_proxy" {
+		t.Errorf("Expected Proxy bin_path 'rust_proxy', got %q", cfg.Proxy.BinPath)
+	}
+	if cfg.Proxy.CheckInterval != "30s" {
+		t.Errorf("Expected Proxy check_interval '30s', got %q", cfg.Proxy.CheckInterval)
+	}
 }
 
 func TestIntegrationsConfigInFullConfig(t *testing.T) {
@@ -2263,8 +2317,8 @@ func TestIntegrationsConfigInFullConfig(t *testing.T) {
 
 func TestCAAMConfigFromTOML(t *testing.T) {
 	configContent := `
-[integrations.caam]
-enabled = false
+	[integrations.caam]
+	enabled = false
 binary_path = "/usr/local/bin/caam"
 auto_rotate = false
 providers = ["claude"]
@@ -2297,6 +2351,58 @@ alert_threshold = 90
 	}
 }
 
+func TestXFConfigFromTOML(t *testing.T) {
+	configContent := `
+	[integrations.xf]
+	enabled = false
+	bin_path = "/usr/local/bin/xf"
+	archive_path = "~/.xf/custom-archive"
+	default_mode = "semantic"
+	`
+	configPath := createTempConfig(t, configContent)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if cfg.Integrations.XF.Enabled {
+		t.Error("Expected XF to be disabled")
+	}
+	if cfg.Integrations.XF.BinPath != "/usr/local/bin/xf" {
+		t.Errorf("Expected bin_path '/usr/local/bin/xf', got %q", cfg.Integrations.XF.BinPath)
+	}
+	if cfg.Integrations.XF.ArchivePath != "~/.xf/custom-archive" {
+		t.Errorf("Expected archive_path '~/.xf/custom-archive', got %q", cfg.Integrations.XF.ArchivePath)
+	}
+	if cfg.Integrations.XF.DefaultMode != "semantic" {
+		t.Errorf("Expected default_mode 'semantic', got %q", cfg.Integrations.XF.DefaultMode)
+	}
+}
+
+func TestProxyConfigFromTOML(t *testing.T) {
+	configContent := `
+	[integrations.proxy]
+	enabled = false
+	bin_path = "/usr/local/bin/rust_proxy"
+	check_interval = "45s"
+	`
+	configPath := createTempConfig(t, configContent)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	if cfg.Integrations.Proxy.Enabled {
+		t.Error("Expected Proxy to be disabled")
+	}
+	if cfg.Integrations.Proxy.BinPath != "/usr/local/bin/rust_proxy" {
+		t.Errorf("Expected bin_path '/usr/local/bin/rust_proxy', got %q", cfg.Integrations.Proxy.BinPath)
+	}
+	if cfg.Integrations.Proxy.CheckInterval != "45s" {
+		t.Errorf("Expected check_interval '45s', got %q", cfg.Integrations.Proxy.CheckInterval)
+	}
+}
+
 func TestDefaultProcessTriageConfig(t *testing.T) {
 	cfg := DefaultProcessTriageConfig()
 
@@ -2321,6 +2427,248 @@ func TestDefaultProcessTriageConfig(t *testing.T) {
 	if !cfg.UseRanoData {
 		t.Error("Expected UseRanoData to be enabled by default")
 	}
+}
+
+func TestValidateXFConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     XFConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid default config",
+			cfg:     DefaultXFConfig(),
+			wantErr: false,
+		},
+		{
+			name: "disabled skips validation",
+			cfg: XFConfig{
+				Enabled: false,
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing bin_path",
+			cfg: XFConfig{
+				Enabled:     true,
+				BinPath:     "",
+				ArchivePath: "~/.xf/archive",
+				DefaultMode: "hybrid",
+			},
+			wantErr: true,
+			errMsg:  "bin_path",
+		},
+		{
+			name: "missing archive_path",
+			cfg: XFConfig{
+				Enabled:     true,
+				BinPath:     "xf",
+				ArchivePath: "",
+				DefaultMode: "hybrid",
+			},
+			wantErr: true,
+			errMsg:  "archive_path",
+		},
+		{
+			name: "invalid default_mode",
+			cfg: XFConfig{
+				Enabled:     true,
+				BinPath:     "xf",
+				ArchivePath: "~/.xf/archive",
+				DefaultMode: "wat",
+			},
+			wantErr: true,
+			errMsg:  "default_mode",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateXFConfig(&tt.cfg)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Fatalf("expected error containing %q, got %v", tt.errMsg, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected nil error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateProxyConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     ProxyConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid default config",
+			cfg:     DefaultProxyConfig(),
+			wantErr: false,
+		},
+		{
+			name: "disabled skips validation",
+			cfg: ProxyConfig{
+				Enabled: false,
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing bin_path",
+			cfg: ProxyConfig{
+				Enabled:       true,
+				BinPath:       "",
+				CheckInterval: "30s",
+			},
+			wantErr: true,
+			errMsg:  "bin_path",
+		},
+		{
+			name: "missing check_interval",
+			cfg: ProxyConfig{
+				Enabled:       true,
+				BinPath:       "rust_proxy",
+				CheckInterval: "",
+			},
+			wantErr: true,
+			errMsg:  "check_interval",
+		},
+		{
+			name: "invalid check_interval duration",
+			cfg: ProxyConfig{
+				Enabled:       true,
+				BinPath:       "rust_proxy",
+				CheckInterval: "nope",
+			},
+			wantErr: true,
+			errMsg:  "check_interval",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateProxyConfig(&tt.cfg)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Fatalf("expected error containing %q, got %v", tt.errMsg, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected nil error, got %v", err)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// ValidateXFConfig — nil branch (bd-4b4zf)
+// =============================================================================
+
+func TestValidateXFConfig_NilConfig(t *testing.T) {
+	t.Parallel()
+	if err := ValidateXFConfig(nil); err != nil {
+		t.Errorf("ValidateXFConfig(nil) = %v, want nil", err)
+	}
+}
+
+func TestValidateXFConfig_DisabledWithFields(t *testing.T) {
+	t.Parallel()
+	// Disabled but has non-zero fields — exercises the second !cfg.Enabled branch.
+	cfg := &XFConfig{
+		Enabled:     false,
+		BinPath:     "xf",
+		ArchivePath: "~/.xf/archive",
+	}
+	if err := ValidateXFConfig(cfg); err != nil {
+		t.Errorf("ValidateXFConfig(disabled with fields) = %v, want nil", err)
+	}
+}
+
+// =============================================================================
+// ValidateContextRotationConfig — missing branches (bd-4b4zf)
+// =============================================================================
+
+func TestValidateContextRotationConfig_MissingBranches(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     ContextRotationConfig
+		wantErr bool
+	}{
+		{
+			name: "confirm_timeout_sec negative",
+			cfg: ContextRotationConfig{
+				WarningThreshold:  0.80,
+				RotateThreshold:   0.95,
+				SummaryMaxTokens:  2000,
+				ConfirmTimeoutSec: -1,
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid default_confirm_action",
+			cfg: ContextRotationConfig{
+				WarningThreshold:     0.80,
+				RotateThreshold:      0.95,
+				SummaryMaxTokens:     2000,
+				DefaultConfirmAction: "invalid",
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty default_confirm_action is valid",
+			cfg: ContextRotationConfig{
+				WarningThreshold:     0.80,
+				RotateThreshold:      0.95,
+				SummaryMaxTokens:     2000,
+				DefaultConfirmAction: "",
+			},
+			wantErr: false,
+		},
+		{
+			name: "compact default_confirm_action is valid",
+			cfg: ContextRotationConfig{
+				WarningThreshold:     0.80,
+				RotateThreshold:      0.95,
+				SummaryMaxTokens:     2000,
+				DefaultConfirmAction: "compact",
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateContextRotationConfig(&tt.cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateContextRotationConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// applySafetyProfileDefaults — nil branch (bd-4b4zf)
+// =============================================================================
+
+func TestApplySafetyProfileDefaults_Nil(t *testing.T) {
+	t.Parallel()
+	// Should not panic when called with nil.
+	applySafetyProfileDefaults(nil)
 }
 
 func TestProcessTriageInIntegrationsConfig(t *testing.T) {
@@ -2670,6 +3018,23 @@ func TestValidateRejectsInvalidRobotOutputFormat(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidRedactionMode(t *testing.T) {
+	cfg := Default()
+	cfg.Redaction.Mode = "invalid"
+
+	errs := Validate(cfg)
+	found := false
+	for _, err := range errs {
+		if strings.Contains(err.Error(), "redaction") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected Validate to return error for invalid redaction mode")
+	}
+}
+
 func TestUpsertTOMLTable(t *testing.T) {
 	t.Parallel()
 
@@ -2824,4 +3189,1292 @@ func TestRenderPaletteStateTOML(t *testing.T) {
 			t.Error("expected fav1 in output")
 		}
 	})
+}
+
+// ============================================================================
+// RedactionConfig Tests
+// ============================================================================
+
+func TestDefaultRedactionConfig(t *testing.T) {
+	cfg := DefaultRedactionConfig()
+
+	if cfg.Mode != "warn" {
+		t.Errorf("Default redaction mode should be 'warn', got %q", cfg.Mode)
+	}
+
+	if len(cfg.Allowlist) != 0 {
+		t.Errorf("Default allowlist should be empty, got %d items", len(cfg.Allowlist))
+	}
+
+	if len(cfg.ExtraPatterns) != 0 {
+		t.Errorf("Default extra patterns should be empty, got %d items", len(cfg.ExtraPatterns))
+	}
+
+	if len(cfg.DisabledCategories) != 0 {
+		t.Errorf("Default disabled categories should be empty, got %d items", len(cfg.DisabledCategories))
+	}
+}
+
+func TestValidateRedactionConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    string
+		wantErr bool
+	}{
+		{"empty mode is valid", "", false},
+		{"off mode", "off", false},
+		{"warn mode", "warn", false},
+		{"redact mode", "redact", false},
+		{"block mode", "block", false},
+		{"invalid mode", "invalid", true},
+		{"uppercase mode is invalid", "WARN", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &RedactionConfig{Mode: tt.mode}
+			err := ValidateRedactionConfig(cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateRedactionConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestRedactionConfig_ToRedactionLibConfig(t *testing.T) {
+	t.Run("basic conversion", func(t *testing.T) {
+		cfg := &RedactionConfig{
+			Mode:      "redact",
+			Allowlist: []string{"test-.*", "example"},
+		}
+
+		libCfg := cfg.ToRedactionLibConfig()
+
+		if string(libCfg.Mode) != "redact" {
+			t.Errorf("Mode should be 'redact', got %q", libCfg.Mode)
+		}
+
+		if len(libCfg.Allowlist) != 2 {
+			t.Errorf("Allowlist should have 2 items, got %d", len(libCfg.Allowlist))
+		}
+	})
+
+	t.Run("with extra patterns", func(t *testing.T) {
+		cfg := &RedactionConfig{
+			Mode: "warn",
+			ExtraPatterns: map[string][]string{
+				"CUSTOM_TOKEN": {"custom-[a-z]+"},
+			},
+		}
+
+		libCfg := cfg.ToRedactionLibConfig()
+
+		if len(libCfg.ExtraPatterns) != 1 {
+			t.Errorf("ExtraPatterns should have 1 category, got %d", len(libCfg.ExtraPatterns))
+		}
+	})
+
+	t.Run("with disabled categories", func(t *testing.T) {
+		cfg := &RedactionConfig{
+			Mode:               "redact",
+			DisabledCategories: []string{"JWT", "PASSWORD"},
+		}
+
+		libCfg := cfg.ToRedactionLibConfig()
+
+		if len(libCfg.DisabledCategories) != 2 {
+			t.Errorf("DisabledCategories should have 2 items, got %d", len(libCfg.DisabledCategories))
+		}
+	})
+
+	t.Run("mode conversion", func(t *testing.T) {
+		modes := map[string]string{
+			"":       "warn", // default
+			"off":    "off",
+			"warn":   "warn",
+			"redact": "redact",
+			"block":  "block",
+		}
+
+		for input, expected := range modes {
+			cfg := &RedactionConfig{Mode: input}
+			libCfg := cfg.ToRedactionLibConfig()
+			if string(libCfg.Mode) != expected {
+				t.Errorf("Mode %q should convert to %q, got %q", input, expected, libCfg.Mode)
+			}
+		}
+	})
+}
+
+func TestRedactionConfigInDefault(t *testing.T) {
+	cfg := Default()
+
+	if cfg.Redaction.Mode != "warn" {
+		t.Errorf("Default config should have redaction mode 'warn', got %q", cfg.Redaction.Mode)
+	}
+}
+
+func TestDefaultPrivacyConfig(t *testing.T) {
+	cfg := DefaultPrivacyConfig()
+
+	// Privacy mode should be disabled by default (opt-in)
+	if cfg.Enabled {
+		t.Error("Privacy mode should be disabled by default")
+	}
+
+	// When privacy mode is enabled, these should all be true by default
+	if !cfg.DisablePromptHistory {
+		t.Error("DisablePromptHistory should be true when privacy mode is enabled")
+	}
+
+	if !cfg.DisableEventLogs {
+		t.Error("DisableEventLogs should be true when privacy mode is enabled")
+	}
+
+	if !cfg.DisableCheckpoints {
+		t.Error("DisableCheckpoints should be true when privacy mode is enabled")
+	}
+
+	if !cfg.DisableScrollbackCapture {
+		t.Error("DisableScrollbackCapture should be true when privacy mode is enabled")
+	}
+
+	if !cfg.RequireExplicitPersist {
+		t.Error("RequireExplicitPersist should be true when privacy mode is enabled")
+	}
+}
+
+func TestPrivacyConfigInDefault(t *testing.T) {
+	cfg := Default()
+
+	// Privacy config should be present with default values
+	if cfg.Privacy.Enabled {
+		t.Error("Default config should have privacy mode disabled")
+	}
+}
+
+func TestValidatePrivacyConfig(t *testing.T) {
+	// Validate should always succeed for PrivacyConfig (only boolean flags)
+	tests := []PrivacyConfig{
+		{},
+		{Enabled: true},
+		{Enabled: true, DisablePromptHistory: false}, // override defaults
+		{Enabled: false, RequireExplicitPersist: true},
+	}
+
+	for i, cfg := range tests {
+		if err := ValidatePrivacyConfig(&cfg); err != nil {
+			t.Errorf("Test %d: ValidatePrivacyConfig should not error, got: %v", i, err)
+		}
+	}
+}
+
+func TestSafetyProfileDefaultsInDefault(t *testing.T) {
+	cfg := Default()
+
+	if cfg.Safety.Profile != SafetyProfileStandard {
+		t.Errorf("Default safety profile = %q, want %q", cfg.Safety.Profile, SafetyProfileStandard)
+	}
+	if !cfg.Preflight.Enabled {
+		t.Error("Default Preflight.Enabled should be true")
+	}
+	if cfg.Preflight.Strict {
+		t.Error("Default Preflight.Strict should be false")
+	}
+	if cfg.Redaction.Mode != "warn" {
+		t.Errorf("Default redaction mode = %q, want %q", cfg.Redaction.Mode, "warn")
+	}
+	if cfg.Privacy.Enabled {
+		t.Error("Default privacy should be disabled")
+	}
+}
+
+func TestLoadSafetyProfileAppliesDefaultsAndAllowsOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	t.Run("profile safe applies defaults", func(t *testing.T) {
+		content := `
+[safety]
+profile = "safe"
+`
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load() failed: %v", err)
+		}
+
+		if cfg.Safety.Profile != SafetyProfileSafe {
+			t.Errorf("Safety.Profile = %q, want %q", cfg.Safety.Profile, SafetyProfileSafe)
+		}
+		if cfg.Redaction.Mode != "redact" {
+			t.Errorf("Redaction.Mode = %q, want %q", cfg.Redaction.Mode, "redact")
+		}
+		if cfg.Privacy.Enabled {
+			t.Error("Privacy.Enabled should be false for safe profile")
+		}
+		if cfg.Integrations.DCG.AllowOverride {
+			t.Error("Integrations.DCG.AllowOverride should be false for safe profile")
+		}
+		if !cfg.Preflight.Enabled {
+			t.Error("Preflight.Enabled should be true for safe profile")
+		}
+	})
+
+	t.Run("explicit knob overrides profile defaults", func(t *testing.T) {
+		content := `
+[safety]
+profile = "safe"
+
+[redaction]
+mode = "warn"
+`
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load() failed: %v", err)
+		}
+
+		if cfg.Safety.Profile != SafetyProfileSafe {
+			t.Errorf("Safety.Profile = %q, want %q", cfg.Safety.Profile, SafetyProfileSafe)
+		}
+		if cfg.Redaction.Mode != "warn" {
+			t.Errorf("Redaction.Mode = %q, want %q", cfg.Redaction.Mode, "warn")
+		}
+	})
+}
+
+func TestValidateSafetyConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     SafetyConfig
+		wantErr bool
+	}{
+		{name: "empty ok", cfg: SafetyConfig{}, wantErr: false},
+		{name: "standard ok", cfg: SafetyConfig{Profile: "standard"}, wantErr: false},
+		{name: "safe ok", cfg: SafetyConfig{Profile: "safe"}, wantErr: false},
+		{name: "paranoid ok", cfg: SafetyConfig{Profile: "paranoid"}, wantErr: false},
+		{name: "invalid", cfg: SafetyConfig{Profile: "nope"}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateSafetyConfig(&tt.cfg)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Rotation: GetAccountsForProvider / SuggestNextAccount
+// =============================================================================
+
+func TestRotationConfig_GetAccountsForProvider(t *testing.T) {
+	t.Parallel()
+
+	cfg := &RotationConfig{
+		Accounts: []RotationAccount{
+			{Provider: "claude", Email: "a@example.com"},
+			{Provider: "codex", Email: "b@example.com"},
+			{Provider: "claude", Email: "c@example.com"},
+			{Provider: "gemini", Email: "d@example.com"},
+		},
+	}
+
+	tests := []struct {
+		provider string
+		wantLen  int
+	}{
+		{"claude", 2},
+		{"codex", 1},
+		{"gemini", 1},
+		{"unknown", 0},
+		{"", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			t.Parallel()
+			accounts := cfg.GetAccountsForProvider(tt.provider)
+			if len(accounts) != tt.wantLen {
+				t.Errorf("GetAccountsForProvider(%q) returned %d accounts, want %d", tt.provider, len(accounts), tt.wantLen)
+			}
+		})
+	}
+}
+
+func TestRotationConfig_GetAccountsForProvider_Empty(t *testing.T) {
+	t.Parallel()
+	cfg := &RotationConfig{}
+	accounts := cfg.GetAccountsForProvider("claude")
+	if len(accounts) != 0 {
+		t.Errorf("Expected 0 accounts for empty config, got %d", len(accounts))
+	}
+}
+
+func TestRotationConfig_SuggestNextAccount(t *testing.T) {
+	t.Parallel()
+
+	cfg := &RotationConfig{
+		Accounts: []RotationAccount{
+			{Provider: "claude", Email: "a@example.com"},
+			{Provider: "claude", Email: "b@example.com"},
+			{Provider: "codex", Email: "c@example.com"},
+		},
+	}
+
+	tests := []struct {
+		name         string
+		provider     string
+		currentEmail string
+		wantEmail    string
+		wantNil      bool
+	}{
+		{"suggests next claude", "claude", "a@example.com", "b@example.com", false},
+		{"suggests first claude when current is second", "claude", "b@example.com", "a@example.com", false},
+		{"nil when no other accounts", "codex", "c@example.com", "", true},
+		{"nil for unknown provider", "unknown", "a@example.com", "", true},
+		{"nil for empty provider", "", "a@example.com", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := cfg.SuggestNextAccount(tt.provider, tt.currentEmail)
+			if tt.wantNil {
+				if got != nil {
+					t.Errorf("SuggestNextAccount() = %v, want nil", got)
+				}
+			} else {
+				if got == nil {
+					t.Fatal("SuggestNextAccount() = nil, want non-nil")
+				}
+				if got.Email != tt.wantEmail {
+					t.Errorf("SuggestNextAccount().Email = %q, want %q", got.Email, tt.wantEmail)
+				}
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Validation functions
+// =============================================================================
+
+func TestValidateFileReservationConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     FileReservationConfig
+		wantErr bool
+	}{
+		{
+			name:    "valid defaults",
+			cfg:     DefaultFileReservationConfig(),
+			wantErr: false,
+		},
+		{
+			name:    "auto release disabled (0)",
+			cfg:     FileReservationConfig{AutoReleaseIdleMin: 0, DefaultTTLMin: 5, PollIntervalSec: 5, CaptureLinesForDetect: 20},
+			wantErr: false,
+		},
+		{
+			name:    "auto release too low (not 0)",
+			cfg:     FileReservationConfig{AutoReleaseIdleMin: -1, DefaultTTLMin: 5, PollIntervalSec: 5, CaptureLinesForDetect: 20},
+			wantErr: true,
+		},
+		{
+			name:    "TTL too low",
+			cfg:     FileReservationConfig{AutoReleaseIdleMin: 0, DefaultTTLMin: 0, PollIntervalSec: 5, CaptureLinesForDetect: 20},
+			wantErr: true,
+		},
+		{
+			name:    "poll interval too low",
+			cfg:     FileReservationConfig{AutoReleaseIdleMin: 0, DefaultTTLMin: 5, PollIntervalSec: 0, CaptureLinesForDetect: 20},
+			wantErr: true,
+		},
+		{
+			name:    "capture lines too low",
+			cfg:     FileReservationConfig{AutoReleaseIdleMin: 0, DefaultTTLMin: 5, PollIntervalSec: 5, CaptureLinesForDetect: 5},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateFileReservationConfig(&tt.cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateFileReservationConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateMemoryConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     MemoryConfig
+		wantErr bool
+	}{
+		{
+			name:    "valid defaults",
+			cfg:     DefaultMemoryConfig(),
+			wantErr: false,
+		},
+		{
+			name:    "max_rules zero is valid",
+			cfg:     MemoryConfig{MaxRules: 0, QueryTimeoutSeconds: 5},
+			wantErr: false,
+		},
+		{
+			name:    "max_rules negative",
+			cfg:     MemoryConfig{MaxRules: -1, QueryTimeoutSeconds: 5},
+			wantErr: true,
+		},
+		{
+			name:    "timeout too low",
+			cfg:     MemoryConfig{MaxRules: 10, QueryTimeoutSeconds: 0},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateMemoryConfig(&tt.cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateMemoryConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateActivityIndicatorConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     ActivityIndicatorConfig
+		wantErr bool
+	}{
+		{
+			name:    "valid defaults",
+			cfg:     DefaultActivityIndicatorConfig(),
+			wantErr: false,
+		},
+		{
+			name:    "active_seconds zero",
+			cfg:     ActivityIndicatorConfig{ActiveSeconds: 0, StalledSeconds: 120},
+			wantErr: true,
+		},
+		{
+			name:    "stalled not greater than active",
+			cfg:     ActivityIndicatorConfig{ActiveSeconds: 30, StalledSeconds: 30},
+			wantErr: true,
+		},
+		{
+			name:    "stalled less than active",
+			cfg:     ActivityIndicatorConfig{ActiveSeconds: 30, StalledSeconds: 10},
+			wantErr: true,
+		},
+		{
+			name:    "minimal valid",
+			cfg:     ActivityIndicatorConfig{ActiveSeconds: 1, StalledSeconds: 2},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateActivityIndicatorConfig(&tt.cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateActivityIndicatorConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateRanoConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     *RanoConfig
+		wantErr bool
+	}{
+		{
+			name:    "nil config",
+			cfg:     nil,
+			wantErr: false,
+		},
+		{
+			name:    "unconfigured zero-value",
+			cfg:     &RanoConfig{},
+			wantErr: false,
+		},
+		{
+			name:    "valid with providers",
+			cfg:     &RanoConfig{Enabled: true, PollIntervalMs: 1000, Providers: []string{"anthropic"}, HistoryDays: 7},
+			wantErr: false,
+		},
+		{
+			name:    "poll interval too low",
+			cfg:     &RanoConfig{Enabled: true, PollIntervalMs: 50, Providers: []string{"anthropic"}},
+			wantErr: true,
+		},
+		{
+			name:    "negative history days",
+			cfg:     &RanoConfig{Enabled: true, PollIntervalMs: 1000, Providers: []string{"anthropic"}, HistoryDays: -1},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateRanoConfig(tt.cfg)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateRanoConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// validateSynthesisStrategy
+// =============================================================================
+
+func TestValidateSynthesisStrategy(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid strategies", func(t *testing.T) {
+		t.Parallel()
+		valid := []string{"consensus", "creative", "analytical", "deliberative", "prioritized", "dialectical", "meta-reasoning", "voting", "argumentation"}
+		for _, s := range valid {
+			if err := validateSynthesisStrategy(s); err != nil {
+				t.Errorf("validateSynthesisStrategy(%q) = %v, want nil", s, err)
+			}
+		}
+	})
+
+	t.Run("deprecated strategies", func(t *testing.T) {
+		t.Parallel()
+		deprecated := map[string]string{
+			"debate":     "dialectical",
+			"weighted":   "prioritized",
+			"sequential": "manual",
+			"best-of":    "prioritized",
+		}
+		for old, replacement := range deprecated {
+			err := validateSynthesisStrategy(old)
+			if err == nil {
+				t.Errorf("validateSynthesisStrategy(%q) = nil, want error", old)
+				continue
+			}
+			if !strings.Contains(err.Error(), replacement) {
+				t.Errorf("validateSynthesisStrategy(%q) error should mention %q, got: %v", old, replacement, err)
+			}
+		}
+	})
+
+	t.Run("unknown strategy", func(t *testing.T) {
+		t.Parallel()
+		err := validateSynthesisStrategy("nonexistent")
+		if err == nil {
+			t.Error("validateSynthesisStrategy(\"nonexistent\") = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "unknown") {
+			t.Errorf("error should mention 'unknown', got: %v", err)
+		}
+	})
+}
+
+// =============================================================================
+// dirWritable
+// =============================================================================
+
+func TestDirWritable(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil info", func(t *testing.T) {
+		t.Parallel()
+		if dirWritable(nil) {
+			t.Error("dirWritable(nil) = true, want false")
+		}
+	})
+
+	t.Run("writable directory", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("Stat failed: %v", err)
+		}
+		if !dirWritable(info) {
+			t.Error("dirWritable should return true for writable temp dir")
+		}
+	})
+}
+
+// =============================================================================
+// ValidateEnsembleConfig
+// =============================================================================
+
+func TestValidateEnsembleConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     *EnsembleConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "nil config",
+			cfg:     nil,
+			wantErr: false,
+		},
+		{
+			name:    "empty config",
+			cfg:     &EnsembleConfig{},
+			wantErr: false,
+		},
+		{
+			name:    "valid assignment round-robin",
+			cfg:     &EnsembleConfig{Assignment: "round-robin"},
+			wantErr: false,
+		},
+		{
+			name:    "valid assignment affinity",
+			cfg:     &EnsembleConfig{Assignment: "affinity"},
+			wantErr: false,
+		},
+		{
+			name:    "invalid assignment",
+			cfg:     &EnsembleConfig{Assignment: "invalid-assignment"},
+			wantErr: true,
+			errMsg:  "assignment",
+		},
+		{
+			name:    "valid mode tier core",
+			cfg:     &EnsembleConfig{ModeTierDefault: "core"},
+			wantErr: false,
+		},
+		{
+			name:    "valid mode tier advanced",
+			cfg:     &EnsembleConfig{ModeTierDefault: "advanced"},
+			wantErr: false,
+		},
+		{
+			name:    "invalid mode tier",
+			cfg:     &EnsembleConfig{ModeTierDefault: "invalid-tier"},
+			wantErr: true,
+			errMsg:  "mode_tier_default",
+		},
+		{
+			name: "invalid synthesis min_confidence negative",
+			cfg: &EnsembleConfig{
+				Synthesis: EnsembleSynthesisConfig{MinConfidence: -0.5},
+			},
+			wantErr: true,
+			errMsg:  "min_confidence",
+		},
+		{
+			name: "invalid synthesis min_confidence too high",
+			cfg: &EnsembleConfig{
+				Synthesis: EnsembleSynthesisConfig{MinConfidence: 1.5},
+			},
+			wantErr: true,
+			errMsg:  "min_confidence",
+		},
+		{
+			name: "invalid synthesis max_findings negative",
+			cfg: &EnsembleConfig{
+				Synthesis: EnsembleSynthesisConfig{MaxFindings: -1},
+			},
+			wantErr: true,
+			errMsg:  "max_findings",
+		},
+		{
+			name: "invalid budget per_agent negative",
+			cfg: &EnsembleConfig{
+				Budget: EnsembleBudgetConfig{PerAgent: -100},
+			},
+			wantErr: true,
+			errMsg:  "budget",
+		},
+		{
+			name: "invalid budget per_agent > total",
+			cfg: &EnsembleConfig{
+				Budget: EnsembleBudgetConfig{PerAgent: 1000, Total: 500},
+			},
+			wantErr: true,
+			errMsg:  "per_agent",
+		},
+		{
+			name: "invalid cache ttl negative",
+			cfg: &EnsembleConfig{
+				Cache: EnsembleCacheConfig{TTLMinutes: -1},
+			},
+			wantErr: true,
+			errMsg:  "ttl_minutes",
+		},
+		{
+			name: "invalid cache max_entries negative",
+			cfg: &EnsembleConfig{
+				Cache: EnsembleCacheConfig{MaxEntries: -1},
+			},
+			wantErr: true,
+			errMsg:  "max_entries",
+		},
+		// Additional test cases for remaining branches
+		{
+			name:    "valid assignment category",
+			cfg:     &EnsembleConfig{Assignment: "category"},
+			wantErr: false,
+		},
+		{
+			name:    "valid assignment explicit",
+			cfg:     &EnsembleConfig{Assignment: "explicit"},
+			wantErr: false,
+		},
+		{
+			name:    "valid mode tier experimental",
+			cfg:     &EnsembleConfig{ModeTierDefault: "experimental"},
+			wantErr: false,
+		},
+		{
+			name: "invalid synthesis strategy",
+			cfg: &EnsembleConfig{
+				Synthesis: EnsembleSynthesisConfig{Strategy: "invalid-strategy"},
+			},
+			wantErr: true,
+			errMsg:  "synthesis.strategy",
+		},
+		{
+			name: "invalid budget total negative",
+			cfg: &EnsembleConfig{
+				Budget: EnsembleBudgetConfig{Total: -500},
+			},
+			wantErr: true,
+			errMsg:  "budget",
+		},
+		{
+			name: "invalid budget synthesis negative",
+			cfg: &EnsembleConfig{
+				Budget: EnsembleBudgetConfig{Synthesis: -100},
+			},
+			wantErr: true,
+			errMsg:  "budget",
+		},
+		{
+			name: "invalid budget context_pack negative",
+			cfg: &EnsembleConfig{
+				Budget: EnsembleBudgetConfig{ContextPack: -50},
+			},
+			wantErr: true,
+			errMsg:  "budget",
+		},
+		{
+			name: "invalid early_stop min_agents negative",
+			cfg: &EnsembleConfig{
+				EarlyStop: EnsembleEarlyStopConfig{MinAgents: -1},
+			},
+			wantErr: true,
+			errMsg:  "min_agents",
+		},
+		{
+			name: "invalid early_stop window_size negative",
+			cfg: &EnsembleConfig{
+				EarlyStop: EnsembleEarlyStopConfig{WindowSize: -1},
+			},
+			wantErr: true,
+			errMsg:  "window_size",
+		},
+		{
+			name: "invalid early_stop findings_threshold negative",
+			cfg: &EnsembleConfig{
+				EarlyStop: EnsembleEarlyStopConfig{FindingsThreshold: -0.5},
+			},
+			wantErr: true,
+			errMsg:  "findings_threshold",
+		},
+		{
+			name: "invalid early_stop findings_threshold too high",
+			cfg: &EnsembleConfig{
+				EarlyStop: EnsembleEarlyStopConfig{FindingsThreshold: 1.5},
+			},
+			wantErr: true,
+			errMsg:  "findings_threshold",
+		},
+		{
+			name: "invalid early_stop similarity_threshold negative",
+			cfg: &EnsembleConfig{
+				EarlyStop: EnsembleEarlyStopConfig{SimilarityThreshold: -0.5},
+			},
+			wantErr: true,
+			errMsg:  "similarity_threshold",
+		},
+		{
+			name: "invalid early_stop similarity_threshold too high",
+			cfg: &EnsembleConfig{
+				EarlyStop: EnsembleEarlyStopConfig{SimilarityThreshold: 1.5},
+			},
+			wantErr: true,
+			errMsg:  "similarity_threshold",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateEnsembleConfig(tc.cfg)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("ValidateEnsembleConfig() = nil, want error containing %q", tc.errMsg)
+				} else if !strings.Contains(err.Error(), tc.errMsg) {
+					t.Errorf("error = %q, should contain %q", err.Error(), tc.errMsg)
+				}
+			} else if err != nil {
+				t.Errorf("ValidateEnsembleConfig() = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// --- PromptsConfig tests (bd-2ywo) ---
+
+func TestPromptsConfigResolveForType(t *testing.T) {
+	t.Parallel()
+	p := PromptsConfig{
+		CCDefault:  "claude prompt",
+		CodDefault: "codex prompt",
+		GmiDefault: "gemini prompt",
+	}
+
+	tests := []struct {
+		agentType string
+		want      string
+	}{
+		{"cc", "claude prompt"},
+		{"cod", "codex prompt"},
+		{"gmi", "gemini prompt"},
+		{"ollama", ""},
+		{"unknown", ""},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.agentType, func(t *testing.T) {
+			t.Parallel()
+			got, err := p.ResolveForType(tt.agentType)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("ResolveForType(%q) = %q, want %q", tt.agentType, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPromptsConfigResolveFromFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cc_prompt.md")
+	if err := os.WriteFile(path, []byte("  from file  \n"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	p := PromptsConfig{
+		CCDefaultFile: path,
+	}
+	got, err := p.ResolveForType("cc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "from file" {
+		t.Errorf("expected trimmed file content, got %q", got)
+	}
+}
+
+func TestPromptsConfigInlineOverridesFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cod_prompt.md")
+	if err := os.WriteFile(path, []byte("from file"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	p := PromptsConfig{
+		CodDefault:     "inline value",
+		CodDefaultFile: path,
+	}
+	got, err := p.ResolveForType("cod")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "inline value" {
+		t.Errorf("inline should override file, got %q", got)
+	}
+}
+
+func TestPromptsConfigMissingFile(t *testing.T) {
+	t.Parallel()
+	p := PromptsConfig{
+		GmiDefaultFile: "/nonexistent/prompt.md",
+	}
+	_, err := p.ResolveForType("gmi")
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	if !strings.Contains(err.Error(), "prompts.gmi_default_file") {
+		t.Errorf("error should mention config key, got: %v", err)
+	}
+}
+
+func TestPromptsConfigAllEmpty(t *testing.T) {
+	t.Parallel()
+	p := PromptsConfig{}
+	for _, at := range []string{"cc", "cod", "gmi"} {
+		got, err := p.ResolveForType(at)
+		if err != nil {
+			t.Fatalf("unexpected error for %s: %v", at, err)
+		}
+		if got != "" {
+			t.Errorf("expected empty for %s, got %q", at, got)
+		}
+	}
+}
+
+// =============================================================================
+// EncryptionConfig
+// =============================================================================
+
+func TestDefaultEncryptionConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultEncryptionConfig()
+
+	if cfg.Enabled {
+		t.Error("expected disabled by default")
+	}
+	if cfg.KeySource != "env" {
+		t.Errorf("expected key_source=env, got %q", cfg.KeySource)
+	}
+	if cfg.KeyEnv != "NTM_ENCRYPTION_KEY" {
+		t.Errorf("expected key_env=NTM_ENCRYPTION_KEY, got %q", cfg.KeyEnv)
+	}
+	if cfg.KeyFormat != "hex" {
+		t.Errorf("expected key_format=hex, got %q", cfg.KeyFormat)
+	}
+}
+
+func TestValidateEncryptionConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     EncryptionConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "disabled is always valid",
+			cfg:     EncryptionConfig{Enabled: false},
+			wantErr: false,
+		},
+		{
+			name:    "disabled with invalid fields still valid",
+			cfg:     EncryptionConfig{Enabled: false, KeySource: "magic", KeyFormat: "raw"},
+			wantErr: false,
+		},
+		{
+			name:    "enabled with env source",
+			cfg:     EncryptionConfig{Enabled: true, KeySource: "env"},
+			wantErr: false,
+		},
+		{
+			name:    "enabled with file source",
+			cfg:     EncryptionConfig{Enabled: true, KeySource: "file"},
+			wantErr: false,
+		},
+		{
+			name:    "enabled with command source",
+			cfg:     EncryptionConfig{Enabled: true, KeySource: "command"},
+			wantErr: false,
+		},
+		{
+			name:    "enabled with empty source",
+			cfg:     EncryptionConfig{Enabled: true, KeySource: ""},
+			wantErr: true,
+			errMsg:  "key_source is required",
+		},
+		{
+			name:    "enabled with invalid source",
+			cfg:     EncryptionConfig{Enabled: true, KeySource: "magic"},
+			wantErr: true,
+			errMsg:  "invalid encryption.key_source",
+		},
+		{
+			name:    "hex format valid",
+			cfg:     EncryptionConfig{Enabled: true, KeySource: "env", KeyFormat: "hex"},
+			wantErr: false,
+		},
+		{
+			name:    "base64 format valid",
+			cfg:     EncryptionConfig{Enabled: true, KeySource: "env", KeyFormat: "base64"},
+			wantErr: false,
+		},
+		{
+			name:    "empty format valid (defaults to hex)",
+			cfg:     EncryptionConfig{Enabled: true, KeySource: "env", KeyFormat: ""},
+			wantErr: false,
+		},
+		{
+			name:    "invalid format",
+			cfg:     EncryptionConfig{Enabled: true, KeySource: "env", KeyFormat: "raw"},
+			wantErr: true,
+			errMsg:  "invalid encryption.key_format",
+		},
+		{
+			name: "valid keyring with matching active_key_id",
+			cfg: EncryptionConfig{
+				Enabled:     true,
+				KeySource:   "env",
+				ActiveKeyID: "primary",
+				Keyring:     map[string]string{"primary": "deadbeef"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "active_key_id not in keyring",
+			cfg: EncryptionConfig{
+				Enabled:     true,
+				KeySource:   "env",
+				ActiveKeyID: "missing",
+				Keyring:     map[string]string{"other": "deadbeef"},
+			},
+			wantErr: true,
+			errMsg:  "not found in keyring",
+		},
+		{
+			name: "active_key_id without keyring is valid",
+			cfg: EncryptionConfig{
+				Enabled:     true,
+				KeySource:   "env",
+				ActiveKeyID: "somekey",
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateEncryptionConfig(&tt.cfg)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				} else if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("error %q should contain %q", err.Error(), tt.errMsg)
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// UpsertPaletteState tests
+// =============================================================================
+
+func TestUpsertPaletteState_NewFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+
+	// Create a minimal TOML file
+	initial := "[general]\nverbosity = 1\n"
+	if err := os.WriteFile(configPath, []byte(initial), 0644); err != nil {
+		t.Fatalf("write initial: %v", err)
+	}
+
+	state := PaletteState{
+		Pinned:    []string{"spawn", "send"},
+		Favorites: []string{"status"},
+	}
+
+	if err := UpsertPaletteState(configPath, state); err != nil {
+		t.Fatalf("UpsertPaletteState: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, "[palette_state]") {
+		t.Error("expected [palette_state] section")
+	}
+	if !strings.Contains(content, "spawn") {
+		t.Error("expected 'spawn' in pinned")
+	}
+	if !strings.Contains(content, "status") {
+		t.Error("expected 'status' in favorites")
+	}
+	// Original content should be preserved
+	if !strings.Contains(content, "[general]") {
+		t.Error("expected [general] section preserved")
+	}
+}
+
+func TestUpsertPaletteState_Update(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.toml")
+
+	initial := "[general]\nverbosity = 1\n\n[palette_state]\npinned = [\"old\"]\nfavorites = []\n"
+	if err := os.WriteFile(configPath, []byte(initial), 0644); err != nil {
+		t.Fatalf("write initial: %v", err)
+	}
+
+	state := PaletteState{
+		Pinned:    []string{"new1", "new2"},
+		Favorites: []string{"fav1"},
+	}
+
+	if err := UpsertPaletteState(configPath, state); err != nil {
+		t.Fatalf("UpsertPaletteState: %v", err)
+	}
+
+	data, _ := os.ReadFile(configPath)
+	content := string(data)
+
+	if strings.Contains(content, "old") {
+		t.Error("old pinned value should be replaced")
+	}
+	if !strings.Contains(content, "new1") {
+		t.Error("expected new1 in pinned")
+	}
+}
+
+func TestUpsertPaletteState_EmptyPath(t *testing.T) {
+	err := UpsertPaletteState("", PaletteState{})
+	if err == nil {
+		t.Error("expected error for empty path")
+	}
+}
+
+// =============================================================================
+// SetProjectsBase tests
+// =============================================================================
+
+func TestSetProjectsBase_Valid(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_CONFIG_HOME", tmpDir)
+	defer os.Unsetenv("XDG_CONFIG_HOME")
+
+	projectsDir := filepath.Join(tmpDir, "projects")
+
+	if err := SetProjectsBase(projectsDir); err != nil {
+		t.Fatalf("SetProjectsBase: %v", err)
+	}
+
+	// Verify directory was created
+	info, err := os.Stat(projectsDir)
+	if err != nil {
+		t.Fatalf("projects dir not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("projects path is not a directory")
+	}
+
+	// Verify config file was updated
+	configPath := DefaultPath()
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(data), projectsDir) {
+		t.Errorf("config should contain projects path %q", projectsDir)
+	}
+}
+
+func TestSetProjectsBase_RelativePath(t *testing.T) {
+	err := SetProjectsBase("relative/path")
+	if err == nil {
+		t.Error("expected error for relative path")
+	}
+}
+
+// =============================================================================
+// Config Reset tests
+// =============================================================================
+
+func TestConfigReset(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_CONFIG_HOME", tmpDir)
+	defer os.Unsetenv("XDG_CONFIG_HOME")
+
+	// Create a modified config first
+	configPath := DefaultPath()
+	configDir := filepath.Dir(configPath)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("projects_base = \"/custom/path\"\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Reset should recreate with defaults
+	if err := Reset(); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+
+	// Config file should still exist (recreated with defaults)
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("config file should exist after reset: %v", err)
+	}
+
+	// Load and verify it's a valid default config
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load after reset: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config after reset")
+	}
+}
+
+func TestConfigReset_NoExistingFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_CONFIG_HOME", tmpDir)
+	defer os.Unsetenv("XDG_CONFIG_HOME")
+
+	// Reset without existing file should create defaults
+	if err := Reset(); err != nil {
+		t.Fatalf("Reset (no file): %v", err)
+	}
+
+	configPath := DefaultPath()
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("config file should exist after reset: %v", err)
+	}
 }

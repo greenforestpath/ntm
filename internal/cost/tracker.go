@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,6 +58,8 @@ var modelPricing = map[string]ModelPricing{
 	// Default fallback
 	"default": {InputPer1K: 0.003, OutputPer1K: 0.015},
 }
+
+var modelDateSuffixRegex = regexp.MustCompile(`-\d{8}$`)
 
 // AgentCost tracks token usage for a single agent.
 type AgentCost struct {
@@ -294,13 +299,45 @@ func (t *CostTracker) ClearSession(session string) {
 	delete(t.sessions, session)
 }
 
+func normalizeModelName(model string) string {
+	model = strings.TrimSpace(strings.ToLower(model))
+	model = modelDateSuffixRegex.ReplaceAllString(model, "")
+	return model
+}
+
 // GetModelPricing returns the pricing for a model.
 // If the model is not found, returns default pricing.
 func GetModelPricing(model string) ModelPricing {
 	if pricing, ok := modelPricing[model]; ok {
 		return pricing
 	}
-	return modelPricing["default"]
+
+	normalized := normalizeModelName(model)
+	if pricing, ok := modelPricing[normalized]; ok {
+		return pricing
+	}
+
+	// Prefix match for variants (longest key first).
+	keys := make([]string, 0, len(modelPricing))
+	for key := range modelPricing {
+		if key == "default" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+	for _, key := range keys {
+		if strings.HasPrefix(normalized, key) {
+			return modelPricing[key]
+		}
+	}
+
+	if pricing, ok := modelPricing["default"]; ok {
+		return pricing
+	}
+	return ModelPricing{}
 }
 
 // EstimateTokens estimates the token count for text.

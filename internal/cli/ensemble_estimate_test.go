@@ -121,3 +121,76 @@ func testEstimateCatalog(t *testing.T) *ensemble.ModeCatalog {
 	}
 	return catalog
 }
+
+// TestSplitCommaSeparated tests the comma-separated string splitting helper
+func TestSplitCommaSeparated(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		// Basic cases
+		{name: "single value", input: "one", expected: []string{"one"}},
+		{name: "two values", input: "one,two", expected: []string{"one", "two"}},
+		{name: "three values", input: "a,b,c", expected: []string{"a", "b", "c"}},
+
+		// Whitespace handling
+		{name: "with spaces", input: "one, two, three", expected: []string{"one", "two", "three"}},
+		{name: "with tabs", input: "one,\ttwo,\tthree", expected: []string{"one", "two", "three"}},
+		{name: "leading space", input: " one,two", expected: []string{"one", "two"}},
+		{name: "trailing space", input: "one,two ", expected: []string{"one", "two"}},
+		{name: "mixed whitespace", input: "  one  ,  two  ,  three  ", expected: []string{"one", "two", "three"}},
+
+		// Empty/nil cases
+		{name: "empty string", input: "", expected: nil},
+		{name: "whitespace only", input: "   ", expected: nil},
+		{name: "just tabs", input: "\t\t", expected: nil},
+
+		// Edge cases
+		{name: "empty between commas", input: "one,,two", expected: []string{"one", "two"}},
+		{name: "trailing comma", input: "one,two,", expected: []string{"one", "two"}},
+		{name: "leading comma", input: ",one,two", expected: []string{"one", "two"}},
+		{name: "multiple empty", input: ",,,", expected: []string{}},
+		{name: "spaces between commas", input: "one, ,two", expected: []string{"one", "two"}},
+
+		// Real-world examples
+		{name: "mode ids", input: "formal-mode,practical-mode,meta-mode", expected: []string{"formal-mode", "practical-mode", "meta-mode"}},
+		{name: "agent types", input: "claude, codex, gemini", expected: []string{"claude", "codex", "gemini"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := splitCommaSeparated(tc.input)
+
+			// Handle nil vs empty slice comparison
+			if tc.expected == nil {
+				if len(result) != 0 {
+					t.Errorf("splitCommaSeparated(%q) = %v; want nil/empty", tc.input, result)
+				}
+				return
+			}
+			// Also handle empty expected slice
+			if len(tc.expected) == 0 {
+				if len(result) != 0 {
+					t.Errorf("splitCommaSeparated(%q) = %v; want empty", tc.input, result)
+				}
+				return
+			}
+
+			if len(result) != len(tc.expected) {
+				t.Fatalf("splitCommaSeparated(%q) returned %d items; want %d\nGot: %v\nWant: %v",
+					tc.input, len(result), len(tc.expected), result, tc.expected)
+			}
+
+			for i, v := range result {
+				if v != tc.expected[i] {
+					t.Errorf("splitCommaSeparated(%q)[%d] = %q; want %q",
+						tc.input, i, v, tc.expected[i])
+				}
+			}
+		})
+	}
+}

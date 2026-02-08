@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -84,6 +86,41 @@ func TestCAAMAccountStruct(t *testing.T) {
 
 	if !account.Active {
 		t.Error("Expected Active to be true")
+	}
+}
+
+func TestCAAMStatusApplyAccountsTracksActiveAccountIdentity(t *testing.T) {
+	status := &CAAMStatus{}
+	accounts := []CAAMAccount{
+		{ID: "acc-1", Provider: "openai", Active: true, Name: "Primary"},
+		{ID: "acc-2", Provider: "claude", Active: false, Name: "Secondary"},
+	}
+
+	status.applyAccounts(accounts)
+
+	if status.AccountsCount != 2 {
+		t.Fatalf("AccountsCount = %d, want 2", status.AccountsCount)
+	}
+	if status.ActiveAccount == nil {
+		t.Fatal("ActiveAccount = nil, want non-nil")
+	}
+	if status.ActiveAccount != &status.Accounts[0] {
+		t.Fatal("ActiveAccount should point to the matching account in status.Accounts")
+	}
+	if status.ActiveAccount.ID != "acc-1" {
+		t.Fatalf("ActiveAccount.ID = %q, want %q", status.ActiveAccount.ID, "acc-1")
+	}
+	if len(status.Providers) != 2 {
+		t.Fatalf("Providers len = %d, want 2", len(status.Providers))
+	}
+	if status.Providers[0] != "claude" || status.Providers[1] != "openai" {
+		t.Fatalf("Providers = %v, want [claude openai] (deterministic order)", status.Providers)
+	}
+
+	// Regression check: active account must not be a detached range-loop copy.
+	status.Accounts[0].Name = "Renamed"
+	if status.ActiveAccount.Name != "Renamed" {
+		t.Fatalf("ActiveAccount.Name = %q, want %q", status.ActiveAccount.Name, "Renamed")
 	}
 }
 
@@ -624,6 +661,76 @@ func TestSwitchToNextAccountNotInstalled(t *testing.T) {
 
 	if err != ErrToolNotInstalled {
 		t.Errorf("Expected ErrToolNotInstalled, got %v", err)
+	}
+}
+
+func TestSwitchToNextAccountReturnsSchemaErrorOnInvalidJSONSuccess(t *testing.T) {
+	dir := t.TempDir()
+	fakeCAAM := filepath.Join(dir, "caam")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then\n" +
+		"  echo \"caam 1.2.3\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"switch\" ]; then\n" +
+		"  echo \"not-json\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"echo \"[]\"\n"
+	if err := os.WriteFile(fakeCAAM, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write fake caam: %v", err)
+	}
+
+	t.Setenv("PATH", dir)
+	adapter := NewCAAMAdapter()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := adapter.SwitchToNextAccount(ctx, "claude")
+	if err == nil {
+		t.Fatal("expected schema validation error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), ErrSchemaValidation.Error()) {
+		t.Fatalf("error = %v, want schema validation error", err)
+	}
+}
+
+func TestSwitchToNextAccountReturnsSchemaErrorOnSuccessFalseWithoutError(t *testing.T) {
+	dir := t.TempDir()
+	fakeCAAM := filepath.Join(dir, "caam")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then\n" +
+		"  echo \"caam 1.2.3\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"switch\" ]; then\n" +
+		"  echo '{\"success\":false,\"provider\":\"claude\"}'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"echo \"[]\"\n"
+	if err := os.WriteFile(fakeCAAM, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write fake caam: %v", err)
+	}
+
+	t.Setenv("PATH", dir)
+	adapter := NewCAAMAdapter()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := adapter.SwitchToNextAccount(ctx, "claude")
+	if err == nil {
+		t.Fatal("expected error for success=false without error details")
+	}
+	if result == nil {
+		t.Fatal("expected parsed result payload")
+	}
+	if result.Success {
+		t.Fatal("expected success=false in parsed result")
+	}
+	if !strings.Contains(err.Error(), ErrSchemaValidation.Error()) {
+		t.Fatalf("error = %v, want schema validation error", err)
 	}
 }
 

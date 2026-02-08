@@ -59,6 +59,8 @@ type depCheck struct {
 	InstallHint string
 }
 
+var depVersionTimeout = 2 * time.Second
+
 // DepsInput is the kernel input for core.deps.
 type DepsInput struct {
 	Verbose bool `json:"verbose,omitempty"`
@@ -461,12 +463,19 @@ func checkDepWithPath(dep depCheck) (status string, version string, path string)
 
 	// Get version if possible
 	if len(dep.VersionArgs) > 0 {
-		cmd := exec.Command(dep.Command, dep.VersionArgs...)
+		ctx, cancel := context.WithTimeout(context.Background(), depVersionTimeout)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, dep.Command, dep.VersionArgs...)
 		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return "found", "", path
+
+		// Some commands print version info but exit non-zero (or get killed on timeout).
+		// Return any output we got, otherwise fall back to "installed".
+		if s := strings.TrimSpace(string(out)); s != "" {
+			return "found", s, path
 		}
-		return "found", strings.TrimSpace(string(out)), path
+		_ = err
+		return "found", "", path
 	}
 
 	return "found", "", path

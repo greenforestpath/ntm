@@ -2,10 +2,14 @@ package coordinator
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
+	"github.com/Dicklesworthstone/ntm/internal/status"
 )
 
 func TestNewSessionCoordinator(t *testing.T) {
@@ -212,6 +216,68 @@ func TestEventsChannel(t *testing.T) {
 	}
 }
 
+func TestEmitEvent_PublishesToEventsBus(t *testing.T) {
+	c := New("test-session", "/tmp/test", nil, "TestAgent")
+
+	var (
+		mu         sync.Mutex
+		eventsSeen []events.BusEvent
+	)
+	unsub := events.Subscribe("agent.idle", func(e events.BusEvent) {
+		mu.Lock()
+		eventsSeen = append(eventsSeen, e)
+		mu.Unlock()
+	})
+	defer unsub()
+
+	agent := &AgentState{
+		PaneID:    "%0",
+		PaneIndex: 2,
+		AgentType: "cc",
+		Status:    robot.StateWaiting,
+	}
+	c.emitEvent(agent, robot.StateGenerating)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(eventsSeen)
+		var last events.BusEvent
+		if n > 0 {
+			last = eventsSeen[n-1]
+		}
+		mu.Unlock()
+
+		if last != nil {
+			if last.EventType() != "agent.idle" {
+				t.Fatalf("EventType=%q, want %q", last.EventType(), "agent.idle")
+			}
+			if last.EventSession() != "test-session" {
+				t.Fatalf("EventSession=%q, want %q", last.EventSession(), "test-session")
+			}
+
+			typed, ok := last.(busCoordinatorEvent)
+			if !ok {
+				t.Fatalf("event type=%T, want %T", last, busCoordinatorEvent{})
+			}
+			if typed.AgentID != "%0" {
+				t.Fatalf("AgentID=%q, want %q", typed.AgentID, "%0")
+			}
+			if typed.PrevType != string(robot.StateGenerating) {
+				t.Fatalf("PrevType=%q, want %q", typed.PrevType, string(robot.StateGenerating))
+			}
+			if typed.NewType != string(robot.StateWaiting) {
+				t.Fatalf("NewType=%q, want %q", typed.NewType, string(robot.StateWaiting))
+			}
+			return
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("timeout waiting for agent.idle bus event")
+}
+
 func TestStartStop(t *testing.T) {
 	c := New("test-session", "/tmp/test", nil, "TestAgent")
 	c.config.PollInterval = 100 * time.Millisecond
@@ -290,5 +356,254 @@ func TestFormatDuration(t *testing.T) {
 		if result != tt.expected {
 			t.Errorf("formatDuration(%v) = %q, expected %q", tt.d, result, tt.expected)
 		}
+	}
+}
+
+// =============================================================================
+// mapStatusToRobotState tests
+// =============================================================================
+
+func TestMapStatusToRobotState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input status.AgentState
+		want  robot.AgentState
+	}{
+		{"idle maps to waiting", status.StateIdle, robot.StateWaiting},
+		{"working maps to generating", status.StateWorking, robot.StateGenerating},
+		{"error maps to error", status.StateError, robot.StateError},
+		{"unknown maps to unknown", status.StateUnknown, robot.StateUnknown},
+		{"arbitrary string maps to unknown", status.AgentState("something_else"), robot.StateUnknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := mapStatusToRobotState(tt.input)
+			if got != tt.want {
+				t.Errorf("mapStatusToRobotState(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// formatDigestMarkdown tests
+// =============================================================================
+
+func TestFormatDigestMarkdown(t *testing.T) {
+	t.Parallel()
+
+	c := New("my-session", "/tmp/test", nil, "OrangeFox")
+
+	now := time.Now()
+	digest := DigestSummary{
+		Session:     "my-session",
+		GeneratedAt: now,
+		AgentCount:  3,
+		ActiveCount: 2,
+		IdleCount:   1,
+		ErrorCount:  0,
+		AgentStatuses: []AgentDigestStatus{
+			{PaneIndex: 0, AgentType: "cc", Status: "generating", ContextUsage: 45.0},
+			{PaneIndex: 1, AgentType: "cod", Status: "waiting", ContextUsage: 30.0, IdleFor: "5m"},
+			{PaneIndex: 2, AgentType: "gmi", Status: "generating", ContextUsage: 60.0},
+		},
+	}
+
+	body := c.formatDigestMarkdown(digest)
+
+	checks := []string{
+		"# Session Digest: my-session",
+		"**Total Agents:** 3",
+		"**Active:** 2",
+		"**Idle:** 1",
+		"## Agent Status",
+		"| Pane | Type | Status | Context | Idle For |",
+		"OrangeFox",
+		"cc",
+		"cod",
+		"gmi",
+		"5m",
+	}
+	for _, want := range checks {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected body to contain %q", want)
+		}
+	}
+
+	// No errors, so should NOT contain the error emoji line
+	if strings.Contains(body, "⚠️") {
+		t.Error("expected no error warning emoji when ErrorCount is 0")
+	}
+}
+
+func TestFormatDigestMarkdown_WithErrors(t *testing.T) {
+	t.Parallel()
+
+	c := New("err-session", "/tmp/test", nil, "CoordBot")
+
+	digest := DigestSummary{
+		Session:     "err-session",
+		GeneratedAt: time.Now(),
+		AgentCount:  2,
+		ActiveCount: 0,
+		IdleCount:   1,
+		ErrorCount:  1,
+		AgentStatuses: []AgentDigestStatus{
+			{PaneIndex: 0, AgentType: "cc", Status: "error", ContextUsage: 90.0},
+		},
+		Alerts: []string{"Agent 0 (cc) in error state", "Agent 0 (cc) context at 90%"},
+	}
+
+	body := c.formatDigestMarkdown(digest)
+
+	// Verify error count appears with warning
+	if !strings.Contains(body, "**Errors:** 1 ⚠️") {
+		t.Error("expected error count with warning emoji")
+	}
+
+	// Verify alerts section present
+	if !strings.Contains(body, "## Alerts") {
+		t.Error("expected Alerts section")
+	}
+	if !strings.Contains(body, "Agent 0 (cc) in error state") {
+		t.Error("expected error alert text")
+	}
+}
+
+func TestEmitEvent_AgentBusy(t *testing.T) {
+	c := New("test-session", "/tmp/test", nil, "TestAgent")
+
+	var (
+		mu    sync.Mutex
+		found bool
+	)
+	unsub := events.Subscribe("agent.busy", func(e events.BusEvent) {
+		mu.Lock()
+		found = true
+		mu.Unlock()
+	})
+	defer unsub()
+
+	agent := &AgentState{
+		PaneID:    "%0",
+		PaneIndex: 1,
+		AgentType: "cc",
+		Status:    robot.StateGenerating,
+	}
+	c.emitEvent(agent, robot.StateWaiting)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		done := found
+		mu.Unlock()
+		if done {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timeout waiting for agent.busy bus event")
+}
+
+func TestEmitEvent_AgentError(t *testing.T) {
+	c := New("test-session", "/tmp/test", nil, "TestAgent")
+
+	agent := &AgentState{
+		PaneID:    "%0",
+		PaneIndex: 1,
+		AgentType: "cc",
+		Status:    robot.StateError,
+	}
+	// Should emit agent.error event (channel event)
+	c.emitEvent(agent, robot.StateWaiting)
+
+	select {
+	case ev := <-c.Events():
+		if ev.Type != EventAgentError {
+			t.Errorf("expected EventAgentError, got %v", ev.Type)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for error event")
+	}
+}
+
+func TestEmitEvent_AgentRecovered(t *testing.T) {
+	c := New("test-session", "/tmp/test", nil, "TestAgent")
+
+	var (
+		mu    sync.Mutex
+		found bool
+	)
+	unsub := events.Subscribe("agent.recovered", func(e events.BusEvent) {
+		mu.Lock()
+		found = true
+		mu.Unlock()
+	})
+	defer unsub()
+
+	agent := &AgentState{
+		PaneID:    "%0",
+		PaneIndex: 1,
+		AgentType: "cc",
+		Status:    robot.StateStalled, // Not Waiting/Generating/Thinking/Error
+	}
+	// Previous was error, now stalled → recovered (not caught by earlier cases)
+	c.emitEvent(agent, robot.StateError)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		done := found
+		mu.Unlock()
+		if done {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timeout waiting for agent.recovered bus event")
+}
+
+func TestEmitEvent_NoEventForSameStatus(t *testing.T) {
+	c := New("test-session", "/tmp/test", nil, "TestAgent")
+
+	agent := &AgentState{
+		PaneID:    "%0",
+		PaneIndex: 1,
+		AgentType: "cc",
+		Status:    robot.StateWaiting,
+	}
+	// Same status → default case → no event
+	c.emitEvent(agent, robot.StateWaiting)
+
+	select {
+	case <-c.Events():
+		t.Error("should not emit event for same status")
+	case <-time.After(50 * time.Millisecond):
+		// Expected: no event
+	}
+}
+
+func TestFormatDigestMarkdown_IdleForDash(t *testing.T) {
+	t.Parallel()
+
+	c := New("test-session", "/tmp/test", nil, "Bot")
+
+	digest := DigestSummary{
+		Session:     "test-session",
+		GeneratedAt: time.Now(),
+		AgentStatuses: []AgentDigestStatus{
+			{PaneIndex: 0, AgentType: "cc", Status: "generating", ContextUsage: 50.0, IdleFor: ""},
+		},
+	}
+
+	body := c.formatDigestMarkdown(digest)
+
+	// Empty IdleFor should render as "-"
+	if !strings.Contains(body, "| - |") {
+		t.Error("expected '-' for empty IdleFor in table")
 	}
 }

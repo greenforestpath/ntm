@@ -57,6 +57,15 @@ func runRespawn(session string, force bool, panesFlag string, agentType string, 
 		return err
 	}
 
+	res, err := ResolveSession(session, nil)
+	if err != nil {
+		return err
+	}
+	if res.Session == "" {
+		return fmt.Errorf("session is required")
+	}
+	session = res.Session
+
 	if !tmux.SessionExists(session) {
 		return fmt.Errorf("session '%s' not found", session)
 	}

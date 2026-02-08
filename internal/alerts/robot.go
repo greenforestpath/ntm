@@ -61,15 +61,20 @@ func GetAlertStrings(cfg Config) []string {
 	alerts := GetActiveAlerts(cfg)
 	messages := make([]string, len(alerts))
 	for i, alert := range alerts {
-		messages[i] = alert.Message
-		if alert.Session != "" {
-			messages[i] = alert.Session + ": " + messages[i]
-		}
-		if alert.Pane != "" {
-			messages[i] = messages[i] + " (pane " + alert.Pane + ")"
-		}
+		messages[i] = formatAlertString(alert)
 	}
 	return messages
+}
+
+func formatAlertString(alert Alert) string {
+	msg := alert.Message
+	if alert.Session != "" {
+		msg = alert.Session + ": " + msg
+	}
+	if alert.Pane != "" {
+		msg = msg + " (pane " + alert.Pane + ")"
+	}
+	return msg
 }
 
 // ToConfigAlerts converts config.AlertsConfig to alerts.Config

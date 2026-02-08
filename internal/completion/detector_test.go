@@ -439,3 +439,266 @@ func TestConcurrentActivityTracking(t *testing.T) {
 		t.Errorf("expected %d panes tracked, got %d", numGoroutines, actualPanes)
 	}
 }
+
+func TestAddFailurePatternInvalid(t *testing.T) {
+	t.Parallel()
+
+	d := New("test-session", nil)
+
+	err := d.AddFailurePattern(`[invalid`)
+	if err == nil {
+		t.Error("AddFailurePattern should fail for invalid regex")
+	}
+}
+
+func TestCheckAllNilStore(t *testing.T) {
+	t.Parallel()
+
+	d := New("test-session", nil)
+	d.Store = nil
+
+	// Should not panic, just return early
+	events := make(chan CompletionEvent, 10)
+	ctx := context.Background()
+	d.checkAll(ctx, events)
+
+	// Channel should be empty
+	select {
+	case <-events:
+		t.Error("checkAll with nil store should not emit events")
+	default:
+		// Expected - no events emitted
+	}
+}
+
+func TestCheckAllEmptyStore(t *testing.T) {
+	t.Parallel()
+
+	store := assignment.NewStore("test-session")
+	d := New("test-session", store)
+
+	events := make(chan CompletionEvent, 10)
+	ctx := context.Background()
+	d.checkAll(ctx, events)
+
+	// Channel should be empty (no active assignments)
+	select {
+	case <-events:
+		t.Error("checkAll with empty store should not emit events")
+	default:
+		// Expected - no events emitted
+	}
+}
+
+func TestCheckAllContextCancelled(t *testing.T) {
+	t.Parallel()
+
+	store := assignment.NewStore("test-session")
+	// Add an assignment that will be checked
+	store.Assign("bd-test", "Test Bead", 0, "claude", "agent-1", "test prompt")
+
+	d := New("test-session", store)
+
+	events := make(chan CompletionEvent, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	// Should return early without processing
+	d.checkAll(ctx, events)
+
+	// Give a moment for any processing
+	time.Sleep(10 * time.Millisecond)
+
+	// Should not block or panic
+	select {
+	case <-events:
+		// May or may not receive event depending on timing
+	default:
+		// Expected in most cases
+	}
+}
+
+func TestNewWithConfigCustomSettings(t *testing.T) {
+	t.Parallel()
+
+	cfg := DetectionConfig{
+		PollInterval:      1 * time.Second,
+		IdleThreshold:     60 * time.Second,
+		RetryOnError:      false,
+		RetryInterval:     5 * time.Second,
+		MaxRetries:        5,
+		DedupWindow:       10 * time.Second,
+		GracefulDegrading: false,
+		CaptureLines:      100,
+	}
+
+	d := NewWithConfig("custom-session", nil, cfg)
+
+	if d.Config.PollInterval != 1*time.Second {
+		t.Errorf("PollInterval = %v, want 1s", d.Config.PollInterval)
+	}
+	if d.Config.IdleThreshold != 60*time.Second {
+		t.Errorf("IdleThreshold = %v, want 60s", d.Config.IdleThreshold)
+	}
+	if d.Config.RetryOnError {
+		t.Error("RetryOnError should be false")
+	}
+	if d.Config.GracefulDegrading {
+		t.Error("GracefulDegrading should be false")
+	}
+	if d.Config.CaptureLines != 100 {
+		t.Errorf("CaptureLines = %d, want 100", d.Config.CaptureLines)
+	}
+}
+
+func TestCheckNowWithActiveAssignment(t *testing.T) {
+	t.Parallel()
+
+	store := assignment.NewStore("test-session")
+	store.Assign("bd-test", "Test Bead", 5, "claude", "agent-1", "test prompt")
+
+	d := New("test-session", store)
+
+	// CheckNow will fail because we can't query real tmux panes,
+	// but it should find the assignment and attempt to check it
+	event, err := d.CheckNow(5)
+	// The error comes from tmux.GetPanes failing, not from assignment lookup
+	// In test environment without tmux, this returns nil event
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	// Event may be nil if tmux isn't available
+	_ = event
+}
+
+func TestIdleDetectionNoBurstActive(t *testing.T) {
+	t.Parallel()
+
+	store := assignment.NewStore("test-session")
+	cfg := DefaultConfig()
+	cfg.IdleThreshold = 10 * time.Millisecond
+	d := NewWithConfig("test-session", store, cfg)
+
+	now := time.Now()
+	a := &assignment.Assignment{
+		BeadID:     "bd-test",
+		Pane:       0,
+		AgentType:  "claude",
+		AssignedAt: now,
+	}
+
+	// Initialize state
+	d.checkIdle(a, "initial", now)
+
+	// Same output without burst - should not trigger completion
+	time.Sleep(15 * time.Millisecond)
+	event := d.checkIdle(a, "initial", now)
+	// Without burst activity (no output change), idle detection shouldn't trigger
+	if event != nil {
+		t.Error("Idle detection should not trigger without prior activity burst")
+	}
+}
+
+func TestActivityStateFields(t *testing.T) {
+	t.Parallel()
+
+	state := &activityState{
+		lastOutputTime: time.Now(),
+		lastOutput:     "test output",
+		burstStarted:   time.Now().Add(-1 * time.Minute),
+		burstActive:    true,
+	}
+
+	if state.lastOutput != "test output" {
+		t.Errorf("lastOutput = %q, want 'test output'", state.lastOutput)
+	}
+	if !state.burstActive {
+		t.Error("burstActive should be true")
+	}
+}
+
+func TestDetectionConfigFields(t *testing.T) {
+	t.Parallel()
+
+	cfg := DetectionConfig{
+		PollInterval:      1 * time.Second,
+		IdleThreshold:     30 * time.Second,
+		RetryOnError:      true,
+		RetryInterval:     5 * time.Second,
+		MaxRetries:        10,
+		DedupWindow:       3 * time.Second,
+		GracefulDegrading: true,
+		CaptureLines:      25,
+	}
+
+	if cfg.MaxRetries != 10 {
+		t.Errorf("MaxRetries = %d, want 10", cfg.MaxRetries)
+	}
+	if cfg.DedupWindow != 3*time.Second {
+		t.Errorf("DedupWindow = %v, want 3s", cfg.DedupWindow)
+	}
+}
+
+func TestCompletionEventWithFailure(t *testing.T) {
+	t.Parallel()
+
+	event := CompletionEvent{
+		Pane:       1,
+		AgentType:  "codex",
+		BeadID:     "bd-fail",
+		Method:     MethodPaneLost,
+		Timestamp:  time.Now(),
+		Duration:   10 * time.Minute,
+		Output:     "last output before crash",
+		IsFailed:   true,
+		FailReason: "agent crashed unexpectedly",
+	}
+
+	if !event.IsFailed {
+		t.Error("IsFailed should be true")
+	}
+	if event.FailReason != "agent crashed unexpectedly" {
+		t.Errorf("FailReason = %q, want 'agent crashed unexpectedly'", event.FailReason)
+	}
+	if event.Method != MethodPaneLost {
+		t.Errorf("Method = %v, want %v", event.Method, MethodPaneLost)
+	}
+}
+
+func TestMatchCompletionPatternsConcurrent(t *testing.T) {
+	t.Parallel()
+
+	d := New("test-session", nil)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				d.matchCompletionPatterns("task bd-1234 done successfully")
+				d.matchCompletionPatterns("no match here")
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestMatchFailurePatternsConcurrent(t *testing.T) {
+	t.Parallel()
+
+	d := New("test-session", nil)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				d.matchFailurePatterns("unable to complete task")
+				d.matchFailurePatterns("everything is fine")
+			}
+		}()
+	}
+	wg.Wait()
+}

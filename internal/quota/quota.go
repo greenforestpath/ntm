@@ -86,8 +86,12 @@ type Tracker struct {
 	cache        map[string]*cachedQuota // keyed by paneID
 	cacheTTL     time.Duration
 	pollInterval time.Duration
-	pollers      map[string]context.CancelFunc // active pollers by paneID
-	fetcher      Fetcher                       // pluggable fetcher for testing
+	pollers      map[string]*pollerHandle // active pollers by paneID
+	fetcher      Fetcher                  // pluggable fetcher for testing
+}
+
+type pollerHandle struct {
+	cancel context.CancelFunc
 }
 
 // Fetcher interface for quota fetching (allows mocking in tests)
@@ -133,7 +137,7 @@ func NewTracker(opts ...TrackerOption) *Tracker {
 		cache:        make(map[string]*cachedQuota),
 		cacheTTL:     5 * time.Minute, // Default 5 min cache
 		pollInterval: 2 * time.Minute, // Default poll every 2 min
-		pollers:      make(map[string]context.CancelFunc),
+		pollers:      make(map[string]*pollerHandle),
 	}
 
 	for _, opt := range opts {
@@ -192,15 +196,34 @@ func (t *Tracker) StartPolling(ctx context.Context, paneID string, provider Prov
 	t.mu.Lock()
 
 	// Cancel existing poller if any
-	if cancel, ok := t.pollers[paneID]; ok {
-		cancel()
+	if handle, ok := t.pollers[paneID]; ok {
+		handle.cancel()
+		delete(t.pollers, paneID)
 	}
-
-	pollCtx, cancel := context.WithCancel(ctx)
-	t.pollers[paneID] = cancel
 	t.mu.Unlock()
 
-	go t.pollLoop(pollCtx, paneID, provider)
+	handle := &pollerHandle{}
+	ready := make(chan context.CancelFunc, 1)
+
+	go func() {
+		pollCtx, cancel := context.WithCancel(ctx)
+		ready <- cancel
+		defer cancel()
+
+		t.pollLoop(pollCtx, paneID, provider)
+
+		t.mu.Lock()
+		if t.pollers[paneID] == handle {
+			delete(t.pollers, paneID)
+		}
+		t.mu.Unlock()
+	}()
+
+	cancel := <-ready
+	t.mu.Lock()
+	handle.cancel = cancel
+	t.pollers[paneID] = handle
+	t.mu.Unlock()
 }
 
 // StopPolling stops polling for a pane
@@ -208,8 +231,8 @@ func (t *Tracker) StopPolling(paneID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if cancel, ok := t.pollers[paneID]; ok {
-		cancel()
+	if handle, ok := t.pollers[paneID]; ok {
+		handle.cancel()
 		delete(t.pollers, paneID)
 	}
 }
@@ -219,8 +242,8 @@ func (t *Tracker) StopAllPolling() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	for paneID, cancel := range t.pollers {
-		cancel()
+	for paneID, handle := range t.pollers {
+		handle.cancel()
 		delete(t.pollers, paneID)
 	}
 }
@@ -238,6 +261,10 @@ func (t *Tracker) pollLoop(ctx context.Context, paneID string, provider Provider
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// If we were cancelled concurrently with the tick, avoid doing one last fetch.
+			if ctx.Err() != nil {
+				return
+			}
 			_, _ = t.QueryQuota(ctx, paneID, provider)
 		}
 	}

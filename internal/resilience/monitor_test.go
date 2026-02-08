@@ -186,7 +186,7 @@ func TestStartAndStop(t *testing.T) {
 
 	// Mock checkSessionFn to avoid actual tmux calls
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents:  []health.AgentHealth{},
@@ -241,7 +241,7 @@ func TestCheckHealthWithHealthyAgent(t *testing.T) {
 	defer restore()
 
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents: []health.AgentHealth{
@@ -281,7 +281,7 @@ func TestCheckHealthDetectsCrash(t *testing.T) {
 	defer restore()
 
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents: []health.AgentHealth{
@@ -333,7 +333,7 @@ func TestCheckHealthDetectsPaneMissing(t *testing.T) {
 
 	setHooksLocked(func() {
 		// Return empty agents list - pane doesn't exist
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents:  []health.AgentHealth{},
@@ -375,7 +375,7 @@ func TestCheckHealthDetectsRateLimit(t *testing.T) {
 	defer restore()
 
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents: []health.AgentHealth{
@@ -423,7 +423,7 @@ func TestCheckHealthRateLimitUpdatesTracker(t *testing.T) {
 	defer restore()
 
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents: []health.AgentHealth{
@@ -464,7 +464,7 @@ func TestCheckHealthRateLimitCleared(t *testing.T) {
 	defer restore()
 
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents: []health.AgentHealth{
@@ -509,7 +509,7 @@ func TestCheckHealthRateLimitClearedRecordsSuccess(t *testing.T) {
 	defer restore()
 
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return &health.SessionHealth{
 				Session: session,
 				Agents: []health.AgentHealth{
@@ -550,7 +550,7 @@ func TestCheckHealthError(t *testing.T) {
 	defer restore()
 
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			return nil, fmt.Errorf("session check failed")
 		}
 	})
@@ -779,7 +779,7 @@ func TestMonitorLoopRespectsMinCheckInterval(t *testing.T) {
 	var checkCount int
 	var mu sync.Mutex
 	setHooksLocked(func() {
-		checkSessionFn = func(session string) (*health.SessionHealth, error) {
+		checkSessionFn = func(ctx context.Context, session string) (*health.SessionHealth, error) {
 			mu.Lock()
 			checkCount++
 			mu.Unlock()
@@ -958,5 +958,119 @@ func TestTriggerRotationAssistanceEmptySession(t *testing.T) {
 
 	if displayCalled {
 		t.Error("should not display tmux message for empty session")
+	}
+}
+
+func TestEnsureRateLimitTracker_LazyInit(t *testing.T) {
+	cfg := config.Default()
+	cfg.Resilience.RateLimit.Detect = true
+	projectDir := t.TempDir()
+
+	m := NewMonitor("test-session", projectDir, cfg, true)
+	// NewMonitor already creates the tracker when Detect=true.
+	// Nil it to exercise the lazy init path in ensureRateLimitTracker.
+	m.rateLimitTracker = nil
+
+	tracker := m.ensureRateLimitTracker()
+	if tracker == nil {
+		t.Fatal("ensureRateLimitTracker should create tracker when Detect=true")
+	}
+	// Verify it was cached
+	if m.rateLimitTracker != tracker {
+		t.Error("ensureRateLimitTracker should cache the tracker")
+	}
+	// Calling again should return cached instance
+	tracker2 := m.ensureRateLimitTracker()
+	if tracker2 != tracker {
+		t.Error("expected same tracker on second call")
+	}
+}
+
+func TestEnsureRateLimitTracker_DisabledReturnsNil(t *testing.T) {
+	cfg := config.Default()
+	cfg.Resilience.RateLimit.Detect = false
+	m := NewMonitor("test-session", t.TempDir(), cfg, true)
+	m.rateLimitTracker = nil
+
+	tracker := m.ensureRateLimitTracker()
+	if tracker != nil {
+		t.Error("ensureRateLimitTracker should return nil when Detect=false")
+	}
+}
+
+func TestRecordRateLimitHit_Direct(t *testing.T) {
+	cfg := config.Default()
+	cfg.Resilience.RateLimit.Detect = true
+	projectDir := t.TempDir()
+	m := NewMonitor("test-session", projectDir, cfg, true)
+
+	m.recordRateLimitHit("cod", 30)
+
+	state := m.rateLimitTracker.GetProviderState("openai")
+	if state == nil {
+		t.Fatal("expected rate limit state for openai")
+	}
+	if state.TotalRateLimits != 1 {
+		t.Errorf("TotalRateLimits = %d, want 1", state.TotalRateLimits)
+	}
+}
+
+func TestRecordRateLimitHit_DisabledIsNoOp(t *testing.T) {
+	cfg := config.Default()
+	cfg.Resilience.RateLimit.Detect = false
+	m := NewMonitor("test-session", t.TempDir(), cfg, true)
+
+	// Should not panic
+	m.recordRateLimitHit("cc", 60)
+}
+
+func TestRecordRateLimitSuccess_Direct(t *testing.T) {
+	cfg := config.Default()
+	cfg.Resilience.RateLimit.Detect = true
+	projectDir := t.TempDir()
+	m := NewMonitor("test-session", projectDir, cfg, true)
+
+	m.recordRateLimitSuccess("cod")
+
+	state := m.rateLimitTracker.GetProviderState("openai")
+	if state == nil {
+		t.Fatal("expected rate limit state for openai")
+	}
+	if state.TotalSuccesses != 1 {
+		t.Errorf("TotalSuccesses = %d, want 1", state.TotalSuccesses)
+	}
+}
+
+func TestRecordRateLimitSuccess_DisabledIsNoOp(t *testing.T) {
+	cfg := config.Default()
+	cfg.Resilience.RateLimit.Detect = false
+	m := NewMonitor("test-session", t.TempDir(), cfg, true)
+
+	// Should not panic
+	m.recordRateLimitSuccess("cc")
+}
+
+func TestMonitorStart_NilContextAndDoubleStartAreSafe(t *testing.T) {
+	cfg := config.Default()
+	cfg.Resilience.AutoRestart = false
+
+	m := NewMonitor("test-session", t.TempDir(), cfg, false)
+
+	// Should not panic on nil context.
+	m.Start(nil)
+
+	// Calling Start twice should be a no-op (monitor is single-use due to done channel).
+	m.Start(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		m.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() hung after Start(nil) + Start()")
 	}
 }

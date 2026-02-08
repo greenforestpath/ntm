@@ -1,9 +1,67 @@
 package swarm
 
 import (
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
+
+func writeFakeCAAM(t *testing.T, dir, stateFile string) string {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("fake caam helper uses /bin/sh")
+	}
+
+	path := filepath.Join(dir, "caam")
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+
+STATE_FILE=%q
+
+if [ "${1:-}" = "list" ] && [ "${2:-}" = "--json" ]; then
+  active="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  if [ "$active" = "claude-b" ]; then
+    echo '[{"id":"claude-a","provider":"claude","email":"a@example.com","active":false,"rate_limited":false},{"id":"claude-b","provider":"claude","email":"b@example.com","active":true,"rate_limited":true}]'
+  else
+    echo '[{"id":"claude-a","provider":"claude","email":"a@example.com","active":true,"rate_limited":false},{"id":"claude-b","provider":"claude","email":"b@example.com","active":false,"rate_limited":true}]'
+  fi
+  exit 0
+fi
+
+if [ "${1:-}" = "switch" ] && [ "${2:-}" = "claude" ] && [ "${3:-}" = "--next" ] && [ "${4:-}" = "--json" ]; then
+  prev="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  if [ "$prev" = "claude-b" ]; then
+    next="claude-a"
+  else
+    next="claude-b"
+  fi
+  echo "$next" > "$STATE_FILE"
+  echo "{\"success\":true,\"provider\":\"claude\",\"previous_account\":\"$prev\",\"new_account\":\"$next\",\"accounts_remaining\":1}"
+  exit 0
+fi
+
+if [ "${1:-}" = "switch" ]; then
+  acct="${2:-}"
+  echo "$acct" > "$STATE_FILE"
+  exit 0
+fi
+
+echo "unexpected args" >&2
+exit 2
+`, stateFile)
+
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake caam: %v", err)
+	}
+
+	return path
+}
 
 func TestNewAccountRotator(t *testing.T) {
 	rotator := NewAccountRotator()
@@ -618,6 +676,231 @@ func TestAccountRotatorCooldownDurationRespected(t *testing.T) {
 	}
 	if contains(err.Error(), "cooldown active") {
 		t.Error("cooldown should have expired")
+	}
+}
+
+func TestAccountRotatorSwitchAccount_UsesJSONSwitchResult(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "state")
+	if err := os.WriteFile(stateFile, []byte("claude-a"), 0o644); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	caamPath := writeFakeCAAM(t, dir, stateFile)
+	rotator := NewAccountRotator().WithCaamPath(caamPath)
+
+	record, err := rotator.SwitchAccount("cc")
+	if err != nil {
+		t.Fatalf("SwitchAccount error: %v", err)
+	}
+	if record.Provider != "claude" {
+		t.Fatalf("Provider = %q, want claude", record.Provider)
+	}
+	if record.FromAccount != "claude-a" {
+		t.Fatalf("FromAccount = %q, want claude-a", record.FromAccount)
+	}
+	if record.ToAccount != "claude-b" {
+		t.Fatalf("ToAccount = %q, want claude-b", record.ToAccount)
+	}
+
+	info, err := rotator.GetCurrentAccount("cc")
+	if err != nil {
+		t.Fatalf("GetCurrentAccount error: %v", err)
+	}
+	if info == nil || info.AccountName != "claude-b" {
+		t.Fatalf("active account = %v, want claude-b", info)
+	}
+}
+
+func TestAccountRotatorListAvailableAccounts_FiltersRateLimited(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "state")
+	if err := os.WriteFile(stateFile, []byte("claude-a"), 0o644); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	caamPath := writeFakeCAAM(t, dir, stateFile)
+	rotator := NewAccountRotator().WithCaamPath(caamPath)
+
+	available, err := rotator.ListAvailableAccounts("cc")
+	if err != nil {
+		t.Fatalf("ListAvailableAccounts error: %v", err)
+	}
+	if len(available) != 1 {
+		t.Fatalf("available len = %d, want 1", len(available))
+	}
+	if available[0].AccountName != "claude-a" {
+		t.Fatalf("available[0].AccountName = %q, want claude-a", available[0].AccountName)
+	}
+	if available[0].RateLimited {
+		t.Fatalf("available[0].RateLimited = true, want false")
+	}
+}
+
+func TestAccountRotationHistory_RecordRotation_ComputesTimeSinceLast(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	h := NewAccountRotationHistory("", logger)
+
+	base := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
+	pane := "sess:1.1"
+
+	if err := h.RecordRotation(RotationRecord{
+		Provider:    "claude",
+		AgentType:   "cc",
+		FromAccount: "claude-a",
+		ToAccount:   "claude-b",
+		RotatedAt:   base,
+		SessionPane: pane,
+		TriggeredBy: "limit_hit",
+	}); err != nil {
+		t.Fatalf("RecordRotation 1: %v", err)
+	}
+
+	if err := h.RecordRotation(RotationRecord{
+		Provider:    "claude",
+		AgentType:   "cc",
+		FromAccount: "claude-b",
+		ToAccount:   "claude-c",
+		RotatedAt:   base.Add(10 * time.Minute),
+		SessionPane: pane,
+		TriggeredBy: "limit_hit",
+	}); err != nil {
+		t.Fatalf("RecordRotation 2: %v", err)
+	}
+
+	records := h.RecordsForPane(pane, 0)
+	if len(records) != 2 {
+		t.Fatalf("records len = %d, want 2", len(records))
+	}
+	if got, want := records[1].TimeSinceLast, 10*time.Minute; got != want {
+		t.Fatalf("TimeSinceLast = %v, want %v", got, want)
+	}
+}
+
+func TestAccountRotationHistory_SaveLoad_RoundTrip(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	dir := t.TempDir()
+	h := NewAccountRotationHistory(dir, logger)
+
+	base := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
+	pane := "sess:1.1"
+
+	if err := h.RecordRotation(RotationRecord{
+		Provider:    "openai",
+		AgentType:   "cod",
+		Project:     "/dp/foo",
+		FromAccount: "work",
+		ToAccount:   "personal",
+		RotatedAt:   base,
+		SessionPane: pane,
+		TriggeredBy: "limit_hit",
+	}); err != nil {
+		t.Fatalf("RecordRotation: %v", err)
+	}
+
+	path := filepath.Join(dir, ".ntm", "rotation_history.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected %s to exist: %v", path, err)
+	}
+
+	h2 := NewAccountRotationHistory(dir, logger)
+	if err := h2.LoadFromDir(dir); err != nil {
+		t.Fatalf("LoadFromDir: %v", err)
+	}
+
+	records := h2.RecordsForPane(pane, 0)
+	if len(records) != 1 {
+		t.Fatalf("records len = %d, want 1", len(records))
+	}
+	if records[0].ToAccount != "personal" {
+		t.Fatalf("ToAccount = %q, want personal", records[0].ToAccount)
+	}
+	if records[0].Project != "/dp/foo" {
+		t.Fatalf("Project = %q, want /dp/foo", records[0].Project)
+	}
+}
+
+func TestAccountRotationHistory_GetRotationStats(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	h := NewAccountRotationHistory("", logger)
+
+	base := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
+	pane := "sess:1.1"
+
+	// Three rotations for cc in one pane at 10s intervals.
+	for i, to := range []string{"a", "b", "a"} {
+		if err := h.RecordRotation(RotationRecord{
+			Provider:    "claude",
+			AgentType:   "cc",
+			FromAccount: "x",
+			ToAccount:   to,
+			RotatedAt:   base.Add(time.Duration(i) * 10 * time.Second),
+			SessionPane: pane,
+			TriggeredBy: "limit_hit",
+		}); err != nil {
+			t.Fatalf("RecordRotation %d: %v", i, err)
+		}
+	}
+
+	// One rotation for cod in a different pane.
+	if err := h.RecordRotation(RotationRecord{
+		Provider:    "openai",
+		AgentType:   "cod",
+		FromAccount: "x",
+		ToAccount:   "z",
+		RotatedAt:   base,
+		SessionPane: "sess:1.2",
+		TriggeredBy: "limit_hit",
+	}); err != nil {
+		t.Fatalf("RecordRotation cod: %v", err)
+	}
+
+	stats := h.GetRotationStats("cc")
+	if stats.TotalRotations != 3 {
+		t.Fatalf("TotalRotations = %d, want 3", stats.TotalRotations)
+	}
+	if got, want := stats.AccountUsage["a"], 2; got != want {
+		t.Fatalf("AccountUsage[a] = %d, want %d", got, want)
+	}
+	if got, want := stats.AccountUsage["b"], 1; got != want {
+		t.Fatalf("AccountUsage[b] = %d, want %d", got, want)
+	}
+	if got, want := stats.AvgTimeBetween, 10*time.Second; got != want {
+		t.Fatalf("AvgTimeBetween = %v, want %v", got, want)
+	}
+	if stats.UniquePanes != 1 {
+		t.Fatalf("UniquePanes = %d, want 1", stats.UniquePanes)
+	}
+}
+
+func TestAccountRotator_EnableRotationHistory_LoadsExistingHistory(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	dir := t.TempDir()
+
+	seed := NewAccountRotationHistory(dir, logger)
+	if err := seed.RecordRotation(RotationRecord{
+		Provider:    "claude",
+		AgentType:   "cc",
+		FromAccount: "a",
+		ToAccount:   "b",
+		RotatedAt:   time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC),
+		SessionPane: "sess:1.1",
+		TriggeredBy: "limit_hit",
+	}); err != nil {
+		t.Fatalf("seed RecordRotation: %v", err)
+	}
+
+	rotator := NewAccountRotator().WithLogger(logger)
+	if err := rotator.EnableRotationHistory(dir); err != nil {
+		t.Fatalf("EnableRotationHistory: %v", err)
+	}
+
+	records := rotator.rotationHistoryStore.RecordsForPane("sess:1.1", 0)
+	if len(records) != 1 {
+		t.Fatalf("records len = %d, want 1", len(records))
+	}
+	if records[0].ToAccount != "b" {
+		t.Fatalf("ToAccount = %q, want b", records[0].ToAccount)
 	}
 }
 

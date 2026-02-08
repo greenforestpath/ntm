@@ -1,6 +1,8 @@
 package ensemble
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -221,6 +223,137 @@ func TestDryRunSynthesis_Fields(t *testing.T) {
 	if synthesis.ConflictResolution != "voting" {
 		t.Errorf("expected ConflictResolution=voting, got %s", synthesis.ConflictResolution)
 	}
+}
+
+func TestDryRun_BasicPreset(t *testing.T) {
+	input := map[string]string{
+		"session":  "dryrun-basic",
+		"question": "Assess project health",
+		"preset":   "project-diagnosis",
+	}
+	logTestStartDryRun(t, input)
+
+	catalog, err := LoadModeCatalog()
+	logTestResultDryRun(t, err)
+	assertNoErrorDryRun(t, "load mode catalog", err)
+
+	registry := NewEnsembleRegistry(EmbeddedEnsembles, catalog)
+	preset := registry.Get(input["preset"])
+	logTestResultDryRun(t, map[string]any{"preset_found": preset != nil})
+	assertTrueDryRun(t, "preset found", preset != nil)
+
+	modeIDs, err := preset.ResolveIDs(catalog)
+	logTestResultDryRun(t, map[string]any{"preset": preset.Name, "modes": len(modeIDs), "err": err})
+	assertNoErrorDryRun(t, "resolve preset modes", err)
+	assertEqualDryRun(t, "preset name resolved", preset.Name, input["preset"])
+	assertTrueDryRun(t, "modes resolved", len(modeIDs) > 0)
+}
+
+func TestDryRun_CustomModes(t *testing.T) {
+	input := map[string]any{
+		"session":  "dryrun-custom",
+		"question": "Review architecture",
+		"modes":    []string{"deductive", "mathematical-proof"},
+	}
+	logTestStartDryRun(t, input)
+
+	catalog, err := LoadModeCatalog()
+	assertNoErrorDryRun(t, "load mode catalog", err)
+	refs := []ModeRef{
+		{ID: input["modes"].([]string)[0]},
+		{ID: input["modes"].([]string)[1]},
+	}
+	modeIDs, err := ResolveModeRefs(refs, catalog)
+	logTestResultDryRun(t, modeIDs)
+	assertNoErrorDryRun(t, "resolve custom mode refs", err)
+	assertTrueDryRun(t, "includes deductive", containsStringDryRun(modeIDs, "deductive"))
+	assertTrueDryRun(t, "includes mathematical-proof", containsStringDryRun(modeIDs, "mathematical-proof"))
+}
+
+func TestDryRun_OutputFormatting(t *testing.T) {
+	plan := &DryRunPlan{
+		GeneratedAt: time.Now().UTC(),
+		SessionName: "dryrun-format",
+		Question:    "Explain output formatting",
+		PresetUsed:  "project-diagnosis",
+		Modes: []DryRunMode{
+			{ID: "deductive", Code: "A1", Name: "Deductive"},
+		},
+		Budget: DryRunBudget{EstimatedTotalTokens: 4000, ModeCount: 1},
+		Validation: DryRunValidation{
+			Valid: true,
+		},
+	}
+	logTestStartDryRun(t, plan.SessionName)
+
+	data, err := json.MarshalIndent(plan, "", "  ")
+	logTestResultDryRun(t, string(data))
+	assertNoErrorDryRun(t, "marshal dryrun plan", err)
+	assertTrueDryRun(t, "includes session_name", strings.Contains(string(data), "\"session_name\""))
+	assertTrueDryRun(t, "includes preset_used", strings.Contains(string(data), "\"preset_used\""))
+}
+
+func TestDryRun_RobotJSON(t *testing.T) {
+	plan := &DryRunPlan{
+		GeneratedAt: time.Now().UTC(),
+		SessionName: "dryrun-robot",
+		Question:    "Robot JSON dryrun",
+		Validation:  DryRunValidation{Valid: true},
+	}
+	logTestStartDryRun(t, plan.SessionName)
+
+	data, err := json.Marshal(plan)
+	assertNoErrorDryRun(t, "marshal plan", err)
+
+	var decoded map[string]any
+	err = json.Unmarshal(data, &decoded)
+	logTestResultDryRun(t, decoded)
+	assertNoErrorDryRun(t, "unmarshal plan json", err)
+	assertEqualDryRun(t, "session_name field", decoded["session_name"], plan.SessionName)
+	assertEqualDryRun(t, "question field", decoded["question"], plan.Question)
+}
+
+func logTestStartDryRun(t *testing.T, input any) {
+	t.Helper()
+	t.Logf("TEST: %s - starting with input: %v", t.Name(), input)
+}
+
+func logTestResultDryRun(t *testing.T, result any) {
+	t.Helper()
+	t.Logf("TEST: %s - got result: %v", t.Name(), result)
+}
+
+func assertNoErrorDryRun(t *testing.T, desc string, err error) {
+	t.Helper()
+	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
+	if err != nil {
+		t.Fatalf("%s: %v", desc, err)
+	}
+}
+
+func assertEqualDryRun(t *testing.T, desc string, got, want any) {
+	t.Helper()
+	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
+	if got != want {
+		t.Fatalf("%s: got %v want %v", desc, got, want)
+	}
+}
+
+func assertTrueDryRun(t *testing.T, desc string, ok bool) {
+	t.Helper()
+	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
+	if !ok {
+		t.Fatalf("assertion failed: %s", desc)
+	}
+}
+
+func containsStringDryRun(values []string, target string) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestDryRunValidation_Fields(t *testing.T) {

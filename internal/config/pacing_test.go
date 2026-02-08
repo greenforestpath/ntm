@@ -378,3 +378,189 @@ global_pause_duration_ms = 45000
 		t.Errorf("ValidateSpawnPacingConfig() error = %v", err)
 	}
 }
+
+// =============================================================================
+// AgentPacingConfig duration helpers
+// =============================================================================
+
+func TestAgentPacingConfig_RampUpDelays(t *testing.T) {
+	t.Parallel()
+
+	cfg := &AgentPacingConfig{
+		ClaudeRampUpDelayMs:  5000,
+		CodexRampUpDelayMs:   3000,
+		GeminiRampUpDelayMs:  4000,
+		CooldownOnFailureMs:  10000,
+	}
+
+	tests := []struct {
+		name string
+		got  time.Duration
+		want time.Duration
+	}{
+		{"ClaudeRampUpDelay", cfg.ClaudeRampUpDelay(), 5 * time.Second},
+		{"CodexRampUpDelay", cfg.CodexRampUpDelay(), 3 * time.Second},
+		{"GeminiRampUpDelay", cfg.GeminiRampUpDelay(), 4 * time.Second},
+		{"CooldownOnFailure", cfg.CooldownOnFailure(), 10 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if tt.got != tt.want {
+				t.Errorf("%s = %v, want %v", tt.name, tt.got, tt.want)
+			}
+		})
+	}
+}
+
+// TestValidateAgentPacingConfig_AllNegativeBranches exercises every negative-value
+// error branch in validateAgentPacingConfig individually.
+func TestValidateAgentPacingConfig_AllNegativeBranches(t *testing.T) {
+	t.Parallel()
+
+	fields := []struct {
+		name string
+		set  func(*AgentPacingConfig)
+	}{
+		{"ClaudeMaxConcurrent", func(c *AgentPacingConfig) { c.ClaudeMaxConcurrent = -1 }},
+		{"ClaudeRatePerSec", func(c *AgentPacingConfig) { c.ClaudeRatePerSec = -0.1 }},
+		{"ClaudeRampUpDelayMs", func(c *AgentPacingConfig) { c.ClaudeRampUpDelayMs = -1 }},
+		{"CodexMaxConcurrent", func(c *AgentPacingConfig) { c.CodexMaxConcurrent = -1 }},
+		{"CodexRatePerSec", func(c *AgentPacingConfig) { c.CodexRatePerSec = -0.1 }},
+		{"CodexRampUpDelayMs", func(c *AgentPacingConfig) { c.CodexRampUpDelayMs = -1 }},
+		{"GeminiMaxConcurrent", func(c *AgentPacingConfig) { c.GeminiMaxConcurrent = -1 }},
+		{"GeminiRatePerSec", func(c *AgentPacingConfig) { c.GeminiRatePerSec = -0.1 }},
+		{"GeminiRampUpDelayMs", func(c *AgentPacingConfig) { c.GeminiRampUpDelayMs = -1 }},
+		{"CooldownOnFailureMs", func(c *AgentPacingConfig) { c.CooldownOnFailureMs = -1 }},
+		{"RecoverySuccesses", func(c *AgentPacingConfig) { c.RecoverySuccesses = -1 }},
+	}
+
+	for _, f := range fields {
+		t.Run(f.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := &AgentPacingConfig{} // all zeros = valid
+			f.set(cfg)
+			err := validateAgentPacingConfig(cfg)
+			if err == nil {
+				t.Errorf("expected error for negative %s, got nil", f.name)
+			}
+		})
+	}
+
+	// All zeros should pass
+	t.Run("all zeros valid", func(t *testing.T) {
+		t.Parallel()
+		cfg := &AgentPacingConfig{}
+		if err := validateAgentPacingConfig(cfg); err != nil {
+			t.Errorf("all-zero config should be valid, got: %v", err)
+		}
+	})
+}
+
+// TestValidateHeadroomPacingConfig_AllBranches exercises every error branch
+// in validateHeadroomPacingConfig individually.
+func TestValidateHeadroomPacingConfig_AllBranches(t *testing.T) {
+	t.Parallel()
+
+	validCfg := func() HeadroomPacingConfig {
+		return HeadroomPacingConfig{
+			MinFreeMB:       512,
+			MinFreeDiskMB:   1024,
+			MaxLoadAverage:  8.0,
+			MaxOpenFiles:    50000,
+			CheckIntervalMs: 5000,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		modify  func(*HeadroomPacingConfig)
+		wantErr bool
+	}{
+		{"valid config", func(c *HeadroomPacingConfig) {}, false},
+		{"MinFreeMB negative", func(c *HeadroomPacingConfig) { c.MinFreeMB = -1 }, true},
+		{"MinFreeDiskMB negative", func(c *HeadroomPacingConfig) { c.MinFreeDiskMB = -1 }, true},
+		{"MaxLoadAverage negative", func(c *HeadroomPacingConfig) { c.MaxLoadAverage = -0.1 }, true},
+		{"MaxOpenFiles negative", func(c *HeadroomPacingConfig) { c.MaxOpenFiles = -1 }, true},
+		{"CheckIntervalMs below 100", func(c *HeadroomPacingConfig) { c.CheckIntervalMs = 99 }, true},
+		{"CheckIntervalMs exactly 100", func(c *HeadroomPacingConfig) { c.CheckIntervalMs = 100 }, false},
+		{"CheckIntervalMs zero", func(c *HeadroomPacingConfig) { c.CheckIntervalMs = 0 }, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := validCfg()
+			tc.modify(&cfg)
+			err := validateHeadroomPacingConfig(&cfg)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("validateHeadroomPacingConfig() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestAgentPacingConfig_ZeroDelays(t *testing.T) {
+	t.Parallel()
+
+	cfg := &AgentPacingConfig{}
+	if cfg.ClaudeRampUpDelay() != 0 {
+		t.Error("zero ClaudeRampUpDelayMs should yield 0 duration")
+	}
+	if cfg.CodexRampUpDelay() != 0 {
+		t.Error("zero CodexRampUpDelayMs should yield 0 duration")
+	}
+	if cfg.GeminiRampUpDelay() != 0 {
+		t.Error("zero GeminiRampUpDelayMs should yield 0 duration")
+	}
+	if cfg.CooldownOnFailure() != 0 {
+		t.Error("zero CooldownOnFailureMs should yield 0 duration")
+	}
+}
+
+// =============================================================================
+// validateBackoffPacingConfig (bd-4b4zf)
+// =============================================================================
+
+func TestValidateBackoffPacingConfig_AllBranches(t *testing.T) {
+	t.Parallel()
+
+	validCfg := func() BackoffPacingConfig {
+		return BackoffPacingConfig{
+			InitialDelayMs:         1000,
+			MaxDelayMs:             30000,
+			Multiplier:             2.0,
+			MaxConsecutiveFailures: 5,
+			GlobalPauseDurationMs:  10000,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		modify  func(*BackoffPacingConfig)
+		wantErr bool
+	}{
+		{"valid config", func(c *BackoffPacingConfig) {}, false},
+		{"InitialDelayMs negative", func(c *BackoffPacingConfig) { c.InitialDelayMs = -1 }, true},
+		{"MaxDelayMs less than InitialDelayMs", func(c *BackoffPacingConfig) { c.MaxDelayMs = 500 }, true},
+		{"Multiplier below 1.0", func(c *BackoffPacingConfig) { c.Multiplier = 0.5 }, true},
+		{"MaxConsecutiveFailures zero", func(c *BackoffPacingConfig) { c.MaxConsecutiveFailures = 0 }, true},
+		{"GlobalPauseDurationMs negative", func(c *BackoffPacingConfig) { c.GlobalPauseDurationMs = -1 }, true},
+		{"GlobalPauseDurationMs zero valid", func(c *BackoffPacingConfig) { c.GlobalPauseDurationMs = 0 }, false},
+		{"InitialDelayMs zero valid", func(c *BackoffPacingConfig) { c.InitialDelayMs = 0; c.MaxDelayMs = 0 }, false},
+		{"Multiplier exactly 1.0 valid", func(c *BackoffPacingConfig) { c.Multiplier = 1.0 }, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := validCfg()
+			tc.modify(&cfg)
+			err := validateBackoffPacingConfig(&cfg)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("validateBackoffPacingConfig() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}

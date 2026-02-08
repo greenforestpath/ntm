@@ -27,6 +27,11 @@ func NewParserWithConfig(cfg ParserConfig) Parser {
 // 4. Calculate confidence score
 // 5. Keep raw sample for debugging
 func (p *parserImpl) Parse(output string) (*AgentState, error) {
+	return p.ParseWithHint(output, AgentTypeUnknown)
+}
+
+// ParseWithHint analyzes terminal output with a known agent type hint.
+func (p *parserImpl) ParseWithHint(output string, hint AgentType) (*AgentState, error) {
 	// Strip ANSI codes for cleaner pattern matching
 	cleanOutput := stripANSICodes(output)
 
@@ -35,7 +40,11 @@ func (p *parserImpl) Parse(output string) (*AgentState, error) {
 	}
 
 	// Step 1: Detect agent type
-	state.Type = p.DetectAgentType(cleanOutput)
+	if hint != AgentTypeUnknown {
+		state.Type = hint
+	} else {
+		state.Type = p.DetectAgentType(cleanOutput)
+	}
 
 	// Step 2: Extract metrics based on agent type
 	p.extractMetrics(cleanOutput, state)
@@ -285,11 +294,7 @@ func (p *parserImpl) detectIdle(output string, agentType AgentType) bool {
 		return matchAnyRegex(lastLines, codIdlePatterns)
 	case AgentTypeGemini:
 		// Gemini is trickier - check for prompt or lack of working indicators
-		if matchAnyRegex(lastLines, gmiIdlePatterns) {
-			return true
-		}
-		// If no working patterns in last lines, likely idle
-		return !matchAny(lastLines, gmiWorkingPatterns)
+		return matchAnyRegex(lastLines, gmiIdlePatterns)
 	case AgentTypeCursor:
 		return matchAnyRegex(lastLines, cursorIdlePatterns)
 	case AgentTypeWindsurf:

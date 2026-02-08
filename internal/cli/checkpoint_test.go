@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,6 +129,57 @@ func TestTruncateStr(t *testing.T) {
 				t.Errorf("truncateStr(%q, %d) = %q, want %q", tt.s, tt.maxLen, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestFormatAge_WeekPlus tests the default case (>7 days) that returns a date format.
+func TestFormatAge_WeekPlus(t *testing.T) {
+	t.Parallel()
+
+	// 10 days ago
+	testTime := time.Now().Add(-10 * 24 * time.Hour)
+	got := formatAge(testTime)
+	// Should return something like "Jan 26" — not "just now", "Xm ago", "Xh ago", "Xd ago"
+	if strings.Contains(got, "ago") || got == "just now" {
+		t.Errorf("formatAge(10 days ago) = %q, expected date format (e.g. 'Jan 26')", got)
+	}
+}
+
+// TestTruncateStr_MultibyteLoopFallthrough tests line 852: all rune starts
+// fit within targetLen but string length exceeds maxLen.
+func TestTruncateStr_MultibyteLoopFallthrough(t *testing.T) {
+	t.Parallel()
+
+	// "aaaa🌍" = 8 bytes. maxLen=7, targetLen=4.
+	// Rune starts: 0,1,2,3,4. All <=4. Loop completes.
+	// prevI=4. return s[:4]+"..." = "aaaa..."
+	s := "aaaa\xf0\x9f\x8c\x8d" // "aaaa🌍"
+	got := truncateStr(s, 7)
+	want := "aaaa..."
+	if got != want {
+		t.Errorf("truncateStr(%q, 7) = %q, want %q", s, got, want)
+	}
+}
+
+// TestTruncateStr_MaxLen1 tests a very small positive maxLen.
+func TestTruncateStr_MaxLen1(t *testing.T) {
+	t.Parallel()
+
+	got := truncateStr("hello", 1)
+	want := "."
+	if got != want {
+		t.Errorf("truncateStr(\"hello\", 1) = %q, want %q", got, want)
+	}
+}
+
+// TestTruncateStr_MaxLen2 tests maxLen=2 with "..."[:2]
+func TestTruncateStr_MaxLen2(t *testing.T) {
+	t.Parallel()
+
+	got := truncateStr("hello", 2)
+	want := ".."
+	if got != want {
+		t.Errorf("truncateStr(\"hello\", 2) = %q, want %q", got, want)
 	}
 }
 

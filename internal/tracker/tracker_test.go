@@ -343,3 +343,268 @@ func TestPrune(t *testing.T) {
 		t.Errorf("expected 0 after prune (all old), got %d", tracker.Count())
 	}
 }
+
+// =============================================================================
+// Additional Pure Function Tests for Coverage Improvement
+// =============================================================================
+
+func TestScanNullTerminated(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		data    []byte
+		atEOF   bool
+		advance int
+		token   []byte
+		wantNil bool
+	}{
+		{
+			name:    "empty at EOF",
+			data:    []byte{},
+			atEOF:   true,
+			advance: 0,
+			token:   nil,
+			wantNil: true,
+		},
+		{
+			name:    "single token with null",
+			data:    []byte("hello\x00"),
+			atEOF:   false,
+			advance: 6,
+			token:   []byte("hello"),
+		},
+		{
+			name:    "multiple tokens",
+			data:    []byte("first\x00second"),
+			atEOF:   false,
+			advance: 6,
+			token:   []byte("first"),
+		},
+		{
+			name:    "final token at EOF no null",
+			data:    []byte("final"),
+			atEOF:   true,
+			advance: 5,
+			token:   []byte("final"),
+		},
+		{
+			name:    "need more data",
+			data:    []byte("incomplete"),
+			atEOF:   false,
+			advance: 0,
+			token:   nil,
+			wantNil: true,
+		},
+		{
+			name:    "empty token",
+			data:    []byte("\x00rest"),
+			atEOF:   false,
+			advance: 1,
+			token:   []byte{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			advance, token, err := scanNullTerminated(tt.data, tt.atEOF)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if advance != tt.advance {
+				t.Errorf("advance = %d, want %d", advance, tt.advance)
+			}
+			if tt.wantNil {
+				if token != nil {
+					t.Errorf("token = %v, want nil", token)
+				}
+			} else {
+				if string(token) != string(tt.token) {
+					t.Errorf("token = %q, want %q", token, tt.token)
+				}
+			}
+		})
+	}
+}
+
+func TestCoalesce_Empty(t *testing.T) {
+	tracker := New()
+	coalesced := tracker.Coalesce()
+	if coalesced != nil {
+		t.Errorf("expected nil for empty tracker, got %v", coalesced)
+	}
+}
+
+func TestSince_WithDetails(t *testing.T) {
+	tracker := New()
+
+	now := time.Now()
+	details := map[string]interface{}{"key": "value", "num": 42}
+	tracker.Record(StateChange{
+		Timestamp: now.Add(-1 * time.Second),
+		Type:      ChangeAgentOutput,
+		Details:   details,
+	})
+
+	changes := tracker.Since(now.Add(-2 * time.Second))
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(changes))
+	}
+
+	// Verify deep copy - modifying returned details shouldn't affect original
+	changes[0].Details["key"] = "modified"
+
+	original := tracker.All()
+	if original[0].Details["key"] != "value" {
+		t.Error("original details should not be modified")
+	}
+}
+
+func TestSince_NoDetails(t *testing.T) {
+	tracker := New()
+
+	now := time.Now()
+	tracker.Record(StateChange{
+		Timestamp: now.Add(-1 * time.Second),
+		Type:      ChangeAgentOutput,
+		// No Details
+	})
+
+	changes := tracker.Since(now.Add(-2 * time.Second))
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(changes))
+	}
+	if changes[0].Details != nil {
+		t.Errorf("expected nil details, got %v", changes[0].Details)
+	}
+}
+
+func TestSinceByType_WithDetails(t *testing.T) {
+	tracker := New()
+
+	now := time.Now()
+	tracker.Record(StateChange{
+		Timestamp: now.Add(-1 * time.Second),
+		Type:      ChangeAgentOutput,
+		Details:   map[string]interface{}{"key": "value"},
+	})
+
+	changes := tracker.SinceByType(now.Add(-2*time.Second), ChangeAgentOutput)
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(changes))
+	}
+
+	// Verify deep copy
+	changes[0].Details["key"] = "modified"
+	original := tracker.All()
+	if original[0].Details["key"] != "value" {
+		t.Error("original details should not be modified")
+	}
+}
+
+func TestSinceBySession_WithDetails(t *testing.T) {
+	tracker := New()
+
+	now := time.Now()
+	tracker.Record(StateChange{
+		Timestamp: now.Add(-1 * time.Second),
+		Type:      ChangeAgentOutput,
+		Session:   "test-session",
+		Details:   map[string]interface{}{"key": "value"},
+	})
+
+	changes := tracker.SinceBySession(now.Add(-2*time.Second), "test-session")
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(changes))
+	}
+
+	// Verify deep copy
+	changes[0].Details["key"] = "modified"
+	original := tracker.All()
+	if original[0].Details["key"] != "value" {
+		t.Error("original details should not be modified")
+	}
+}
+
+func TestFileChangeStore_Since(t *testing.T) {
+	store := NewFileChangeStore(10)
+
+	now := time.Now()
+	store.Add(RecordedFileChange{Timestamp: now.Add(-3 * time.Second), Session: "s1"})
+	store.Add(RecordedFileChange{Timestamp: now.Add(-2 * time.Second), Session: "s2"})
+	store.Add(RecordedFileChange{Timestamp: now.Add(-1 * time.Second), Session: "s3"})
+
+	changes := store.Since(now.Add(-2500 * time.Millisecond))
+	if len(changes) != 2 {
+		t.Errorf("expected 2 changes since -2.5s, got %d", len(changes))
+	}
+	if len(changes) >= 2 {
+		if changes[0].Session != "s2" || changes[1].Session != "s3" {
+			t.Errorf("got sessions %s, %s; want s2, s3", changes[0].Session, changes[1].Session)
+		}
+	}
+}
+
+func TestFileChangeStore_Since_Empty(t *testing.T) {
+	store := NewFileChangeStore(10)
+	changes := store.Since(time.Now().Add(-1 * time.Hour))
+	if len(changes) != 0 {
+		t.Errorf("expected 0 changes for empty store, got %d", len(changes))
+	}
+}
+
+func TestFileChangeStore_Since_Wrapped(t *testing.T) {
+	store := NewFileChangeStore(3)
+
+	now := time.Now()
+	// Fill store and wrap
+	store.Add(RecordedFileChange{Timestamp: now.Add(-4 * time.Second), Session: "s1"})
+	store.Add(RecordedFileChange{Timestamp: now.Add(-3 * time.Second), Session: "s2"})
+	store.Add(RecordedFileChange{Timestamp: now.Add(-2 * time.Second), Session: "s3"})
+	store.Add(RecordedFileChange{Timestamp: now.Add(-1 * time.Second), Session: "s4"}) // Wraps, s1 gone
+
+	changes := store.Since(now.Add(-5 * time.Second))
+	if len(changes) != 3 {
+		t.Errorf("expected 3 changes after wrap, got %d", len(changes))
+	}
+}
+
+func TestFileChangeStore_Add_ZeroLimit(t *testing.T) {
+	store := NewFileChangeStore(0) // Gets default 500
+	store.Add(RecordedFileChange{Session: "test"})
+
+	all := store.All()
+	if len(all) != 1 {
+		t.Errorf("expected 1 entry, got %d", len(all))
+	}
+}
+
+func TestFileChangeStore_Add_SetsTimestamp(t *testing.T) {
+	store := NewFileChangeStore(10)
+
+	before := time.Now()
+	store.Add(RecordedFileChange{Session: "test"}) // No timestamp
+	after := time.Now()
+
+	all := store.All()
+	if len(all) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(all))
+	}
+
+	if all[0].Timestamp.Before(before) || all[0].Timestamp.After(after) {
+		t.Error("timestamp should be auto-set when zero")
+	}
+}
+
+func TestFileChangeStore_All_NotWrapped(t *testing.T) {
+	store := NewFileChangeStore(10)
+	store.Add(RecordedFileChange{Session: "s1"})
+	store.Add(RecordedFileChange{Session: "s2"})
+
+	all := store.All()
+	if len(all) != 2 {
+		t.Errorf("expected 2, got %d", len(all))
+	}
+	if all[0].Session != "s1" || all[1].Session != "s2" {
+		t.Error("order should be preserved")
+	}
+}

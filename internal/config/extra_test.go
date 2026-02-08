@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -763,5 +764,261 @@ func TestMergeStringListPreferFirst(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNormalizeSafetyProfile(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty defaults", in: "", want: SafetyProfileStandard},
+		{name: "whitespace defaults", in: "   ", want: SafetyProfileStandard},
+		{name: "standard canonical", in: SafetyProfileStandard, want: SafetyProfileStandard},
+		{name: "safe canonical", in: SafetyProfileSafe, want: SafetyProfileSafe},
+		{name: "paranoid canonical", in: SafetyProfileParanoid, want: SafetyProfileParanoid},
+		{name: "case insensitive", in: "SAFE", want: SafetyProfileSafe},
+		{name: "trims whitespace", in: "  paranoid  ", want: SafetyProfileParanoid},
+		{name: "invalid falls back", in: "nope", want: SafetyProfileStandard},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeSafetyProfile(tt.in); got != tt.want {
+				t.Fatalf("normalizeSafetyProfile(%q)=%q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplySafetyProfileDefaults_Mappings(t *testing.T) {
+	tests := []struct {
+		name             string
+		profile          string
+		wantProfile      string
+		preflightEnabled bool
+		preflightStrict  bool
+		redactionMode    string
+		privacyEnabled   bool
+		dcgAllowOverride bool
+	}{
+		{
+			name:             "standard",
+			profile:          SafetyProfileStandard,
+			wantProfile:      SafetyProfileStandard,
+			preflightEnabled: true,
+			preflightStrict:  false,
+			redactionMode:    "warn",
+			privacyEnabled:   false,
+			dcgAllowOverride: true,
+		},
+		{
+			name:             "safe",
+			profile:          SafetyProfileSafe,
+			wantProfile:      SafetyProfileSafe,
+			preflightEnabled: true,
+			preflightStrict:  false,
+			redactionMode:    "redact",
+			privacyEnabled:   false,
+			dcgAllowOverride: false,
+		},
+		{
+			name:             "paranoid",
+			profile:          SafetyProfileParanoid,
+			wantProfile:      SafetyProfileParanoid,
+			preflightEnabled: true,
+			preflightStrict:  true,
+			redactionMode:    "block",
+			privacyEnabled:   true,
+			dcgAllowOverride: false,
+		},
+		{
+			name:             "invalid falls back to standard",
+			profile:          "NOPE",
+			wantProfile:      SafetyProfileStandard,
+			preflightEnabled: true,
+			preflightStrict:  false,
+			redactionMode:    "warn",
+			privacyEnabled:   false,
+			dcgAllowOverride: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Safety:    SafetyConfig{Profile: tt.profile},
+				Redaction: RedactionConfig{Mode: "off"},
+				Preflight: PreflightConfig{Enabled: false, Strict: false},
+				Privacy:   PrivacyConfig{Enabled: false},
+				Integrations: IntegrationsConfig{
+					DCG: DCGConfig{AllowOverride: false},
+				},
+			}
+
+			applySafetyProfileDefaults(cfg)
+
+			if cfg.Safety.Profile != tt.wantProfile {
+				t.Fatalf("Safety.Profile=%q, want %q", cfg.Safety.Profile, tt.wantProfile)
+			}
+			if cfg.Preflight.Enabled != tt.preflightEnabled || cfg.Preflight.Strict != tt.preflightStrict {
+				t.Fatalf("Preflight={enabled:%v strict:%v}, want {enabled:%v strict:%v}",
+					cfg.Preflight.Enabled, cfg.Preflight.Strict, tt.preflightEnabled, tt.preflightStrict)
+			}
+			if cfg.Redaction.Mode != tt.redactionMode {
+				t.Fatalf("Redaction.Mode=%q, want %q", cfg.Redaction.Mode, tt.redactionMode)
+			}
+			if cfg.Privacy.Enabled != tt.privacyEnabled {
+				t.Fatalf("Privacy.Enabled=%v, want %v", cfg.Privacy.Enabled, tt.privacyEnabled)
+			}
+			if cfg.Integrations.DCG.AllowOverride != tt.dcgAllowOverride {
+				t.Fatalf("Integrations.DCG.AllowOverride=%v, want %v", cfg.Integrations.DCG.AllowOverride, tt.dcgAllowOverride)
+			}
+		})
+	}
+}
+
+func TestLoadSafetyProfile_CanonicalizesProfileString(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	content := `
+[safety]
+profile = "SAFE"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.Safety.Profile != SafetyProfileSafe {
+		t.Fatalf("Safety.Profile=%q, want %q", cfg.Safety.Profile, SafetyProfileSafe)
+	}
+}
+
+func TestLoadSafetyProfile_ProfileDefaults_AllProfiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	tests := []struct {
+		name                string
+		profile             string
+		wantRedaction       string
+		wantPrivacy         bool
+		wantPreflightOn     bool
+		wantPreflightStrict bool
+		wantAllowOverride   bool
+	}{
+		{
+			name:                "standard defaults",
+			profile:             "standard",
+			wantRedaction:       "warn",
+			wantPrivacy:         false,
+			wantPreflightOn:     true,
+			wantPreflightStrict: false,
+			wantAllowOverride:   true,
+		},
+		{
+			name:                "safe defaults",
+			profile:             "safe",
+			wantRedaction:       "redact",
+			wantPrivacy:         false,
+			wantPreflightOn:     true,
+			wantPreflightStrict: false,
+			wantAllowOverride:   false,
+		},
+		{
+			name:                "paranoid defaults",
+			profile:             "paranoid",
+			wantRedaction:       "block",
+			wantPrivacy:         true,
+			wantPreflightOn:     true,
+			wantPreflightStrict: true,
+			wantAllowOverride:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := fmt.Sprintf(`
+[safety]
+profile = %q
+`, tt.profile)
+			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load() failed: %v", err)
+			}
+
+			if cfg.Safety.Profile != tt.profile {
+				t.Fatalf("Safety.Profile=%q, want %q", cfg.Safety.Profile, tt.profile)
+			}
+			if cfg.Redaction.Mode != tt.wantRedaction {
+				t.Fatalf("Redaction.Mode=%q, want %q", cfg.Redaction.Mode, tt.wantRedaction)
+			}
+			if cfg.Privacy.Enabled != tt.wantPrivacy {
+				t.Fatalf("Privacy.Enabled=%v, want %v", cfg.Privacy.Enabled, tt.wantPrivacy)
+			}
+			if cfg.Preflight.Enabled != tt.wantPreflightOn || cfg.Preflight.Strict != tt.wantPreflightStrict {
+				t.Fatalf("Preflight={enabled:%v strict:%v}, want {enabled:%v strict:%v}",
+					cfg.Preflight.Enabled, cfg.Preflight.Strict, tt.wantPreflightOn, tt.wantPreflightStrict)
+			}
+			if cfg.Integrations.DCG.AllowOverride != tt.wantAllowOverride {
+				t.Fatalf("Integrations.DCG.AllowOverride=%v, want %v", cfg.Integrations.DCG.AllowOverride, tt.wantAllowOverride)
+			}
+		})
+	}
+}
+
+func TestLoadSafetyProfile_ExplicitKnobOverridesWin(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	content := `
+[safety]
+profile = "paranoid"
+
+[redaction]
+mode = "warn"
+
+[privacy]
+enabled = false
+
+[preflight]
+strict = false
+
+[integrations.dcg]
+allow_override = true
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	if cfg.Safety.Profile != SafetyProfileParanoid {
+		t.Fatalf("Safety.Profile=%q, want %q", cfg.Safety.Profile, SafetyProfileParanoid)
+	}
+	if cfg.Redaction.Mode != "warn" {
+		t.Fatalf("Redaction.Mode=%q, want %q", cfg.Redaction.Mode, "warn")
+	}
+	if cfg.Privacy.Enabled {
+		t.Fatalf("Privacy.Enabled=%v, want false", cfg.Privacy.Enabled)
+	}
+	if cfg.Preflight.Strict {
+		t.Fatalf("Preflight.Strict=%v, want false", cfg.Preflight.Strict)
+	}
+	if !cfg.Integrations.DCG.AllowOverride {
+		t.Fatalf("Integrations.DCG.AllowOverride=%v, want true", cfg.Integrations.DCG.AllowOverride)
 	}
 }

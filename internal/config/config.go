@@ -8,10 +8,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
 	"github.com/Dicklesworthstone/ntm/internal/notify"
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 	"github.com/Dicklesworthstone/ntm/internal/util"
 )
 
@@ -55,6 +57,7 @@ func validateSynthesisStrategy(name string) error {
 type Config struct {
 	ProjectsBase       string                `toml:"projects_base"`
 	Theme              string                `toml:"theme"`               // UI Theme (mocha, macchiato, nord, latte, auto)
+	HelpVerbosity      string                `toml:"help_verbosity"`      // Help verbosity: minimal or full (default: full)
 	PaletteFile        string                `toml:"palette_file"`        // Path to command_palette.md (optional)
 	SuggestionsEnabled bool                  `toml:"suggestions_enabled"` // Show contextual CLI suggestions
 	Agents             AgentConfig           `toml:"agents"`
@@ -75,6 +78,7 @@ type Config struct {
 	Accounts           AccountsConfig        `toml:"accounts"`         // Multi-account management
 	Rotation           RotationConfig        `toml:"rotation"`         // Account rotation configuration
 	GeminiSetup        GeminiSetupConfig     `toml:"gemini_setup"`     // Gemini post-spawn setup
+	Context            ContextConfig         `toml:"context"`          // Context pack options
 	ContextRotation    ContextRotationConfig `toml:"context_rotation"` // Context window rotation
 	SessionRecovery    SessionRecoveryConfig `toml:"recovery"`         // Smart session recovery
 	Cleanup            CleanupConfig         `toml:"cleanup"`          // Temp file cleanup configuration
@@ -84,6 +88,13 @@ type Config struct {
 	Ensemble           EnsembleConfig        `toml:"ensemble"`         // Reasoning ensemble defaults
 	Swarm              SwarmConfig           `toml:"swarm"`            // Weighted multi-project agent swarm
 	SpawnPacing        SpawnPacingConfig     `toml:"spawn_pacing"`     // Spawn scheduler pacing configuration
+	Safety             SafetyConfig          `toml:"safety"`           // Safety profile selection + defaults
+	Preflight          PreflightConfig       `toml:"preflight"`        // Prompt preflight/lint configuration
+	Redaction          RedactionConfig       `toml:"redaction"`        // Secrets/PII redaction configuration
+	Privacy            PrivacyConfig         `toml:"privacy"`          // Privacy mode configuration
+	Encryption         EncryptionConfig      `toml:"encryption"`       // Encryption at rest for artifacts
+	Send               SendConfig            `toml:"send"`             // Send command defaults
+	Prompts            PromptsConfig         `toml:"prompts"`          // Per-agent-type default prompts
 
 	// Runtime-only fields (populated by project config merging)
 	ProjectDefaults map[string]int `toml:"-"`
@@ -461,11 +472,24 @@ type AgentConfig struct {
 	Claude       string            `toml:"claude"`
 	Codex        string            `toml:"codex"`
 	Gemini       string            `toml:"gemini"`
+	Ollama       string            `toml:"ollama"`
 	Cursor       string            `toml:"cursor"`
 	Windsurf     string            `toml:"windsurf"`
 	Aider        string            `toml:"aider"`
 	Plugins      map[string]string `toml:"plugins"` // Custom agent commands keyed by type
 	DefaultCount int               `toml:"default_count"`
+}
+
+// ContextConfig holds options for context-pack composition.
+type ContextConfig struct {
+	MSSkills bool `toml:"ms_skills"` // Include Meta Skill suggestions in context packs
+}
+
+// DefaultContextConfig returns sensible defaults for context-pack options.
+func DefaultContextConfig() ContextConfig {
+	return ContextConfig{
+		MSSkills: false, // Disabled by default; opt-in only
+	}
 }
 
 // ContextRotationConfig holds configuration for automatic context window rotation
@@ -858,6 +882,8 @@ type IntegrationsConfig struct {
 	Caut          CautConfig          `toml:"caut"`           // caut (Cloud API Usage Tracker) integration
 	ProcessTriage ProcessTriageConfig `toml:"process_triage"` // pt (process_triage) Bayesian health classification
 	Rano          RanoConfig          `toml:"rano"`           // rano network observer for per-agent API tracking
+	Proxy         ProxyConfig         `toml:"proxy"`          // rust_proxy (local HTTP proxy) integration
+	XF            XFConfig            `toml:"xf"`             // xf (X/Twitter archive search) integration
 }
 
 // DCGConfig holds configuration for the DCG (destructive_commit_guard) integration.
@@ -993,6 +1019,8 @@ func DefaultIntegrationsConfig() IntegrationsConfig {
 		Caut:          DefaultCautConfig(),
 		ProcessTriage: DefaultProcessTriageConfig(),
 		Rano:          DefaultRanoConfig(),
+		Proxy:         DefaultProxyConfig(),
+		XF:            DefaultXFConfig(),
 	}
 }
 
@@ -1031,6 +1059,7 @@ type RCHConfig struct {
 	FallbackLocal     bool     `toml:"fallback_local"`     // Fallback to local build on RCH failure
 	ShowLocation      bool     `toml:"show_location"`      // Show build location in output
 	PreferredWorker   string   `toml:"preferred_worker"`   // Worker preference (by name or "auto")
+	DCGWhitelist      bool     `toml:"dcg_whitelist"`      // Whitelist RCH wrapper commands in DCG checks
 }
 
 // DefaultRCHConfig returns sensible defaults for RCH integration.
@@ -1040,7 +1069,7 @@ func DefaultRCHConfig() RCHConfig {
 		BinaryPath:   "",   // Default to PATH lookup
 		MinBuildTime: 10,   // Only offload builds expected to take 10+ seconds
 		InterceptPatterns: []string{
-			"^cargo (build|test|check)",
+			"^cargo (build|test|check|rustc)",
 			"^go (build|test)",
 			"^npm run build",
 			"^make",
@@ -1048,6 +1077,7 @@ func DefaultRCHConfig() RCHConfig {
 		FallbackLocal:   true,   // Fallback to local if remote fails
 		ShowLocation:    true,   // Show where build ran
 		PreferredWorker: "auto", // Auto-select best worker
+		DCGWhitelist:    true,   // Allow RCH wrapper commands in DCG checks
 	}
 }
 
@@ -1199,6 +1229,108 @@ func ValidateRanoConfig(cfg *RanoConfig) error {
 	return nil
 }
 
+// ProxyConfig holds configuration for rust_proxy integration.
+// rust_proxy provides a lightweight local HTTP proxy used by some workflows.
+type ProxyConfig struct {
+	Enabled       bool   `toml:"enabled"`        // Enable rust_proxy integration
+	BinPath       string `toml:"bin_path"`       // Path to rust_proxy binary (or command name in PATH)
+	CheckInterval string `toml:"check_interval"` // How often to poll health/status (duration string, e.g. "30s")
+}
+
+// DefaultProxyConfig returns sensible defaults for rust_proxy integration.
+func DefaultProxyConfig() ProxyConfig {
+	return ProxyConfig{
+		Enabled:       true,
+		BinPath:       "rust_proxy",
+		CheckInterval: "30s",
+	}
+}
+
+// ValidateProxyConfig validates the rust_proxy configuration.
+func ValidateProxyConfig(cfg *ProxyConfig) error {
+	if cfg == nil {
+		return nil
+	}
+
+	// Skip validation for unconfigured/zero-valued configs (use defaults).
+	if !cfg.Enabled && cfg.BinPath == "" && cfg.CheckInterval == "" {
+		return nil
+	}
+	if !cfg.Enabled {
+		return nil
+	}
+
+	if strings.TrimSpace(cfg.BinPath) == "" {
+		return fmt.Errorf("bin_path: must be non-empty when enabled")
+	}
+	if strings.TrimSpace(cfg.CheckInterval) == "" {
+		return fmt.Errorf("check_interval: must be non-empty when enabled")
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(cfg.CheckInterval))
+	if err != nil {
+		return fmt.Errorf("check_interval: %w", err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("check_interval: must be > 0, got %q", cfg.CheckInterval)
+	}
+	return nil
+}
+
+// XFConfig holds configuration for xf (X/Twitter archive search) integration.
+// xf enables querying local X/Twitter archives from NTM via robot/tool bridges.
+type XFConfig struct {
+	Enabled     bool   `toml:"enabled"`      // Enable xf integration
+	BinPath     string `toml:"bin_path"`     // Path to xf binary (or command name in PATH)
+	ArchivePath string `toml:"archive_path"` // Path to xf archive directory (supports ~ expansion)
+	DefaultMode string `toml:"default_mode"` // keyword|semantic|hybrid
+}
+
+// DefaultXFConfig returns sensible defaults for xf integration.
+func DefaultXFConfig() XFConfig {
+	return XFConfig{
+		Enabled:     true,
+		BinPath:     "xf",
+		ArchivePath: "~/.xf/archive",
+		DefaultMode: "hybrid",
+	}
+}
+
+// ValidateXFConfig validates the xf configuration.
+func ValidateXFConfig(cfg *XFConfig) error {
+	if cfg == nil {
+		return nil
+	}
+
+	// Skip validation for unconfigured/zero-valued configs (use defaults).
+	if !cfg.Enabled && cfg.BinPath == "" && cfg.ArchivePath == "" && cfg.DefaultMode == "" {
+		return nil
+	}
+	if !cfg.Enabled {
+		return nil
+	}
+
+	if strings.TrimSpace(cfg.BinPath) == "" {
+		return fmt.Errorf("bin_path: must be non-empty when enabled")
+	}
+	if strings.TrimSpace(cfg.ArchivePath) == "" {
+		return fmt.Errorf("archive_path: must be non-empty when enabled")
+	}
+
+	if cfg.DefaultMode != "" {
+		mode := strings.ToLower(strings.TrimSpace(cfg.DefaultMode))
+		switch mode {
+		case "keyword", "semantic", "hybrid":
+			// ok
+		default:
+			return fmt.Errorf("default_mode: must be keyword, semantic, or hybrid, got %q", cfg.DefaultMode)
+		}
+	}
+
+	// Ensure ~ is expandable (and avoid storing unexpanded "~" surprises downstream).
+	_ = ExpandHome(cfg.ArchivePath)
+	return nil
+}
+
 // ModelsConfig holds model alias configuration for each agent type
 type ModelsConfig struct {
 	DefaultClaude string            `toml:"default_claude"` // Default model for Claude
@@ -1213,7 +1345,7 @@ type ModelsConfig struct {
 func DefaultModels() ModelsConfig {
 	return ModelsConfig{
 		DefaultClaude: "claude-opus-4-5-20251101",
-		DefaultCodex:  "gpt-5.2-codex",
+		DefaultCodex:  "gpt-5.3-codex",
 		DefaultGemini: "gemini-3-pro-preview",
 		Claude: map[string]string{
 			"opus":      "claude-opus-4-5-20251101",
@@ -1224,11 +1356,11 @@ func DefaultModels() ModelsConfig {
 		},
 		Codex: map[string]string{
 			"gpt4":  "gpt-4",
-			"gpt5":  "gpt-5.2-codex",
+			"gpt5":  "gpt-5.3-codex",
 			"o1":    "o1",
 			"o3":    "o3",
 			"turbo": "gpt-4-turbo",
-			"codex": "gpt-5.2-codex",
+			"codex": "gpt-5.3-codex",
 		},
 		Gemini: map[string]string{
 			"pro":    "gemini-3-pro-preview",
@@ -1442,6 +1574,347 @@ func LoadPaletteFromMarkdown(path string) ([]PaletteCmd, error) {
 // DefaultAgentMailURL is the default Agent Mail server URL.
 const DefaultAgentMailURL = "http://127.0.0.1:8765/mcp/"
 
+// Safety profiles are user-friendly presets that bundle multiple safety knobs.
+// These should remain explicit mappings (no hidden magic) so users can reason about overrides.
+const (
+	SafetyProfileStandard = "standard"
+	SafetyProfileSafe     = "safe"
+	SafetyProfileParanoid = "paranoid"
+)
+
+// SafetyConfig controls safety profile selection.
+type SafetyConfig struct {
+	// Profile selects the safety profile preset:
+	// - standard (default): preflight on, redaction=warn, privacy=off
+	// - safe: preflight on, redaction=redact, stricter destructive command gating
+	// - paranoid: preflight on, redaction=block, privacy=on by default
+	Profile string `toml:"profile"`
+}
+
+// DefaultSafetyConfig returns sensible safety defaults.
+func DefaultSafetyConfig() SafetyConfig {
+	return SafetyConfig{Profile: SafetyProfileStandard}
+}
+
+// ValidateSafetyConfig validates the safety configuration.
+func ValidateSafetyConfig(cfg *SafetyConfig) error {
+	if cfg.Profile == "" {
+		return nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(cfg.Profile)) {
+	case SafetyProfileStandard, SafetyProfileSafe, SafetyProfileParanoid:
+		return nil
+	default:
+		return fmt.Errorf("invalid safety profile %q: must be %q, %q, or %q",
+			cfg.Profile, SafetyProfileStandard, SafetyProfileSafe, SafetyProfileParanoid)
+	}
+}
+
+// PreflightConfig controls prompt preflight (lint/validation) defaults.
+type PreflightConfig struct {
+	// Enabled controls whether prompt preflight is used by commands that send content.
+	Enabled bool `toml:"enabled"`
+	// Strict controls whether warnings are treated as errors by default.
+	Strict bool `toml:"strict"`
+}
+
+// DefaultPreflightConfig returns sensible preflight defaults.
+func DefaultPreflightConfig() PreflightConfig {
+	return PreflightConfig{
+		Enabled: true,
+		Strict:  false,
+	}
+}
+
+// ValidatePreflightConfig validates the preflight configuration.
+func ValidatePreflightConfig(cfg *PreflightConfig) error {
+	// No complex validation needed for boolean flags.
+	return nil
+}
+
+type safetyProfileDefaults struct {
+	preflightEnabled bool
+	preflightStrict  bool
+	redactionMode    string
+	privacyEnabled   bool
+	dcgAllowOverride bool
+}
+
+var safetyProfileMap = map[string]safetyProfileDefaults{
+	SafetyProfileStandard: {
+		preflightEnabled: true,
+		preflightStrict:  false,
+		redactionMode:    "warn",
+		privacyEnabled:   false,
+		dcgAllowOverride: true,
+	},
+	SafetyProfileSafe: {
+		preflightEnabled: true,
+		preflightStrict:  false,
+		redactionMode:    "redact",
+		privacyEnabled:   false,
+		dcgAllowOverride: false,
+	},
+	SafetyProfileParanoid: {
+		preflightEnabled: true,
+		preflightStrict:  true,
+		redactionMode:    "block",
+		privacyEnabled:   true,
+		dcgAllowOverride: false,
+	},
+}
+
+func normalizeSafetyProfile(profile string) string {
+	p := strings.ToLower(strings.TrimSpace(profile))
+	if p == "" {
+		return SafetyProfileStandard
+	}
+	if _, ok := safetyProfileMap[p]; ok {
+		return p
+	}
+	return SafetyProfileStandard
+}
+
+func applySafetyProfileDefaults(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+
+	cfg.Safety.Profile = normalizeSafetyProfile(cfg.Safety.Profile)
+	def := safetyProfileMap[cfg.Safety.Profile]
+
+	cfg.Preflight.Enabled = def.preflightEnabled
+	cfg.Preflight.Strict = def.preflightStrict
+	cfg.Redaction.Mode = def.redactionMode
+	cfg.Privacy.Enabled = def.privacyEnabled
+	cfg.Integrations.DCG.AllowOverride = def.dcgAllowOverride
+}
+
+// RedactionConfig holds configuration for secrets/PII redaction.
+// This controls how NTM handles sensitive content in commands, mail, and exports.
+type RedactionConfig struct {
+	// Mode controls redaction behavior: off, warn, redact, block
+	// - off: disable all scanning
+	// - warn: log findings but don't modify content
+	// - redact: replace sensitive content with placeholders
+	// - block: fail operations if secrets detected
+	Mode string `toml:"mode"`
+
+	// Allowlist contains regex patterns that should NOT be flagged.
+	// Use for known-safe patterns like test tokens or placeholder values.
+	Allowlist []string `toml:"allowlist,omitempty"`
+
+	// ExtraPatterns contains additional patterns to detect beyond defaults.
+	// Map category names (e.g., "CUSTOM_TOKEN") to regex patterns.
+	ExtraPatterns map[string][]string `toml:"extra_patterns,omitempty"`
+
+	// DisabledCategories lists secret categories to skip during scanning.
+	// Valid categories: OPENAI_KEY, ANTHROPIC_KEY, GITHUB_TOKEN, AWS_ACCESS_KEY,
+	// AWS_SECRET_KEY, JWT, GOOGLE_API_KEY, PRIVATE_KEY, DATABASE_URL, PASSWORD,
+	// GENERIC_API_KEY, GENERIC_SECRET, BEARER_TOKEN
+	DisabledCategories []string `toml:"disabled_categories,omitempty"`
+}
+
+// DefaultRedactionConfig returns sensible redaction defaults.
+func DefaultRedactionConfig() RedactionConfig {
+	return RedactionConfig{
+		Mode: "warn", // Safe default: detect but don't block
+	}
+}
+
+// ValidateRedactionConfig validates the redaction configuration.
+func ValidateRedactionConfig(cfg *RedactionConfig) error {
+	switch cfg.Mode {
+	case "", "off", "warn", "redact", "block":
+		return nil
+	default:
+		return fmt.Errorf("invalid redaction mode %q: must be off, warn, redact, or block", cfg.Mode)
+	}
+}
+
+// PrivacyConfig holds configuration for privacy mode.
+// Privacy mode prevents persistence of sensitive session data.
+type PrivacyConfig struct {
+	// Enabled is the global default for privacy mode.
+	// When true, all new sessions start in privacy mode unless overridden.
+	Enabled bool `toml:"enabled"`
+
+	// DisablePromptHistory prevents storing prompt/command history.
+	DisablePromptHistory bool `toml:"disable_prompt_history"`
+
+	// DisableEventLogs prevents writing event logs (or limits to minimal metadata).
+	DisableEventLogs bool `toml:"disable_event_logs"`
+
+	// DisableCheckpoints prevents automatic checkpoint creation.
+	DisableCheckpoints bool `toml:"disable_checkpoints"`
+
+	// DisableScrollbackCapture prevents scrollback persistence in support bundles.
+	DisableScrollbackCapture bool `toml:"disable_scrollback_capture"`
+
+	// RequireExplicitPersist requires --allow-persist flag for any persistence operations.
+	// When true, operations that would write to disk fail unless explicitly allowed.
+	RequireExplicitPersist bool `toml:"require_explicit_persist"`
+}
+
+// DefaultPrivacyConfig returns sensible privacy defaults.
+// Privacy mode is opt-in by default.
+func DefaultPrivacyConfig() PrivacyConfig {
+	return PrivacyConfig{
+		Enabled:                  false, // Privacy mode disabled by default
+		DisablePromptHistory:     true,  // When enabled, disable history by default
+		DisableEventLogs:         true,  // When enabled, disable event logs
+		DisableCheckpoints:       true,  // When enabled, disable checkpoints
+		DisableScrollbackCapture: true,  // When enabled, disable scrollback capture
+		RequireExplicitPersist:   true,  // When enabled, require explicit --allow-persist
+	}
+}
+
+// ValidatePrivacyConfig validates the privacy configuration.
+func ValidatePrivacyConfig(cfg *PrivacyConfig) error {
+	// No complex validation needed for boolean flags
+	return nil
+}
+
+// EncryptionConfig controls encryption at rest for NTM artifacts
+// (prompt history, event logs, checkpoint exports).
+type EncryptionConfig struct {
+	// Enabled is the master toggle for encryption at rest (default false).
+	Enabled bool `toml:"enabled"`
+	// KeySource selects how the encryption key is provided: env, file, or command.
+	KeySource string `toml:"key_source"`
+	// KeyEnv is the environment variable name holding the key (for key_source=env).
+	KeyEnv string `toml:"key_env"`
+	// KeyFile is the path to a file containing the key (for key_source=file).
+	KeyFile string `toml:"key_file"`
+	// KeyCommand is a shell command that prints the key to stdout (for key_source=command).
+	KeyCommand string `toml:"key_command"`
+	// KeyFormat is the encoding of the key material: hex or base64.
+	KeyFormat string `toml:"key_format"`
+	// ActiveKeyID selects which keyring entry to use for new writes (optional).
+	ActiveKeyID string `toml:"active_key_id"`
+	// Keyring maps key IDs to encoded key material for rotation support.
+	Keyring map[string]string `toml:"keyring"`
+}
+
+// DefaultEncryptionConfig returns sensible encryption defaults (disabled).
+func DefaultEncryptionConfig() EncryptionConfig {
+	return EncryptionConfig{
+		Enabled:   false,
+		KeySource: "env",
+		KeyEnv:    "NTM_ENCRYPTION_KEY",
+		KeyFormat: "hex",
+	}
+}
+
+// ValidateEncryptionConfig validates the encryption configuration.
+func ValidateEncryptionConfig(cfg *EncryptionConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	switch cfg.KeySource {
+	case "env", "file", "command":
+		// valid
+	case "":
+		return fmt.Errorf("encryption.key_source is required when encryption is enabled")
+	default:
+		return fmt.Errorf("invalid encryption.key_source %q: must be env, file, or command", cfg.KeySource)
+	}
+	switch cfg.KeyFormat {
+	case "hex", "base64", "":
+		// valid (empty defaults to hex)
+	default:
+		return fmt.Errorf("invalid encryption.key_format %q: must be hex or base64", cfg.KeyFormat)
+	}
+	if cfg.ActiveKeyID != "" && len(cfg.Keyring) > 0 {
+		if _, ok := cfg.Keyring[cfg.ActiveKeyID]; !ok {
+			return fmt.Errorf("encryption.active_key_id %q not found in keyring", cfg.ActiveKeyID)
+		}
+	}
+	return nil
+}
+
+// SendConfig holds defaults for the send command.
+type SendConfig struct {
+	BasePrompt     string `toml:"base_prompt"`      // Text prepended to all prompts
+	BasePromptFile string `toml:"base_prompt_file"` // File whose contents are prepended to all prompts
+}
+
+// PromptsConfig holds per-agent-type default prompts (bd-2ywo).
+type PromptsConfig struct {
+	CCDefault      string `toml:"cc_default"`       // Default prompt for Claude agents
+	CCDefaultFile  string `toml:"cc_default_file"`  // File path for Claude default prompt
+	CodDefault     string `toml:"cod_default"`      // Default prompt for Codex agents
+	CodDefaultFile string `toml:"cod_default_file"` // File path for Codex default prompt
+	GmiDefault     string `toml:"gmi_default"`      // Default prompt for Gemini agents
+	GmiDefaultFile string `toml:"gmi_default_file"` // File path for Gemini default prompt
+}
+
+// ResolveForType returns the default prompt for a given agent type string (cc, cod, gmi).
+// It reads from the inline string first, falling back to the file if configured.
+func (p PromptsConfig) ResolveForType(agentType string) (string, error) {
+	var val, filePath string
+	switch agentType {
+	case "cc":
+		val, filePath = p.CCDefault, p.CCDefaultFile
+	case "cod":
+		val, filePath = p.CodDefault, p.CodDefaultFile
+	case "gmi":
+		val, filePath = p.GmiDefault, p.GmiDefaultFile
+	default:
+		return "", nil
+	}
+	if val != "" {
+		return strings.TrimSpace(val), nil
+	}
+	if filePath != "" {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return "", fmt.Errorf("reading prompts.%s_default_file: %w", agentType, err)
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+	return "", nil
+}
+
+// ToRedactionLibConfig converts the config to the redaction library's Config type.
+func (c *RedactionConfig) ToRedactionLibConfig() redaction.Config {
+	mode := redaction.ModeWarn // default
+	switch c.Mode {
+	case "off":
+		mode = redaction.ModeOff
+	case "warn":
+		mode = redaction.ModeWarn
+	case "redact":
+		mode = redaction.ModeRedact
+	case "block":
+		mode = redaction.ModeBlock
+	}
+
+	libCfg := redaction.Config{
+		Mode:      mode,
+		Allowlist: c.Allowlist,
+	}
+
+	// Convert extra patterns
+	if len(c.ExtraPatterns) > 0 {
+		libCfg.ExtraPatterns = make(map[redaction.Category][]string)
+		for cat, patterns := range c.ExtraPatterns {
+			libCfg.ExtraPatterns[redaction.Category(cat)] = patterns
+		}
+	}
+
+	// Convert disabled categories
+	if len(c.DisabledCategories) > 0 {
+		libCfg.DisabledCategories = make([]redaction.Category, len(c.DisabledCategories))
+		for i, cat := range c.DisabledCategories {
+			libCfg.DisabledCategories[i] = redaction.Category(cat)
+		}
+	}
+
+	return libCfg
+}
+
 // Default returns the default configuration.
 // It tries to load the palette from a markdown file first, falling back to hardcoded defaults.
 func Default() *Config {
@@ -1481,6 +1954,7 @@ func Default() *Config {
 		Accounts:        DefaultAccountsConfig(),
 		Rotation:        DefaultRotationConfig(),
 		GeminiSetup:     DefaultGeminiSetupConfig(),
+		Context:         DefaultContextConfig(),
 		ContextRotation: DefaultContextRotationConfig(),
 		SessionRecovery: DefaultSessionRecoveryConfig(),
 		Cleanup:         DefaultCleanupConfig(),
@@ -1489,7 +1963,15 @@ func Default() *Config {
 		Assign:          DefaultAssignConfig(),
 		Ensemble:        DefaultEnsembleConfig(),
 		Swarm:           DefaultSwarmConfig(),
+		Safety:          DefaultSafetyConfig(),
+		Preflight:       DefaultPreflightConfig(),
+		Redaction:       DefaultRedactionConfig(),
+		Privacy:         DefaultPrivacyConfig(),
+		Encryption:      DefaultEncryptionConfig(),
 	}
+
+	// Apply safety profile defaults (standard/safe/paranoid).
+	applySafetyProfileDefaults(cfg)
 
 	// Try to load palette from markdown file
 	if mdPath := findPaletteMarkdown(); mdPath != "" {
@@ -1641,9 +2123,26 @@ func Load(path string) (*Config, error) {
 
 	// 2. Read and unmarshal TOML over defaults
 	if data, err := os.ReadFile(path); err == nil {
+		// Pre-scan safety profile so we can apply profile defaults before decoding the rest.
+		// This lets explicit knob overrides in TOML take precedence over the selected profile.
+		var pre struct {
+			Safety SafetyConfig `toml:"safety"`
+		}
+		if err := toml.Unmarshal(data, &pre); err != nil {
+			return nil, fmt.Errorf("parsing config: %w", err)
+		}
+		if pre.Safety.Profile != "" {
+			cfg.Safety.Profile = pre.Safety.Profile
+		}
+		applySafetyProfileDefaults(cfg)
+
 		if err := toml.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("parsing config: %w", err)
 		}
+
+		// Canonicalize the profile string for stable downstream outputs (config show, robot status).
+		// Do not re-apply profile defaults here: explicit knob overrides in TOML must win.
+		cfg.Safety.Profile = normalizeSafetyProfile(cfg.Safety.Profile)
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -1905,6 +2404,14 @@ func Print(cfg *Config, w io.Writer) error {
 	}
 	fmt.Fprintln(w)
 
+	fmt.Fprintln(w, "# Help verbosity (minimal, full)")
+	if cfg.HelpVerbosity != "" {
+		fmt.Fprintf(w, "help_verbosity = %q\n", cfg.HelpVerbosity)
+	} else {
+		fmt.Fprintln(w, "# help_verbosity = \"full\"")
+	}
+	fmt.Fprintln(w)
+
 	fmt.Fprintln(w, "# Path to command palette markdown file (optional)")
 	fmt.Fprintln(w, "# If set, loads palette commands from this file instead of [[palette]] entries below")
 	fmt.Fprintln(w, "# Searched automatically: ~/.config/ntm/command_palette.md, ./command_palette.md")
@@ -2011,12 +2518,86 @@ func Print(cfg *Config, w io.Writer) error {
 	} else {
 		fmt.Fprintln(w, "custom_whitelist = []")
 	}
+	fmt.Fprintln(w, "# RCH wrapper commands are allowlisted when integrations.rch.dcg_whitelist = true")
 	if cfg.Integrations.DCG.AuditLog != "" {
 		fmt.Fprintf(w, "audit_log = %q\n", cfg.Integrations.DCG.AuditLog)
 	} else {
 		fmt.Fprintln(w, "# audit_log = \"~/.ntm/dcg_audit.log\"")
 	}
 	fmt.Fprintf(w, "allow_override = %t\n", cfg.Integrations.DCG.AllowOverride)
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[integrations.proxy]")
+	fmt.Fprintln(w, "# rust_proxy (local HTTP proxy) settings")
+	fmt.Fprintf(w, "enabled = %t\n", cfg.Integrations.Proxy.Enabled)
+	if cfg.Integrations.Proxy.BinPath != "" {
+		fmt.Fprintf(w, "bin_path = %q\n", cfg.Integrations.Proxy.BinPath)
+	} else {
+		fmt.Fprintln(w, "# bin_path = \"rust_proxy\"  # Auto-detect from PATH")
+	}
+	if cfg.Integrations.Proxy.CheckInterval != "" {
+		fmt.Fprintf(w, "check_interval = %q\n", cfg.Integrations.Proxy.CheckInterval)
+	} else {
+		fmt.Fprintln(w, "# check_interval = \"30s\"")
+	}
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[integrations.xf]")
+	fmt.Fprintln(w, "# X/Twitter archive search (xf) settings")
+	fmt.Fprintf(w, "enabled = %t\n", cfg.Integrations.XF.Enabled)
+	if cfg.Integrations.XF.BinPath != "" {
+		fmt.Fprintf(w, "bin_path = %q\n", cfg.Integrations.XF.BinPath)
+	} else {
+		fmt.Fprintln(w, "# bin_path = \"xf\"  # Auto-detect from PATH")
+	}
+	if cfg.Integrations.XF.ArchivePath != "" {
+		fmt.Fprintf(w, "archive_path = %q\n", cfg.Integrations.XF.ArchivePath)
+	} else {
+		fmt.Fprintln(w, "# archive_path = \"~/.xf/archive\"")
+	}
+	if cfg.Integrations.XF.DefaultMode != "" {
+		fmt.Fprintf(w, "default_mode = %q\n", cfg.Integrations.XF.DefaultMode)
+	} else {
+		fmt.Fprintln(w, "# default_mode = \"hybrid\"  # keyword|semantic|hybrid")
+	}
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[safety]")
+	fmt.Fprintln(w, "# Safety profile presets that set defaults for multiple knobs")
+	fmt.Fprintln(w, "# profile = \"standard\"  # standard|safe|paranoid")
+	fmt.Fprintf(w, "profile = %q\n", cfg.Safety.Profile)
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[preflight]")
+	fmt.Fprintln(w, "# Prompt preflight (lint/validation) defaults")
+	fmt.Fprintf(w, "enabled = %t\n", cfg.Preflight.Enabled)
+	fmt.Fprintf(w, "strict = %t\n", cfg.Preflight.Strict)
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[redaction]")
+	fmt.Fprintln(w, "# Secrets/PII redaction configuration: off|warn|redact|block")
+	fmt.Fprintf(w, "mode = %q\n", cfg.Redaction.Mode)
+	if len(cfg.Redaction.Allowlist) > 0 {
+		fmt.Fprintf(w, "allowlist = %s\n", renderTOMLStringArray(cfg.Redaction.Allowlist))
+	} else {
+		fmt.Fprintln(w, "allowlist = []")
+	}
+	if len(cfg.Redaction.DisabledCategories) > 0 {
+		fmt.Fprintf(w, "disabled_categories = %s\n", renderTOMLStringArray(cfg.Redaction.DisabledCategories))
+	} else {
+		fmt.Fprintln(w, "disabled_categories = []")
+	}
+	fmt.Fprintln(w, "# extra_patterns = { CUSTOM_TOKEN = [\"regex\"] }")
+	fmt.Fprintln(w)
+
+	fmt.Fprintln(w, "[privacy]")
+	fmt.Fprintln(w, "# Privacy mode prevents persistence of sensitive session data")
+	fmt.Fprintf(w, "enabled = %t\n", cfg.Privacy.Enabled)
+	fmt.Fprintf(w, "disable_prompt_history = %t\n", cfg.Privacy.DisablePromptHistory)
+	fmt.Fprintf(w, "disable_event_logs = %t\n", cfg.Privacy.DisableEventLogs)
+	fmt.Fprintf(w, "disable_checkpoints = %t\n", cfg.Privacy.DisableCheckpoints)
+	fmt.Fprintf(w, "disable_scrollback_capture = %t\n", cfg.Privacy.DisableScrollbackCapture)
+	fmt.Fprintf(w, "require_explicit_persist = %t\n", cfg.Privacy.RequireExplicitPersist)
 	fmt.Fprintln(w)
 
 	// Write models configuration
@@ -2258,6 +2839,12 @@ func Print(cfg *Config, w io.Writer) error {
 	fmt.Fprintf(w, "ready_timeout_seconds = %d       # Seconds to wait for Gemini CLI to be ready\n", cfg.GeminiSetup.ReadyTimeoutSeconds)
 	fmt.Fprintf(w, "model_select_timeout_seconds = %d # Seconds to wait for model selection menu\n", cfg.GeminiSetup.ModelSelectTimeoutSeconds)
 	fmt.Fprintf(w, "verbose = %t                     # Show debug output during setup\n", cfg.GeminiSetup.Verbose)
+	fmt.Fprintln(w)
+
+	// Write context pack options
+	fmt.Fprintln(w, "[context]")
+	fmt.Fprintln(w, "# Context pack composition options")
+	fmt.Fprintf(w, "ms_skills = %t                  # Include Meta Skill suggestions in context packs\n", cfg.Context.MSSkills)
 	fmt.Fprintln(w)
 
 	// Write context rotation configuration
@@ -2620,6 +3207,14 @@ func GetValue(cfg *Config, path string) (interface{}, error) {
 		case "rotate_threshold":
 			return cfg.ContextRotation.RotateThreshold, nil
 		}
+	case "context":
+		if len(parts) < 2 {
+			return cfg.Context, nil
+		}
+		switch parts[1] {
+		case "ms_skills":
+			return cfg.Context.MSSkills, nil
+		}
 	case "ensemble":
 		if len(parts) < 2 {
 			return cfg.Ensemble, nil
@@ -2841,6 +3436,9 @@ func Diff(cfg *Config) []ConfigDiff {
 	addDiff("resilience.auto_restart", defaults.Resilience.AutoRestart, cfg.Resilience.AutoRestart)
 	addDiff("resilience.max_restarts", defaults.Resilience.MaxRestarts, cfg.Resilience.MaxRestarts)
 
+	// Context pack options
+	addDiff("context.ms_skills", defaults.Context.MSSkills, cfg.Context.MSSkills)
+
 	// Context Rotation
 	addDiff("context_rotation.enabled", defaults.ContextRotation.Enabled, cfg.ContextRotation.Enabled)
 	addDiff("context_rotation.warning_threshold", defaults.ContextRotation.WarningThreshold, cfg.ContextRotation.WarningThreshold)
@@ -2935,11 +3533,48 @@ func Validate(cfg *Config) []error {
 		errs = append(errs, fmt.Errorf("integrations.process_triage: %w", err))
 	}
 
+	// Validate rust_proxy integration config
+	if err := ValidateProxyConfig(&cfg.Integrations.Proxy); err != nil {
+		errs = append(errs, fmt.Errorf("integrations.proxy: %w", err))
+	}
+
+	// Validate xf integration config
+	if err := ValidateXFConfig(&cfg.Integrations.XF); err != nil {
+		errs = append(errs, fmt.Errorf("integrations.xf: %w", err))
+	}
+
+	// Validate safety profile and preflight configuration
+	if err := ValidateSafetyConfig(&cfg.Safety); err != nil {
+		errs = append(errs, fmt.Errorf("safety: %w", err))
+	}
+	if err := ValidatePreflightConfig(&cfg.Preflight); err != nil {
+		errs = append(errs, fmt.Errorf("preflight: %w", err))
+	}
+
+	// Validate redaction configuration
+	if err := ValidateRedactionConfig(&cfg.Redaction); err != nil {
+		errs = append(errs, fmt.Errorf("redaction: %w", err))
+	}
+
+	// Validate encryption configuration
+	if err := ValidateEncryptionConfig(&cfg.Encryption); err != nil {
+		errs = append(errs, fmt.Errorf("encryption: %w", err))
+	}
+
 	// Validate projects_base if set
 	if cfg.ProjectsBase != "" {
 		expanded := ExpandHome(cfg.ProjectsBase)
 		if !filepath.IsAbs(expanded) {
 			errs = append(errs, fmt.Errorf("projects_base: must be an absolute path, got %q", cfg.ProjectsBase))
+		}
+	}
+
+	if cfg.HelpVerbosity != "" {
+		switch strings.ToLower(strings.TrimSpace(cfg.HelpVerbosity)) {
+		case "minimal", "full":
+			// ok
+		default:
+			errs = append(errs, fmt.Errorf("help_verbosity: must be \"minimal\" or \"full\", got %q", cfg.HelpVerbosity))
 		}
 	}
 

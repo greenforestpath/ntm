@@ -7,11 +7,16 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/output"
 	"github.com/Dicklesworthstone/ntm/internal/swarm"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 func newSwarmCmd() *cobra.Command {
@@ -24,6 +29,9 @@ func newSwarmCmd() *cobra.Command {
 		sessionsPerType int
 		panesPerSession int
 		outputPath      string
+		autoRotate      bool
+		initialPrompt   string
+		promptFile      string
 	)
 
 	cmd := &cobra.Command{
@@ -43,7 +51,7 @@ Examples:
   ntm swarm --projects=foo,bar        # Only include specific projects
   ntm swarm --remote=user@host        # Execute on remote host via SSH`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSwarm(swarmOptions{
+			return runSwarm(cmd.Context(), swarmOptions{
 				ScanDir:         scanDir,
 				Projects:        projects,
 				DryRun:          dryRun,
@@ -52,6 +60,9 @@ Examples:
 				SessionsPerType: sessionsPerType,
 				PanesPerSession: panesPerSession,
 				OutputPath:      outputPath,
+				AutoRotate:      autoRotate,
+				InitialPrompt:   initialPrompt,
+				PromptFile:      promptFile,
 			})
 		},
 	}
@@ -65,6 +76,10 @@ Examples:
 	if cfg != nil && cfg.Swarm.SessionsPerType > 0 {
 		defaultSessionsPerType = cfg.Swarm.SessionsPerType
 	}
+	defaultAutoRotate := false
+	if cfg != nil {
+		defaultAutoRotate = cfg.Swarm.AutoRotateAccounts
+	}
 
 	cmd.Flags().StringVar(&scanDir, "scan-dir", defaultScanDir, "Directory to scan for projects")
 	cmd.Flags().StringSliceVar(&projects, "projects", nil, "Explicit list of project paths (comma-separated)")
@@ -74,6 +89,9 @@ Examples:
 	cmd.Flags().IntVar(&sessionsPerType, "sessions-per-type", defaultSessionsPerType, "Number of tmux sessions per agent type (default: 3)")
 	cmd.Flags().IntVar(&panesPerSession, "panes-per-session", 0, "Max panes per session (0 = auto-calculate from total agents)")
 	cmd.Flags().StringVar(&outputPath, "output", "", "Write swarm plan to JSON file (optional)")
+	cmd.Flags().StringVar(&initialPrompt, "prompt", "", "Initial prompt to inject into all agents after launch")
+	cmd.Flags().StringVar(&promptFile, "prompt-file", "", "File containing initial prompt (mutually exclusive with --prompt)")
+	cmd.PersistentFlags().BoolVar(&autoRotate, "auto-rotate-accounts", defaultAutoRotate, "Automatically rotate accounts on usage limit hit (requires caam)")
 
 	// Add subcommands
 	cmd.AddCommand(newSwarmPlanCmd())
@@ -92,6 +110,9 @@ type swarmOptions struct {
 	SessionsPerType int
 	PanesPerSession int
 	OutputPath      string
+	AutoRotate      bool
+	InitialPrompt   string
+	PromptFile      string
 }
 
 // SwarmPlanOutput is the JSON output format for swarm plan
@@ -133,14 +154,36 @@ type PaneOutput struct {
 	AgentType string `json:"agent_type"`
 }
 
-func runSwarm(opts swarmOptions) error {
+func runSwarm(ctx context.Context, opts swarmOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	logger := slog.Default()
+
+	initialPrompt, promptSource, promptPath, err := resolveSwarmInitialPrompt(opts.InitialPrompt, opts.PromptFile)
+	if err != nil {
+		return err
+	}
+	if promptSource == "file" {
+		logger.Info("loaded initial prompt from file", "path", promptPath, "length", len(initialPrompt))
+	}
+	if initialPrompt != "" {
+		logger.Info("initial prompt configured",
+			"source", promptSource,
+			"length", len(initialPrompt),
+			"preview", truncate(initialPrompt, 50),
+		)
+	} else {
+		logger.Debug("no initial prompt configured")
+	}
 
 	// Get swarm config
 	swarmCfg := cfg.Swarm
 	if !swarmCfg.Enabled && !opts.DryRun {
 		return fmt.Errorf("swarm orchestration is disabled in config; set swarm.enabled=true or use --dry-run")
 	}
+	swarmCfg.AutoRotateAccounts = opts.AutoRotate
+	logger.Info("account rotation configuration", "auto_rotate_accounts", swarmCfg.AutoRotateAccounts)
 
 	if opts.SessionsPerType < 1 {
 		return fmt.Errorf("--sessions-per-type must be at least 1, got %d", opts.SessionsPerType)
@@ -210,33 +253,86 @@ func runSwarm(opts swarmOptions) error {
 		return nil
 	}
 
-	// Create the orchestrator
-	var orch *swarm.SessionOrchestrator
-	if opts.Remote != "" {
-		orch = swarm.NewRemoteSessionOrchestrator(opts.Remote)
-		output.PrintInfof("Creating swarm on remote host: %s", opts.Remote)
-	} else {
-		orch = swarm.NewSessionOrchestrator()
+	staggerDelay := time.Duration(swarmCfg.StaggerDelayMs) * time.Millisecond
+	if staggerDelay < 0 {
+		staggerDelay = 0
 	}
 
-	// Execute the plan
-	result, err := orch.CreateSessions(plan)
+	// Create a tmux session orchestrator (local or remote).
+	var sessOrch *swarm.SessionOrchestrator
+	if opts.Remote != "" {
+		sessOrch = swarm.NewRemoteSessionOrchestrator(opts.Remote)
+		sessOrch.StaggerDelay = staggerDelay
+		output.PrintInfof("Creating swarm on remote host: %s", opts.Remote)
+	} else {
+		sessOrch = swarm.NewSessionOrchestrator()
+		sessOrch.StaggerDelay = staggerDelay
+	}
+
+	// Derive a concrete tmux client for follow-up actions.
+	tmuxClient := sessOrch.TmuxClient
+	if tmuxClient == nil {
+		tmuxClient = tmux.DefaultClient
+	}
+
+	executor := &swarm.SwarmOrchestrator{
+		SessionOrchestrator: sessOrch,
+		PaneLauncher:        swarm.NewPaneLauncherWithClient(tmuxClient).WithLogger(logger),
+		PromptInjector:      swarm.NewPromptInjectorWithClient(tmuxClient).WithLogger(logger),
+		Logger:              logger,
+		StaggerDelay:        staggerDelay,
+	}
+
+	execResult, err := executor.Execute(ctx, plan, initialPrompt)
 	if err != nil {
-		return fmt.Errorf("failed to create sessions: %w", err)
+		return err
 	}
 
 	// Report results
-	output.PrintSuccessf("Created %d sessions with %d/%d panes",
-		len(result.Sessions), result.SuccessfulPanes, result.TotalPanes)
+	if execResult.Sessions != nil {
+		output.PrintSuccessf("Created %d sessions with %d/%d panes",
+			len(execResult.Sessions.Sessions), execResult.Sessions.SuccessfulPanes, execResult.Sessions.TotalPanes)
 
-	if result.FailedPanes > 0 {
-		output.PrintWarningf("%d panes failed to create", result.FailedPanes)
-		for _, err := range result.Errors {
-			fmt.Fprintf(os.Stderr, "  %v\n", err)
+		if execResult.Sessions.FailedPanes > 0 {
+			output.PrintWarningf("%d panes failed to create", execResult.Sessions.FailedPanes)
+			for _, err := range execResult.Sessions.Errors {
+				fmt.Fprintf(os.Stderr, "  %v\n", err)
+			}
+		}
+	}
+
+	if execResult.Launch != nil {
+		output.PrintSuccessf("Launched agents: %d succeeded, %d failed", execResult.Launch.Successful, execResult.Launch.Failed)
+		if execResult.Launch.Failed > 0 {
+			output.PrintWarningf("%d agents failed to launch (see logs)", execResult.Launch.Failed)
+		}
+	}
+
+	if initialPrompt != "" && execResult.Injection != nil {
+		output.PrintSuccessf("Injected initial prompt: %d succeeded, %d failed", execResult.Injection.Successful, execResult.Injection.Failed)
+		if execResult.Injection.Failed > 0 {
+			output.PrintWarningf("%d panes failed prompt injection (see logs)", execResult.Injection.Failed)
 		}
 	}
 
 	return nil
+}
+
+func resolveSwarmInitialPrompt(prompt, promptFile string) (resolved string, source string, path string, err error) {
+	if prompt != "" && promptFile != "" {
+		return "", "", "", fmt.Errorf("--prompt and --prompt-file are mutually exclusive")
+	}
+	if promptFile != "" {
+		data, readErr := os.ReadFile(promptFile)
+		if readErr != nil {
+			return "", "", "", fmt.Errorf("read prompt file %q: %w", promptFile, readErr)
+		}
+		return string(data), "file", promptFile, nil
+	}
+	if prompt != "" {
+		return prompt, "flag", "", nil
+	}
+	return "", "", "", nil
 }
 
 // discoverProjects finds projects with bead counts using BeadScanner
@@ -372,11 +468,16 @@ func newSwarmPlanCmd() *cobra.Command {
 		Use:   "plan",
 		Short: "Preview swarm allocation plan without executing",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSwarm(swarmOptions{
+			autoRotate, err := cmd.Flags().GetBool("auto-rotate-accounts")
+			if err != nil {
+				return err
+			}
+			return runSwarm(cmd.Context(), swarmOptions{
 				ScanDir:    scanDir,
 				Projects:   projects,
 				DryRun:     true,
 				JSONOutput: jsonOutput,
+				AutoRotate: autoRotate,
 			})
 		},
 	}
@@ -394,12 +495,121 @@ func newSwarmPlanCmd() *cobra.Command {
 
 // Subcommand: swarm status
 func newSwarmStatusCmd() *cobra.Command {
+	swarmSessionRE := regexp.MustCompile(`^(cc|cod|gmi)_agents_[0-9]+$`)
+
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show current swarm status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// TODO: Implement swarm status
-			output.PrintInfo("Swarm status not yet implemented")
+			if err := tmux.EnsureInstalled(); err != nil {
+				return err
+			}
+
+			sessions, err := tmux.ListSessions()
+			if err != nil {
+				return err
+			}
+
+			var swarmSessions []string
+			for _, sess := range sessions {
+				if swarmSessionRE.MatchString(sess.Name) {
+					swarmSessions = append(swarmSessions, sess.Name)
+				}
+			}
+			sort.Strings(swarmSessions)
+
+			if len(swarmSessions) == 0 {
+				output.PrintInfo("No swarm sessions found")
+				return nil
+			}
+
+			type swarmSessionStatus struct {
+				Session string                `json:"session"`
+				Health  *health.SessionHealth `json:"health,omitempty"`
+				Error   string                `json:"error,omitempty"`
+			}
+
+			type swarmStatusOutput struct {
+				CheckedAt     time.Time            `json:"checked_at"`
+				Sessions      []swarmSessionStatus `json:"sessions"`
+				Summary       health.HealthSummary `json:"summary"`
+				OverallStatus health.Status        `json:"overall_status"`
+			}
+
+			out := swarmStatusOutput{
+				CheckedAt:     time.Now().UTC(),
+				Sessions:      make([]swarmSessionStatus, 0, len(swarmSessions)),
+				Summary:       health.HealthSummary{},
+				OverallStatus: health.StatusOK,
+			}
+
+			statusSeverity := func(s health.Status) int {
+				switch s {
+				case health.StatusError:
+					return 3
+				case health.StatusWarning:
+					return 2
+				case health.StatusOK:
+					return 1
+				default:
+					return 0
+				}
+			}
+
+			for _, name := range swarmSessions {
+				ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
+				sessionHealth, err := health.CheckSession(ctx, name)
+				cancel()
+				entry := swarmSessionStatus{Session: name}
+				if err != nil {
+					entry.Error = err.Error()
+					out.Sessions = append(out.Sessions, entry)
+					continue
+				}
+
+				entry.Health = sessionHealth
+				out.Sessions = append(out.Sessions, entry)
+
+				out.Summary.Total += sessionHealth.Summary.Total
+				out.Summary.Healthy += sessionHealth.Summary.Healthy
+				out.Summary.Warning += sessionHealth.Summary.Warning
+				out.Summary.Error += sessionHealth.Summary.Error
+				out.Summary.Unknown += sessionHealth.Summary.Unknown
+
+				if statusSeverity(sessionHealth.OverallStatus) > statusSeverity(out.OverallStatus) {
+					out.OverallStatus = sessionHealth.OverallStatus
+				}
+			}
+
+			if jsonOutput {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(out)
+			}
+
+			output.PrintInfof("Swarm sessions: %d", len(out.Sessions))
+			for _, sess := range out.Sessions {
+				if sess.Health == nil {
+					output.PrintWarningf("  %s: error (%s)", sess.Session, sess.Error)
+					continue
+				}
+				output.PrintInfof("  %s: %s (ok:%d warn:%d err:%d unk:%d)",
+					sess.Session,
+					sess.Health.OverallStatus,
+					sess.Health.Summary.Healthy,
+					sess.Health.Summary.Warning,
+					sess.Health.Summary.Error,
+					sess.Health.Summary.Unknown,
+				)
+			}
+			output.PrintInfof("Overall: %s (total:%d ok:%d warn:%d err:%d unk:%d)",
+				out.OverallStatus,
+				out.Summary.Total,
+				out.Summary.Healthy,
+				out.Summary.Warning,
+				out.Summary.Error,
+				out.Summary.Unknown,
+			)
 			return nil
 		},
 	}
@@ -409,20 +619,160 @@ func newSwarmStatusCmd() *cobra.Command {
 // Subcommand: swarm stop
 func newSwarmStopCmd() *cobra.Command {
 	var (
-		force bool
+		force           bool
+		timeout         time.Duration
+		sessionPatterns []string
+		jsonOutput      bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "stop",
+		Use:   "stop [session-pattern...]",
 		Short: "Stop the swarm and destroy all sessions",
+		Long: `Gracefully stop swarm agent sessions.
+
+By default, discovers and stops all swarm sessions (cc_agents_*, cod_agents_*, gmi_agents_*).
+Optionally specify session name patterns to stop specific sessions.
+
+The graceful shutdown process:
+  1. Send exit signals to all agents (Ctrl+C for Claude, /exit for Codex, etc.)
+  2. Wait for graceful timeout to allow agents to exit cleanly
+  3. Destroy all tmux sessions
+
+Examples:
+  ntm swarm stop                    # Stop all swarm sessions gracefully
+  ntm swarm stop --force            # Immediately destroy without graceful exit
+  ntm swarm stop cc_agents_*        # Stop only Claude Code sessions
+  ntm swarm stop --timeout=10s      # Wait 10s for graceful exit`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// TODO: Implement swarm stop
-			output.PrintInfo("Swarm stop not yet implemented")
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+
+			// Determine which sessions to stop
+			patterns := sessionPatterns
+			if len(args) > 0 {
+				patterns = args
+			}
+
+			// If no patterns specified, use default swarm session patterns
+			if len(patterns) == 0 {
+				patterns = []string{"cc_agents_*", "cod_agents_*", "gmi_agents_*"}
+			}
+
+			// Discover matching sessions
+			sessions, err := discoverSwarmSessions(patterns)
+			if err != nil {
+				return fmt.Errorf("discovering sessions: %w", err)
+			}
+
+			if len(sessions) == 0 {
+				output.PrintInfo("No swarm sessions found matching the specified patterns")
+				return nil
+			}
+
+			output.PrintInfof("Found %d swarm session(s) to stop", len(sessions))
+			for _, sess := range sessions {
+				output.PrintInfof("  - %s", sess)
+			}
+
+			// Configure shutdown
+			cfg := swarm.DefaultShutdownConfig()
+			cfg.ForceKill = force
+			if timeout > 0 {
+				cfg.GracefulTimeout = timeout
+			}
+
+			// Execute shutdown
+			orchestrator := swarm.NewSwarmOrchestrator()
+			result, err := orchestrator.GracefulShutdown(ctx, sessions, cfg)
+			if err != nil {
+				return fmt.Errorf("shutdown failed: %w", err)
+			}
+
+			// Output results
+			if jsonOutput {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(result)
+			}
+
+			output.PrintInfof("Shutdown complete:")
+			output.PrintInfof("  Sessions destroyed: %d", result.SessionsDestroyed)
+			output.PrintInfof("  Panes signaled: %d", result.PanesKilled)
+			output.PrintInfof("  Graceful exits: %d", result.GracefulExits)
+			output.PrintInfof("  Duration: %s", result.Duration.Round(time.Millisecond))
+
+			if len(result.Errors) > 0 {
+				output.PrintWarningf("  Errors: %d", len(result.Errors))
+				for _, e := range result.Errors {
+					output.PrintWarningf("    - %v", e)
+				}
+			}
+
 			return nil
 		},
 	}
 
-	cmd.Flags().BoolVar(&force, "force", false, "Force stop without confirmation")
+	cmd.Flags().BoolVar(&force, "force", false, "Force stop without graceful exit")
+	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Second, "Timeout for graceful exit")
+	cmd.Flags().StringSliceVar(&sessionPatterns, "sessions", nil, "Session name patterns to stop")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output results as JSON")
 
 	return cmd
+}
+
+// discoverSwarmSessions finds tmux sessions matching the given patterns.
+func discoverSwarmSessions(patterns []string) ([]string, error) {
+	client := tmux.DefaultClient
+
+	// List all sessions
+	allSessions, err := client.ListSessions()
+	if err != nil {
+		return nil, fmt.Errorf("listing sessions: %w", err)
+	}
+
+	// Match sessions against patterns
+	var matched []string
+	seen := make(map[string]bool)
+
+	for _, pattern := range patterns {
+		// Compile pattern as glob-like regex
+		regexPattern := globToRegex(pattern)
+		re, err := regexp.Compile("^" + regexPattern + "$")
+		if err != nil {
+			slog.Warn("invalid session pattern", "pattern", pattern, "error", err)
+			continue
+		}
+
+		for _, sess := range allSessions {
+			if seen[sess.Name] {
+				continue
+			}
+			if re.MatchString(sess.Name) {
+				matched = append(matched, sess.Name)
+				seen[sess.Name] = true
+			}
+		}
+	}
+
+	return matched, nil
+}
+
+// globToRegex converts a glob pattern to a regex pattern.
+func globToRegex(glob string) string {
+	result := ""
+	for _, c := range glob {
+		switch c {
+		case '*':
+			result += ".*"
+		case '?':
+			result += "."
+		case '.', '+', '^', '$', '(', ')', '[', ']', '{', '}', '|', '\\':
+			result += "\\" + string(c)
+		default:
+			result += string(c)
+		}
+	}
+	return result
 }

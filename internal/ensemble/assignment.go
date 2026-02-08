@@ -361,18 +361,15 @@ func resolveMode(raw string, catalog *ModeCatalog) (string, *ReasoningMode, erro
 }
 
 func resolveModeByCode(code string, catalog *ModeCatalog) (*ReasoningMode, error) {
-	category, index, ok := parseModeCode(code)
-	if !ok {
+	if _, _, ok := parseModeCode(code); !ok {
 		return nil, nil
 	}
 
-	modes := catalog.ListByCategory(category)
-	if index < 1 || index > len(modes) {
-		return nil, fmt.Errorf("mode code %q out of range for category %s", code, category.String())
+	mode := catalog.GetModeByCode(code)
+	if mode == nil {
+		return nil, fmt.Errorf("mode code %q not found in catalog", code)
 	}
-
-	modeID := modes[index-1].ID
-	return catalog.GetMode(modeID), nil
+	return mode, nil
 }
 
 func parseModeCode(code string) (ModeCategory, int, bool) {

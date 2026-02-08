@@ -196,6 +196,23 @@ func buildCommandRegistry() []RobotCommandInfo {
 			},
 		},
 		{
+			Name:        "watch-bead",
+			Flag:        "--robot-watch-bead",
+			Category:    "state",
+			Description: "Capture recent mentions of a bead across panes and report current bead status.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-watch-bead", Type: "string", Required: true, Description: "Session name"},
+				{Name: "bead", Flag: "--bead", Type: "string", Required: true, Description: "Bead ID to track"},
+				{Name: "panes", Flag: "--panes", Type: "string", Required: false, Description: "Comma-separated pane indices to filter"},
+				{Name: "lines", Flag: "--lines", Type: "int", Required: false, Default: "200", Description: "Lines captured per pane"},
+				{Name: "interval", Flag: "--interval", Type: "string", Required: false, Default: "30s", Description: "Status polling interval"},
+			},
+			Examples: []string{
+				"ntm --robot-watch-bead=myproject --bead=bd-abc123",
+				"ntm --robot-watch-bead=myproject --bead=bd-abc123 --panes=2,3 --lines=300 --interval=45s",
+			},
+		},
+		{
 			Name:        "inspect-pane",
 			Flag:        "--robot-inspect-pane",
 			Category:    "state",
@@ -293,6 +310,21 @@ func buildCommandRegistry() []RobotCommandInfo {
 				{Name: "diagnose-pane", Flag: "--diagnose-pane", Type: "int", Required: false, Description: "Diagnose specific pane only"},
 			},
 			Examples: []string{"ntm --robot-diagnose=myproject --diagnose-fix"},
+		},
+		{
+			Name:        "health-restart-stuck",
+			Flag:        "--robot-health-restart-stuck",
+			Category:    "state",
+			Description: "Detect and restart agents stuck with no output for N minutes.",
+			Parameters: []RobotParameter{
+				{Name: "session", Flag: "--robot-health-restart-stuck", Type: "string", Required: true, Description: "Session name"},
+				{Name: "stuck-threshold", Flag: "--stuck-threshold", Type: "duration", Required: false, Default: "5m", Description: "Duration before considering agent stuck (e.g. 5m, 10m, 300s)"},
+				{Name: "dry-run", Flag: "--dry-run", Type: "bool", Required: false, Description: "Report stuck panes without restarting"},
+			},
+			Examples: []string{
+				"ntm --robot-health-restart-stuck=myproject",
+				"ntm --robot-health-restart-stuck=myproject --stuck-threshold=10m --dry-run",
+			},
 		},
 		{
 			Name:        "probe",
@@ -812,6 +844,22 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Examples:    []string{"ntm --robot-tools"},
 		},
 		{
+			Name:        "acfs-status",
+			Flag:        "--robot-acfs-status",
+			Category:    "utility",
+			Description: "Get setup status via ACFS (core tool availability).",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-acfs-status"},
+		},
+		{
+			Name:        "setup-status",
+			Flag:        "--robot-setup",
+			Category:    "utility",
+			Description: "Alias for --robot-acfs-status.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-setup"},
+		},
+		{
 			Name:        "jfp-status",
 			Flag:        "--robot-jfp-status",
 			Category:    "utility",
@@ -893,6 +941,37 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Examples:    []string{"ntm --robot-jfp-bundles"},
 		},
 		{
+			Name:        "jfp-install",
+			Flag:        "--robot-jfp-install",
+			Category:    "utility",
+			Description: "Install JFP prompt(s) by ID.",
+			Parameters: []RobotParameter{
+				{Name: "ids", Flag: "--robot-jfp-install", Type: "string", Required: true, Description: "Prompt ID(s), comma-separated"},
+				{Name: "project", Flag: "--project", Type: "string", Required: false, Description: "Project directory override (alias: --jfp-project)"},
+				{Name: "jfp-project", Flag: "--jfp-project", Type: "string", Required: false, Description: "Optional project directory for installs"},
+			},
+			Examples: []string{"ntm --robot-jfp-install=prompt-123", "ntm --robot-jfp-install=prompt-1,prompt-2 --jfp-project=/path/to/project"},
+		},
+		{
+			Name:        "jfp-export",
+			Flag:        "--robot-jfp-export",
+			Category:    "utility",
+			Description: "Export JFP prompt(s) by ID.",
+			Parameters: []RobotParameter{
+				{Name: "ids", Flag: "--robot-jfp-export", Type: "string", Required: true, Description: "Prompt ID(s), comma-separated"},
+				{Name: "format", Flag: "--jfp-format", Type: "string", Required: false, Description: "Export format (skill or md)"},
+			},
+			Examples: []string{"ntm --robot-jfp-export=prompt-123", "ntm --robot-jfp-export=prompt-123 --jfp-format=md"},
+		},
+		{
+			Name:        "jfp-update",
+			Flag:        "--robot-jfp-update",
+			Category:    "utility",
+			Description: "Update JFP registry cache.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-jfp-update"},
+		},
+		{
 			Name:        "ms-search",
 			Flag:        "--robot-ms-search",
 			Category:    "utility",
@@ -913,6 +992,53 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Examples: []string{"ntm --robot-ms-show=commit-and-release"},
 		},
 		{
+			Name:        "dcg-status",
+			Flag:        "--robot-dcg-status",
+			Category:    "utility",
+			Description: "Show DCG status and configuration.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-dcg-status"},
+		},
+		{
+			Name:        "dcg-check",
+			Flag:        "--robot-dcg-check",
+			Category:    "utility",
+			Description: "Preflight a shell command via DCG (no execution). Aliases: --robot-guard, --cmd.",
+			Parameters: []RobotParameter{
+				{Name: "command", Flag: "--command", Type: "string", Required: true, Description: "Shell command to preflight"},
+			},
+			Examples: []string{"ntm --robot-dcg-check --command='rm -rf /tmp'"},
+		},
+		{
+			Name:        "slb-pending",
+			Flag:        "--robot-slb-pending",
+			Category:    "utility",
+			Description: "List pending SLB approval requests.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-slb-pending"},
+		},
+		{
+			Name:        "slb-approve",
+			Flag:        "--robot-slb-approve",
+			Category:    "utility",
+			Description: "Approve an SLB request by ID.",
+			Parameters: []RobotParameter{
+				{Name: "id", Flag: "--robot-slb-approve", Type: "string", Required: true, Description: "Request ID"},
+			},
+			Examples: []string{"ntm --robot-slb-approve=req-123"},
+		},
+		{
+			Name:        "slb-deny",
+			Flag:        "--robot-slb-deny",
+			Category:    "utility",
+			Description: "Deny an SLB request by ID.",
+			Parameters: []RobotParameter{
+				{Name: "id", Flag: "--robot-slb-deny", Type: "string", Required: true, Description: "Request ID"},
+				{Name: "reason", Flag: "--reason", Type: "string", Required: false, Description: "Optional denial reason"},
+			},
+			Examples: []string{"ntm --robot-slb-deny=req-123 --reason='Too risky'"},
+		},
+		{
 			Name:        "ru-sync",
 			Flag:        "--robot-ru-sync",
 			Category:    "utility",
@@ -923,6 +1049,18 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Examples: []string{
 				"ntm --robot-ru-sync",
 				"ntm --robot-ru-sync --dry-run",
+			},
+		},
+		{
+			Name:        "giil-fetch",
+			Flag:        "--robot-giil-fetch",
+			Category:    "utility",
+			Description: "Download image from share URL via giil and return JSON metadata.",
+			Parameters: []RobotParameter{
+				{Name: "url", Flag: "--robot-giil-fetch", Type: "string", Required: true, Description: "Share URL (iCloud, Dropbox, Google Photos, Google Drive)"},
+			},
+			Examples: []string{
+				"ntm --robot-giil-fetch=https://share.icloud.com/photos/abc123",
 			},
 		},
 		{
@@ -946,6 +1084,14 @@ func buildCommandRegistry() []RobotCommandInfo {
 			Description: "Get RCH status summary including worker counts.",
 			Parameters:  []RobotParameter{},
 			Examples:    []string{"ntm --robot-rch-status"},
+		},
+		{
+			Name:        "proxy-status",
+			Flag:        "--robot-proxy-status",
+			Category:    "utility",
+			Description: "Get rust_proxy daemon status, route metrics, and failover history.",
+			Parameters:  []RobotParameter{},
+			Examples:    []string{"ntm --robot-proxy-status"},
 		},
 		{
 			Name:        "rch-workers",

@@ -115,7 +115,7 @@ func TestRunMailInbox(t *testing.T) {
 						{ID: 1,
 							Subject:    "Test Message",
 							From:       "GreenCastle",
-							CreatedTS:  time.Now(),
+							CreatedTS:  agentmail.FlexTime{Time: time.Now()},
 							Importance: "normal",
 						},
 					},

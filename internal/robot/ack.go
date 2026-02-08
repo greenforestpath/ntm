@@ -50,6 +50,10 @@ const (
 	AckNone           AckType = "none"            // No acknowledgment detected
 )
 
+// We capture enough scrollback to avoid missing short acks when the pane is chatty
+// or when the capture window shifts between polls.
+const ackCaptureLines = 200
+
 // AckOptions configures the PrintAck operation
 type AckOptions struct {
 	Session   string   // Target session name
@@ -154,7 +158,7 @@ func GetAck(opts AckOptions) (*AckOutput, error) {
 		captured, err := func() (string, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			return tmux.CapturePaneOutputContext(ctx, pane.ID, 20)
+			return tmux.CapturePaneOutputContext(ctx, pane.ID, ackCaptureLines)
 		}()
 		if err == nil {
 			initialStates[paneKey] = status.StripANSI(captured)
@@ -191,7 +195,7 @@ func GetAck(opts AckOptions) (*AckOutput, error) {
 			captured, err := func() (string, error) {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
-				return tmux.CapturePaneOutputContext(ctx, targetPane.ID, 20)
+				return tmux.CapturePaneOutputContext(ctx, targetPane.ID, ackCaptureLines)
 			}()
 			if err != nil {
 				stillPending = append(stillPending, paneKey)
@@ -231,7 +235,7 @@ func GetAck(opts AckOptions) (*AckOutput, error) {
 		output.RobotResponse = NewErrorResponse(
 			fmt.Errorf("ack timeout"),
 			ErrCodeTimeout,
-			"Increase --ack-timeout or check agent health",
+			"Increase --timeout (or deprecated --ack-timeout) or check agent health",
 		)
 	}
 
@@ -319,23 +323,52 @@ func detectAcknowledgment(initialOutput, currentOutput, message, paneTitle strin
 
 // getNewContent extracts the content that was added
 func getNewContent(initial, current string) string {
-	if len(current) <= len(initial) {
-		// Content might have been replaced, compare end
-		initialLines := splitLines(initial)
-		currentLines := splitLines(current)
-
-		if len(currentLines) <= len(initialLines) {
-			return ""
-		}
-
-		// Return new lines
-		newLines := currentLines[len(initialLines):]
-		return strings.Join(newLines, "\n")
+	if initial == current {
+		return ""
 	}
 
 	// Simple case: content appended
 	if strings.HasPrefix(current, initial) {
 		return current[len(initial):]
+	}
+
+	// When capture windows are fixed-size (e.g., last 20 lines), the window can shift even if
+	// only a few lines were appended. That produces different strings with the same line count,
+	// and the old length/line-count diff would incorrectly return empty.
+	if len(current) <= len(initial) {
+		// Content might have been replaced, compare end
+		initialLines := splitLines(initial)
+		currentLines := splitLines(current)
+
+		if len(currentLines) > len(initialLines) {
+			// Return new lines
+			newLines := currentLines[len(initialLines):]
+			return strings.Join(newLines, "\n")
+		}
+
+		// Rolling window shift: find the longest suffix of initial that matches a prefix of current.
+		maxK := len(initialLines)
+		if len(currentLines) < maxK {
+			maxK = len(currentLines)
+		}
+		for k := maxK; k > 0; k-- {
+			ok := true
+			initStart := len(initialLines) - k
+			for i := 0; i < k; i++ {
+				if initialLines[initStart+i] != currentLines[i] {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				if k >= len(currentLines) {
+					return ""
+				}
+				return strings.Join(currentLines[k:], "\n")
+			}
+		}
+
+		return ""
 	}
 
 	// Content changed - find common prefix and return rest
@@ -413,6 +446,41 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 	// First, send the message
 	sentAt := time.Now().UTC()
 
+	redactCfg := normalizeSendRedactionConfig(opts.Redaction)
+	messageToSend, preview, redactionSummary, redactionWarnings, blocked := applySendMessageRedaction(opts.Message, redactCfg)
+	if blocked {
+		errMsg := "refusing to proceed: potential secrets detected (redaction mode: block)"
+		if parts := formatRedactionCategoryCounts(redactionSummary.Categories); parts != "" {
+			errMsg = fmt.Sprintf("refusing to proceed: potential secrets detected (%s) (redaction mode: block)", parts)
+		}
+		errResp := NewErrorResponse(fmt.Errorf("%s", errMsg), "SENSITIVE_DATA_BLOCKED", "Re-run with --allow-secret to bypass, or use --redact=warn/--redact=redact")
+		return &SendAndAckOutput{
+			RobotResponse: errResp,
+			Send: SendOutput{
+				RobotResponse:  errResp,
+				Session:        opts.Session,
+				SentAt:         sentAt,
+				Blocked:        true,
+				Redaction:      redactionSummary,
+				Warnings:       redactionWarnings,
+				Targets:        []string{},
+				Successful:     []string{},
+				Failed:         []SendError{},
+				MessagePreview: preview,
+			},
+			Ack: AckOutput{
+				RobotResponse: errResp,
+				Session:       opts.Session,
+				SentAt:        sentAt,
+				CompletedAt:   time.Now().UTC(),
+				Confirmations: []AckConfirmation{},
+				Pending:       []string{},
+				Failed:        []AckFailure{{Pane: "send", Reason: "blocked by redaction"}},
+			},
+		}, nil
+	}
+	opts.Message = messageToSend
+
 	if !tmux.SessionExists(opts.Session) {
 		return &SendAndAckOutput{
 			RobotResponse: NewErrorResponse(
@@ -428,10 +496,13 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 				),
 				Session:        opts.Session,
 				SentAt:         sentAt,
+				Blocked:        false,
+				Redaction:      redactionSummary,
+				Warnings:       redactionWarnings,
 				Targets:        []string{},
 				Successful:     []string{},
 				Failed:         []SendError{{Pane: "session", Error: fmt.Sprintf("session '%s' not found", opts.Session)}},
-				MessagePreview: truncateMessage(opts.Message),
+				MessagePreview: preview,
 			},
 			Ack: AckOutput{
 				RobotResponse: NewErrorResponse(
@@ -465,10 +536,13 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 				),
 				Session:        opts.Session,
 				SentAt:         sentAt,
+				Blocked:        false,
+				Redaction:      redactionSummary,
+				Warnings:       redactionWarnings,
 				Targets:        []string{},
 				Successful:     []string{},
 				Failed:         []SendError{{Pane: "panes", Error: fmt.Sprintf("failed to get panes: %v", err)}},
-				MessagePreview: truncateMessage(opts.Message),
+				MessagePreview: preview,
 			},
 			Ack: AckOutput{
 				RobotResponse: NewErrorResponse(
@@ -546,7 +620,7 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 		captured, err := func() (string, error) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			return tmux.CapturePaneOutputContext(ctx, pane.ID, 20)
+			return tmux.CapturePaneOutputContext(ctx, pane.ID, ackCaptureLines)
 		}()
 		if err == nil {
 			initialStates[paneKey] = status.StripANSI(captured)
@@ -554,12 +628,16 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 	}
 
 	sendOutput := SendOutput{
+		RobotResponse:  NewRobotResponse(true), // Will be updated based on results
 		Session:        opts.Session,
 		SentAt:         sentAt,
+		Blocked:        false,
+		Redaction:      redactionSummary,
+		Warnings:       redactionWarnings,
 		Targets:        targetKeys,
 		Successful:     []string{},
 		Failed:         []SendError{},
-		MessagePreview: truncateMessage(opts.Message),
+		MessagePreview: preview,
 	}
 
 	// Send to all targets
@@ -581,8 +659,16 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 		}
 	}
 
+	// Update success based on send results
+	sendOutput.Success = len(sendOutput.Failed) == 0 && len(sendOutput.Successful) > 0
+	if len(sendOutput.Failed) > 0 {
+		sendOutput.Error = fmt.Sprintf("%d of %d sends failed", len(sendOutput.Failed), len(sendOutput.Targets))
+		sendOutput.ErrorCode = ErrCodeInternalError
+	}
+
 	// Now wait for acknowledgments (only for successful sends)
 	ackOutput := AckOutput{
+		RobotResponse: NewRobotResponse(true), // Will be updated based on results
 		Session:       opts.Session,
 		SentAt:        sentAt,
 		Confirmations: []AckConfirmation{},
@@ -626,7 +712,7 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 			captured, err := func() (string, error) {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
-				return tmux.CapturePaneOutputContext(ctx, targetPane.ID, 20)
+				return tmux.CapturePaneOutputContext(ctx, targetPane.ID, ackCaptureLines)
 			}()
 			if err != nil {
 				stillPending = append(stillPending, paneKey)
@@ -660,6 +746,11 @@ func GetSendAndAck(opts SendAndAckOptions) (*SendAndAckOutput, error) {
 
 	if len(ackOutput.Pending) > 0 {
 		ackOutput.TimedOut = true
+		ackOutput.RobotResponse = NewErrorResponse(
+			fmt.Errorf("ack timeout"),
+			ErrCodeTimeout,
+			"Increase --timeout (or deprecated --ack-timeout) or check agent health",
+		)
 	}
 
 	ackOutput.CompletedAt = time.Now().UTC()

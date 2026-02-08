@@ -1,6 +1,7 @@
 package ensemble
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -100,7 +101,7 @@ func TestCalculateRedundancy_DisjointFindings(t *testing.T) {
 }
 
 func TestCalculateRedundancy_PartialOverlap(t *testing.T) {
-	// Two modes with 1 shared, 1 unique each → Jaccard = 1/3 ≈ 0.333
+	// Two modes with 1 shared, 1 unique each → Dice = 2*1/(2+2) = 0.5
 	outputs := []ModeOutput{
 		{
 			ModeID: "mode-a",
@@ -131,9 +132,9 @@ func TestCalculateRedundancy_PartialOverlap(t *testing.T) {
 	}
 
 	pair := analysis.PairwiseScores[0]
-	// Jaccard for findings: 1/(2+2-1) = 1/3 ≈ 0.333
-	// No recommendations in either mode, so we use findings similarity directly
-	expectedFindingsSim := 1.0 / 3.0
+	// Dice for findings: 2*1/(2+2) = 0.5
+	// No recommendations in either mode, so we use findings similarity directly.
+	expectedFindingsSim := 0.5
 
 	if pair.Similarity < expectedFindingsSim-0.05 || pair.Similarity > expectedFindingsSim+0.05 {
 		t.Errorf("expected similarity ~%.2f for partial overlap, got %.2f",
@@ -274,6 +275,33 @@ func TestCalculateRedundancy_ThreeModes(t *testing.T) {
 	}
 	if lowSim != 2 {
 		t.Errorf("expected 2 low similarity pairs, got %d", lowSim)
+	}
+}
+
+func TestRedundancyAnalysis_SuggestReplacements(t *testing.T) {
+	analysis := &RedundancyAnalysis{
+		PairwiseScores: []PairSimilarity{
+			{ModeA: "mode-a", ModeB: "mode-b", Similarity: 0.9},
+		},
+	}
+
+	catalog, err := NewModeCatalog([]ReasoningMode{
+		{ID: "mode-a", Name: "A", Category: CategoryFormal, Tier: TierCore, ShortDesc: "A"},
+		{ID: "mode-b", Name: "B", Category: CategoryFormal, Tier: TierCore, ShortDesc: "B"},
+		{ID: "alt-1", Name: "Alt", Category: CategoryUncertainty, Tier: TierCore, ShortDesc: "Alt"},
+	}, "test")
+	if err != nil {
+		t.Fatalf("NewModeCatalog error: %v", err)
+	}
+
+	suggestions := analysis.SuggestReplacements(catalog)
+	if len(suggestions) == 0 {
+		t.Fatal("expected suggestions")
+	}
+
+	joined := strings.Join(suggestions, "\n")
+	if !strings.Contains(joined, "mode-b") || !strings.Contains(joined, "alt-1") {
+		t.Fatalf("unexpected suggestions: %v", suggestions)
 	}
 }
 
@@ -621,6 +649,120 @@ func TestGenerateRedundancyRecommendations(t *testing.T) {
 			t.Errorf("expected high redundancy message, got %v", recs)
 		}
 	})
+}
+
+// =============================================================================
+// jaccardSimilarity (token-based)
+// =============================================================================
+
+func TestJaccardSimilarity(t *testing.T) {
+	t.Parallel()
+
+	set := func(elems ...string) map[string]struct{} {
+		m := make(map[string]struct{}, len(elems))
+		for _, e := range elems {
+			m[e] = struct{}{}
+		}
+		return m
+	}
+
+	t.Run("both empty", func(t *testing.T) {
+		t.Parallel()
+		got := jaccardSimilarity(nil, nil)
+		if got != 1.0 {
+			t.Errorf("both empty = %f, want 1.0 (identical empty sets)", got)
+		}
+	})
+
+	t.Run("one empty", func(t *testing.T) {
+		t.Parallel()
+		got := jaccardSimilarity(set("a"), nil)
+		if got != 0.0 {
+			t.Errorf("one empty = %f, want 0.0", got)
+		}
+	})
+
+	t.Run("identical", func(t *testing.T) {
+		t.Parallel()
+		got := jaccardSimilarity(set("a", "b"), set("a", "b"))
+		if got != 1.0 {
+			t.Errorf("identical = %f, want 1.0", got)
+		}
+	})
+
+	t.Run("disjoint", func(t *testing.T) {
+		t.Parallel()
+		got := jaccardSimilarity(set("a"), set("b"))
+		if got != 0.0 {
+			t.Errorf("disjoint = %f, want 0.0", got)
+		}
+	})
+
+	t.Run("partial overlap", func(t *testing.T) {
+		t.Parallel()
+		got := jaccardSimilarity(set("a", "b"), set("b", "c"))
+		want := 1.0 / 3.0
+		if got < want-0.001 || got > want+0.001 {
+			t.Errorf("partial = %f, want %f", got, want)
+		}
+	})
+}
+
+// =============================================================================
+// tokenize (ensemble)
+// =============================================================================
+
+func TestTokenizeEnsemble(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		text string
+		want int
+	}{
+		{"empty", "", 0},
+		{"single word", "hello", 1},
+		{"multiple words", "hello world foo", 3},
+		{"with whitespace", "  hello   world  ", 2},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := tokenize(tc.text)
+			if len(got) != tc.want {
+				t.Errorf("tokenize(%q) returned %d tokens, want %d", tc.text, len(got), tc.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// normalizeText
+// =============================================================================
+
+func TestNormalizeText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"lowercase", "HELLO WORLD", "hello world"},
+		{"trims whitespace", "  hello  ", "hello"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := normalizeText(tc.input)
+			if got != tc.want {
+				t.Errorf("normalizeText(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
 }
 
 // Helper function

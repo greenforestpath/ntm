@@ -400,7 +400,7 @@ func TestHealthCheck(t *testing.T) {
 
 	// Start a test HTTP server
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/health/liveness", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
@@ -416,13 +416,13 @@ func TestHealthCheck(t *testing.T) {
 	defer server.Shutdown(context.Background())
 
 	// Test checkHealthHTTP
-	healthURL := fmt.Sprintf("http://127.0.0.1:%d/health", port)
+	healthURL := fmt.Sprintf("http://127.0.0.1:%d/health/liveness", port)
 	if !s.checkHealthHTTP(healthURL) {
 		t.Error("checkHealthHTTP() returned false for healthy endpoint")
 	}
 
 	// Test with invalid URL
-	if s.checkHealthHTTP("http://127.0.0.1:99999/health") {
+	if s.checkHealthHTTP("http://127.0.0.1:99999/health/liveness") {
 		t.Error("checkHealthHTTP() returned true for invalid endpoint")
 	}
 }
@@ -448,5 +448,45 @@ func TestHealthCheckCmd(t *testing.T) {
 	// Test with failed command
 	if s.checkHealthCmd([]string{"false"}) {
 		t.Error("checkHealthCmd() returned true for failed command")
+	}
+}
+
+func TestHandleDaemonFailure_IdempotentWhenAlreadyFailed(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	s, err := New(Config{
+		SessionID:  "test-session",
+		ProjectDir: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer s.Shutdown()
+
+	// Force ctx done so handleDaemonFailure exits quickly (no time.After backoff).
+	s.cancel()
+
+	d := &ManagedDaemon{
+		Spec: DaemonSpec{
+			Name:    "test-daemon",
+			Command: "true",
+		},
+		State:    StateRunning,
+		Restarts: 0,
+		OwnerID:  "test-session",
+	}
+
+	s.handleDaemonFailure(d)
+	if d.Restarts != 1 {
+		t.Fatalf("Restarts = %d, want 1", d.Restarts)
+	}
+	if d.State != StateFailed {
+		t.Fatalf("State = %v, want %v", d.State, StateFailed)
+	}
+
+	// A second failure signal should be ignored.
+	s.handleDaemonFailure(d)
+	if d.Restarts != 1 {
+		t.Fatalf("Restarts after 2nd call = %d, want 1", d.Restarts)
 	}
 }

@@ -321,6 +321,7 @@ func TestIsValidFilePathForReservation(t *testing.T) {
 		{"/path/file.verylongextension", false}, // extension too long
 		{".", false},                            // just a dot
 		{"file.", false},                        // extension empty
+		{"file.g@", false},                      // non-alphanumeric char in extension
 	}
 
 	for _, tc := range tests {
@@ -392,8 +393,7 @@ func TestFileReservationWatcherStartStop(t *testing.T) {
 			WithReservationPollInterval(50 * time.Millisecond),
 		)
 
-		ctx := context.Background()
-		w.Start(ctx)
+		w.Start(context.Background())
 		t.Logf("RESERVATION_TEST: watcher started")
 
 		// Let it run briefly
@@ -402,10 +402,45 @@ func TestFileReservationWatcherStartStop(t *testing.T) {
 		w.Stop()
 		t.Logf("RESERVATION_TEST: watcher stopped")
 
-		// Verify it stopped
-		if w.cancelFunc != nil {
-			// cancelFunc is set during Start, should still be set
-			// but calling it again should be safe
+		// Verify it stopped and is restartable
+		if w.stopCh != nil {
+			t.Fatalf("expected stopCh to be cleared after Stop()")
+		}
+	})
+
+	t.Run("start with nil context", func(t *testing.T) {
+		w := NewFileReservationWatcher(
+			WithReservationPollInterval(50 * time.Millisecond),
+		)
+
+		// Should not panic
+		w.Start(nil)
+		time.Sleep(50 * time.Millisecond)
+		w.Stop()
+
+		if w.stopCh != nil {
+			t.Fatalf("expected stopCh to be cleared after Stop()")
+		}
+	})
+
+	t.Run("double start does not deadlock stop", func(t *testing.T) {
+		w := NewFileReservationWatcher(
+			WithReservationPollInterval(50 * time.Millisecond),
+		)
+
+		w.Start(context.Background())
+		w.Start(context.Background()) // should be idempotent
+
+		done := make(chan struct{})
+		go func() {
+			w.Stop()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Stop() hung after double Start()")
 		}
 	})
 

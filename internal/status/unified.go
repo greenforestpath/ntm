@@ -51,24 +51,52 @@ func (d *UnifiedDetector) Analyze(paneID, paneName, agentType string, output str
 	status.State = state
 	status.ErrorType = errType
 
+	// Extract metrics using agent parser
+	if isKnownAgentType(agentType) {
+		parser := agent.NewParser()
+		if parsed, err := parser.ParseWithHint(output, agent.AgentType(agentType)); err == nil {
+			if parsed.ContextRemaining != nil {
+				status.ContextUsage = 100.0 - *parsed.ContextRemaining
+			}
+			if parsed.TokensUsed != nil {
+				status.TokensUsed = *parsed.TokensUsed
+			}
+		}
+	}
+
 	return status
 }
 
 // determineState calculates state based on output and activity
 func (d *UnifiedDetector) determineState(output, agentType string, lastActivity time.Time) (AgentState, ErrorType) {
 	// Detection priority:
-	// 1. Check for errors first (most important)
-	// 2. Check for idle (at prompt)
+	// 1. Check for idle prompt when velocity is low (agent waiting for input)
+	// 2. Check for errors (but only if not clearly at a prompt)
 	// 3. Check activity recency (working vs unknown)
 	// 4. Heuristic check for likely-idle state
+	//
+	// Key insight: if an agent is showing an idle prompt and not actively outputting,
+	// it should be classified as WAITING regardless of historical error messages
+	// in the scrollback. Error patterns from earlier in the session are not relevant
+	// when the agent has clearly recovered and is now waiting for input.
 
-	// Check for errors
+	threshold := time.Duration(d.config.ActivityThreshold) * time.Second
+	isLowVelocity := time.Since(lastActivity) >= threshold
+
+	// Check if at prompt (idle) - prioritize this when velocity is low
+	isAtPrompt := DetectIdleFromOutput(output, agentType)
+	if isAtPrompt && isLowVelocity {
+		// Agent is at prompt and not actively outputting - clearly idle
+		return StateIdle, ErrorNone
+	}
+
+	// Check for errors (only relevant if not clearly at a prompt waiting for input)
 	if errType := DetectErrorInOutput(output); errType != ErrorNone {
 		return StateError, errType
 	}
 
-	// Check if at prompt (idle)
-	if DetectIdleFromOutput(output, agentType) {
+	// Check if at prompt (for cases with recent activity - might still be processing)
+	if isAtPrompt {
 		return StateIdle, ErrorNone
 	}
 	// Heuristic: for user panes with empty output, treat as idle
@@ -78,9 +106,8 @@ func (d *UnifiedDetector) determineState(output, agentType string, lastActivity 
 		}
 	}
 
-	// Check recent activity
-	threshold := time.Duration(d.config.ActivityThreshold) * time.Second
-	if time.Since(lastActivity) < threshold {
+	// Check recent activity (reuse isLowVelocity computed earlier)
+	if !isLowVelocity {
 		return StateWorking, ErrorNone
 	}
 
@@ -231,6 +258,19 @@ func (d *UnifiedDetector) Detect(paneID string) (AgentStatus, error) {
 	status.State = state
 	status.ErrorType = errType
 
+	// Extract metrics using agent parser
+	if isKnownAgentType(status.AgentType) {
+		parser := agent.NewParser()
+		if parsed, err := parser.ParseWithHint(output, agent.AgentType(status.AgentType)); err == nil {
+			if parsed.ContextRemaining != nil {
+				status.ContextUsage = 100.0 - *parsed.ContextRemaining
+			}
+			if parsed.TokensUsed != nil {
+				status.TokensUsed = *parsed.TokensUsed
+			}
+		}
+	}
+
 	return status, nil
 }
 
@@ -252,12 +292,43 @@ func (d *UnifiedDetector) DetectAllContext(ctx context.Context, session string) 
 		return nil, err
 	}
 
+	// Capture outputs in parallel
+	type captureResult struct {
+		paneID string
+		output string
+		err    error
+	}
+
+	resultsCh := make(chan captureResult, len(panes))
+	
+	// Create a worker pool or just spawn per pane (assuming pane count is reasonable < 50)
+	// For simplicity and typical tmux usage, one goroutine per pane is fine.
+	for _, pane := range panes {
+		go func(pID string) {
+			// Use a short timeout for individual captures to avoid hanging the whole batch
+			capCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			
+			output, err := tmux.CapturePaneOutputContext(capCtx, pID, d.config.ScanLines)
+			resultsCh <- captureResult{paneID: pID, output: output, err: err}
+		}(pane.Pane.ID)
+	}
+
+	// Collect results
+	outputs := make(map[string]string)
+	for i := 0; i < len(panes); i++ {
+		select {
+		case res := <-resultsCh:
+			if res.err == nil {
+				outputs[res.paneID] = res.output
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
 	statuses := make([]AgentStatus, 0, len(panes))
 	for _, pane := range panes {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
 		status := AgentStatus{
 			PaneID:     pane.Pane.ID,
 			PaneName:   pane.Pane.Title,
@@ -267,22 +338,32 @@ func (d *UnifiedDetector) DetectAllContext(ctx context.Context, session string) 
 			State:      StateUnknown,
 		}
 
-		// Capture output for this pane
-		output, err := tmux.CapturePaneOutputContext(ctx, pane.Pane.ID, d.config.ScanLines)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, ctxErr
-			}
-			// Log but continue - one bad pane shouldn't fail all
+		output, ok := outputs[pane.Pane.ID]
+		if !ok {
+			// Capture failed or timed out, keep unknown state but preserve metadata
 			statuses = append(statuses, status)
 			continue
 		}
+
 		status.LastOutput = truncateOutput(output, d.config.OutputPreviewLength)
 
 		// Use shared logic
 		state, errType := d.determineState(output, status.AgentType, status.LastActive)
 		status.State = state
 		status.ErrorType = errType
+
+		// Extract metrics using agent parser
+		if isKnownAgentType(status.AgentType) {
+			parser := agent.NewParser()
+			if parsed, err := parser.ParseWithHint(output, agent.AgentType(status.AgentType)); err == nil {
+				if parsed.ContextRemaining != nil {
+					status.ContextUsage = 100.0 - *parsed.ContextRemaining
+				}
+				if parsed.TokensUsed != nil {
+					status.TokensUsed = *parsed.TokensUsed
+				}
+			}
+		}
 
 		statuses = append(statuses, status)
 	}

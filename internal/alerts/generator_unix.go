@@ -22,7 +22,8 @@ func (g *Generator) checkDiskSpace() (*Alert, error) {
 	if err != nil {
 		// If project dir check fails (e.g. doesn't exist), fallback to root
 		if checkPath != "/" {
-			err = syscall.Statfs("/", &stat)
+			checkPath = "/"
+			err = syscall.Statfs(checkPath, &stat)
 		}
 		if err != nil {
 			return nil, err

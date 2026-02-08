@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/audit"
 	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -39,12 +40,41 @@ type EnsembleStopResult struct {
 // GetEnsembleStop stops an ensemble and returns the result.
 // This function returns the data struct directly, enabling CLI/REST parity.
 func GetEnsembleStop(session string, opts EnsembleStopOptions) (*EnsembleStopOutput, error) {
+	correlationID := audit.NewCorrelationID()
+	auditStart := time.Now()
 	output := &EnsembleStopOutput{
 		RobotResponse: NewRobotResponse(true),
 		Result: EnsembleStopResult{
 			Session: session,
 		},
 	}
+	_ = audit.LogEvent(session, audit.EventTypeCommand, audit.ActorSystem, "ensemble.stop", map[string]interface{}{
+		"phase":          "start",
+		"session":        session,
+		"force":          opts.Force,
+		"no_collect":     opts.NoCollect,
+		"correlation_id": correlationID,
+	}, nil)
+	defer func() {
+		success := output != nil && output.RobotResponse.Success
+		payload := map[string]interface{}{
+			"phase":          "finish",
+			"session":        session,
+			"force":          opts.Force,
+			"no_collect":     opts.NoCollect,
+			"stopped":        output.Result.Stopped,
+			"captured":       output.Result.Captured,
+			"final_status":   output.Result.FinalStatus,
+			"message":        output.Result.Message,
+			"success":        success,
+			"duration_ms":    time.Since(auditStart).Milliseconds(),
+			"correlation_id": correlationID,
+		}
+		if output != nil && output.RobotResponse.Error != "" {
+			payload["error"] = output.RobotResponse.Error
+		}
+		_ = audit.LogEvent(session, audit.EventTypeCommand, audit.ActorSystem, "ensemble.stop", payload, nil)
+	}()
 
 	if strings.TrimSpace(session) == "" {
 		output.RobotResponse = NewErrorResponse(

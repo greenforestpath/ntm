@@ -61,14 +61,14 @@ func (d *ConflictDetector) DetectConflicts(ctx context.Context) ([]Conflict, err
 	// Group by pattern to detect overlaps
 	patternHolders := make(map[string][]Holder)
 	for _, r := range reservations {
-		if r.ReleasedTS != nil || time.Now().After(r.ExpiresTS) {
+		if r.ReleasedTS != nil || time.Now().After(r.ExpiresTS.Time) {
 			continue // Skip released/expired
 		}
 
 		holder := Holder{
 			AgentName:  r.AgentName,
-			ReservedAt: r.CreatedTS,
-			ExpiresAt:  r.ExpiresTS,
+			ReservedAt: r.CreatedTS.Time,
+			ExpiresAt:  r.ExpiresTS.Time,
 			Reason:     r.Reason,
 		}
 		patternHolders[r.PathPattern] = append(patternHolders[r.PathPattern], holder)
@@ -105,7 +105,7 @@ func (d *ConflictDetector) CheckPathConflict(ctx context.Context, path, excludeA
 
 	var holders []Holder
 	for _, r := range reservations {
-		if r.ReleasedTS != nil || time.Now().After(r.ExpiresTS) {
+		if r.ReleasedTS != nil || time.Now().After(r.ExpiresTS.Time) {
 			continue
 		}
 		if r.AgentName == excludeAgent {
@@ -114,8 +114,8 @@ func (d *ConflictDetector) CheckPathConflict(ctx context.Context, path, excludeA
 		if matchesPattern(path, r.PathPattern) {
 			holders = append(holders, Holder{
 				AgentName:  r.AgentName,
-				ReservedAt: r.CreatedTS,
-				ExpiresAt:  r.ExpiresTS,
+				ReservedAt: r.CreatedTS.Time,
+				ExpiresAt:  r.ExpiresTS.Time,
 				Reason:     r.Reason,
 			})
 		}
@@ -292,6 +292,7 @@ func sanitizeForID(s string) string {
 // - Single * wildcard: "src/*.go" matches "src/main.go"
 // - Double ** wildcard: "src/**" matches any path under src/
 // - Combined: "src/**/test.go" matches "src/foo/bar/test.go"
+// - Combined with wildcard suffix: "src/**/*.go" matches "src/foo/bar/test.go"
 func matchesPattern(path, pattern string) bool {
 	// Exact match
 	if path == pattern {
@@ -319,36 +320,70 @@ func matchesPattern(path, pattern string) bool {
 
 		// Path must end with suffix (after stripping prefix)
 		remaining := strings.TrimPrefix(path, prefix)
+
+		// If suffix contains wildcards, we need pattern matching, not literal matching
+		if strings.Contains(suffix, "*") {
+			// The suffix is a pattern - check if the trailing part of remaining matches it
+			// For "*.go", we check if the last path segment matches
+			// For "foo/*.go", we check if the last two segments match
+			return matchesSuffixPattern(remaining, suffix)
+		}
+
 		return strings.HasSuffix(remaining, suffix)
 	}
 
 	// Handle single * patterns (match single path segment)
 	if strings.Contains(pattern, "*") {
-		parts := strings.Split(pattern, "*")
-
-		// Must start with first part and end with last part
-		if !strings.HasPrefix(path, parts[0]) {
-			return false
-		}
-		if !strings.HasSuffix(path, parts[len(parts)-1]) {
-			return false
-		}
-
-		// For multiple wildcards, check that all parts appear in order
-		remaining := path
-		for _, part := range parts {
-			if part == "" {
-				continue
-			}
-			idx := strings.Index(remaining, part)
-			if idx == -1 {
-				return false
-			}
-			remaining = remaining[idx+len(part):]
-		}
-		return true
+		return matchesWildcardPattern(path, pattern)
 	}
 
 	// Prefix match (pattern is a directory)
 	return strings.HasPrefix(path, pattern+"/")
+}
+
+// matchesWildcardPattern checks if path matches a pattern with single * wildcards.
+func matchesWildcardPattern(path, pattern string) bool {
+	parts := strings.Split(pattern, "*")
+
+	// Must start with first part and end with last part
+	if !strings.HasPrefix(path, parts[0]) {
+		return false
+	}
+	if !strings.HasSuffix(path, parts[len(parts)-1]) {
+		return false
+	}
+
+	// For multiple wildcards, check that all parts appear in order
+	remaining := path
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		idx := strings.Index(remaining, part)
+		if idx == -1 {
+			return false
+		}
+		remaining = remaining[idx+len(part):]
+	}
+	return true
+}
+
+// matchesSuffixPattern checks if the trailing portion of path matches a suffix pattern.
+// For example, "foo/bar/test.go" matches suffix pattern "*.go" (last segment matches).
+// "foo/bar/main.go" matches suffix pattern "bar/*.go" (last two segments match).
+func matchesSuffixPattern(path, suffixPattern string) bool {
+	// Count segments in the suffix pattern
+	suffixSegments := strings.Count(suffixPattern, "/") + 1
+
+	// Get the last N segments from path
+	pathParts := strings.Split(path, "/")
+	if len(pathParts) < suffixSegments {
+		return false
+	}
+
+	// Extract the last N segments
+	trailingPath := strings.Join(pathParts[len(pathParts)-suffixSegments:], "/")
+
+	// Now match the trailing path against the suffix pattern
+	return matchesWildcardPattern(trailingPath, suffixPattern)
 }

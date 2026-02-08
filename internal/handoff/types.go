@@ -183,10 +183,24 @@ func (h *Handoff) SetAgentInfo(agentID, agentType, paneID string) *Handoff {
 
 // SetTokenInfo sets the token context fields.
 func (h *Handoff) SetTokenInfo(used, max int) *Handoff {
+	// tokens_pct is treated as a 0-100 gauge in handoff validation and UI,
+	// so clamp overflow rather than rejecting the handoff during rotation/overflow.
+	if used < 0 {
+		used = 0
+	}
+	if max < 0 {
+		max = 0
+	}
+	if max > 0 && used > max {
+		used = max
+	}
+
 	h.TokensUsed = used
 	h.TokensMax = max
 	if max > 0 {
 		h.TokensPct = float64(used) / float64(max) * 100
+	} else {
+		h.TokensPct = 0
 	}
 	return h
 }

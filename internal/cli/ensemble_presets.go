@@ -1,12 +1,20 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
@@ -16,9 +24,10 @@ import (
 
 // ensemblePresetsOptions holds flags for the ensemble presets command.
 type ensemblePresetsOptions struct {
-	Format  string
-	Verbose bool
-	Tag     string
+	Format       string
+	Verbose      bool
+	Tag          string
+	ImportedOnly bool
 }
 
 // ensemblePresetRow is a summary row for table/JSON output.
@@ -117,10 +126,13 @@ Formats:
   --format=yaml            - YAML output
 
 Use --verbose to include full preset configurations including mode details,
-synthesis settings, and budget limits.`,
+synthesis settings, and budget limits.
+
+Use --imported to show only presets imported from external files.`,
 		Example: `  ntm ensemble presets                     # List all presets
   ntm ensemble presets --format=json       # JSON output
   ntm ensemble presets --verbose           # Full configuration details
+  ntm ensemble presets --imported          # Only imported presets
   ntm ensemble presets --tag=analysis      # Filter by tag
   ntm ensemble list                        # Alias for presets`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -131,6 +143,7 @@ synthesis settings, and budget limits.`,
 	cmd.Flags().StringVarP(&opts.Format, "format", "f", "table", "Output format: table, json, yaml")
 	cmd.Flags().BoolVarP(&opts.Verbose, "verbose", "v", false, "Show full preset configurations")
 	cmd.Flags().StringVarP(&opts.Tag, "tag", "t", "", "Filter by tag")
+	cmd.Flags().BoolVar(&opts.ImportedOnly, "imported", false, "Show only imported presets")
 
 	return cmd
 }
@@ -169,9 +182,20 @@ func runEnsemblePresets(w io.Writer, opts ensemblePresetsOptions) error {
 		presets = registry.List()
 	}
 
+	if opts.ImportedOnly {
+		filtered := make([]ensemble.EnsemblePreset, 0, len(presets))
+		for _, p := range presets {
+			if p.Source == "imported" {
+				filtered = append(filtered, p)
+			}
+		}
+		presets = filtered
+	}
+
 	slog.Default().Info("ensemble presets: loaded presets",
 		"count", len(presets),
 		"tag_filter", opts.Tag,
+		"imported_only", opts.ImportedOnly,
 	)
 
 	// Load catalog for mode resolution
@@ -185,6 +209,323 @@ func runEnsemblePresets(w io.Writer, opts ensemblePresetsOptions) error {
 		return renderPresetsVerbose(w, presets, catalog, format)
 	}
 	return renderPresetsSummary(w, presets, catalog, format)
+}
+
+type ensembleExportOptions struct {
+	Output string
+	Force  bool
+}
+
+type ensembleExportOutput struct {
+	GeneratedAt time.Time `json:"generated_at" yaml:"generated_at"`
+	Name        string    `json:"name" yaml:"name"`
+	Output      string    `json:"output" yaml:"output"`
+	Bytes       int       `json:"bytes" yaml:"bytes"`
+}
+
+func newEnsembleExportCmd() *cobra.Command {
+	opts := ensembleExportOptions{}
+
+	cmd := &cobra.Command{
+		Use:   "export <preset>",
+		Short: "Export an ensemble preset to a TOML file",
+		Long: `Export an ensemble preset for cross-project sharing.
+
+The output is a portable TOML file that includes schema_version,
+display metadata, modes, synthesis, and budget configuration.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runEnsembleExport(cmd.OutOrStdout(), args[0], opts)
+		},
+	}
+
+	cmd.Flags().StringVarP(&opts.Output, "output", "o", "", "Output file path (default: <preset>.toml)")
+	cmd.Flags().BoolVar(&opts.Force, "force", false, "Overwrite output file if it exists")
+
+	return cmd
+}
+
+func runEnsembleExport(w io.Writer, name string, opts ensembleExportOptions) error {
+	outputPath := strings.TrimSpace(opts.Output)
+	if outputPath == "" {
+		outputPath = fmt.Sprintf("%s.toml", name)
+	}
+	outputPath = filepath.Clean(outputPath)
+
+	slog.Default().Info("ensemble export",
+		"preset", name,
+		"output", outputPath,
+		"force", opts.Force,
+	)
+
+	if !opts.Force {
+		if _, err := os.Stat(outputPath); err == nil {
+			return fmt.Errorf("output file already exists: %s (use --force to overwrite)", outputPath)
+		}
+	}
+
+	registry, err := ensemble.GlobalEnsembleRegistry()
+	if err != nil {
+		return fmt.Errorf("load ensemble registry: %w", err)
+	}
+	preset := registry.Get(name)
+	if preset == nil {
+		return fmt.Errorf("ensemble preset %q not found", name)
+	}
+
+	payload := ensemble.ExportFromPreset(*preset)
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+	f, err := os.Create(outputPath)
+	if err != nil {
+		return fmt.Errorf("create output file: %w", err)
+	}
+	if err := toml.NewEncoder(f).Encode(payload); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("encode TOML: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close output file: %w", err)
+	}
+
+	info, err := f.Stat()
+	size := 0
+	if err == nil {
+		size = int(info.Size())
+	}
+	slog.Default().Info("ensemble export complete",
+		"preset", name,
+		"output", outputPath,
+		"bytes", size,
+	)
+
+	result := ensembleExportOutput{
+		GeneratedAt: output.Timestamp(),
+		Name:        name,
+		Output:      outputPath,
+		Bytes:       size,
+	}
+	if jsonOutput {
+		return output.WriteJSON(w, result, true)
+	}
+	_, _ = fmt.Fprintf(w, "Exported %s to %s (%d bytes)\n", name, outputPath, size)
+	return nil
+}
+
+type ensembleImportOptions struct {
+	AllowRemote bool
+	SHA256      string
+}
+
+type ensembleImportOutput struct {
+	GeneratedAt time.Time `json:"generated_at" yaml:"generated_at"`
+	Name        string    `json:"name" yaml:"name"`
+	Target      string    `json:"target" yaml:"target"`
+	Source      string    `json:"source" yaml:"source"`
+}
+
+func newEnsembleImportCmd() *cobra.Command {
+	opts := ensembleImportOptions{}
+
+	cmd := &cobra.Command{
+		Use:   "import <file-or-url>",
+		Short: "Import an ensemble preset from a TOML file",
+		Long: `Import an ensemble preset into the local imported ensembles registry.
+
+Remote URLs are blocked by default. Use --allow-remote and provide a SHA256 checksum
+to import from a remote URL safely.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runEnsembleImport(cmd.OutOrStdout(), args[0], opts)
+		},
+	}
+
+	cmd.Flags().BoolVar(&opts.AllowRemote, "allow-remote", false, "Allow importing from http(s) URLs")
+	cmd.Flags().StringVar(&opts.SHA256, "sha256", "", "SHA256 checksum for remote imports (required for http(s))")
+
+	return cmd
+}
+
+func runEnsembleImport(w io.Writer, input string, opts ensembleImportOptions) error {
+	slog.Default().Info("ensemble import",
+		"source_input", input,
+		"allow_remote", opts.AllowRemote,
+		"checksum_provided", strings.TrimSpace(opts.SHA256) != "",
+	)
+
+	data, source, err := readEnsembleImportSource(input, opts)
+	if err != nil {
+		return err
+	}
+
+	var payload ensemble.EnsembleExport
+	if _, err := toml.Decode(string(data), &payload); err != nil {
+		return fmt.Errorf("parse TOML: %w", err)
+	}
+
+	catalog, err := ensemble.GlobalCatalog()
+	if err != nil {
+		return fmt.Errorf("load mode catalog: %w", err)
+	}
+
+	registry, err := ensemble.GlobalEnsembleRegistry()
+	if err != nil {
+		return fmt.Errorf("load ensemble registry: %w", err)
+	}
+	if err := payload.Validate(catalog, registry); err != nil {
+		return err
+	}
+
+	// Validate against full registry (embedded + user + project)
+	allPresets, err := ensemble.LoadEnsembles(catalog)
+	if err != nil {
+		return fmt.Errorf("load ensembles: %w", err)
+	}
+
+	preset := payload.ToPreset()
+	if existing := registry.Get(preset.Name); existing != nil && existing.Source != "imported" {
+		return fmt.Errorf("import conflict: preset %q already exists from %s", preset.Name, existing.Source)
+	}
+	allPresets = upsertPresetByName(allPresets, preset)
+	report := ensemble.ValidateEnsemblePresets(allPresets, catalog)
+	if err := report.Error(); err != nil {
+		return err
+	}
+
+	importPath := ensemble.ImportedEnsemblesPath("")
+	importedPresets, err := ensemble.LoadEnsemblesFile(importPath)
+	if err != nil {
+		return err
+	}
+	if conflict, err := detectPresetConflict(importedPresets, preset); err != nil {
+		return err
+	} else if conflict {
+		return fmt.Errorf("import conflict: preset %q already exists with different content", preset.Name)
+	}
+	importedPresets = upsertPresetByName(importedPresets, preset)
+	if err := ensemble.SaveEnsemblesFile(importPath, importedPresets); err != nil {
+		return err
+	}
+
+	slog.Default().Info("ensemble import complete",
+		"name", preset.Name,
+		"target", importPath,
+		"source", source,
+	)
+
+	result := ensembleImportOutput{
+		GeneratedAt: output.Timestamp(),
+		Name:        preset.Name,
+		Target:      importPath,
+		Source:      source,
+	}
+	if jsonOutput {
+		return output.WriteJSON(w, result, true)
+	}
+	_, _ = fmt.Fprintf(w, "Imported %s into %s\n", preset.Name, importPath)
+	return nil
+}
+
+func readEnsembleImportSource(input string, opts ensembleImportOptions) ([]byte, string, error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return nil, "", fmt.Errorf("input path or URL is required")
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+		if !opts.AllowRemote {
+			return nil, "", fmt.Errorf("remote imports are disabled (use --allow-remote)")
+		}
+		expected := normalizeSHA256(opts.SHA256)
+		if expected == "" {
+			return nil, "", fmt.Errorf("sha256 checksum required for remote imports")
+		}
+
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Get(trimmed)
+		if err != nil {
+			return nil, "", fmt.Errorf("download: %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, "", fmt.Errorf("download failed: %s", resp.Status)
+		}
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, "", fmt.Errorf("read remote body: %w", err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			return nil, "", fmt.Errorf("close remote body: %w", err)
+		}
+		if !checkSHA256(data, expected) {
+			return nil, "", fmt.Errorf("sha256 checksum mismatch")
+		}
+		return data, "remote", nil
+	}
+
+	data, err := os.ReadFile(trimmed)
+	if err != nil {
+		return nil, "", fmt.Errorf("read file: %w", err)
+	}
+	if checksum := normalizeSHA256(opts.SHA256); checksum != "" {
+		if !checkSHA256(data, checksum) {
+			return nil, "", fmt.Errorf("sha256 checksum mismatch")
+		}
+	}
+	return data, "local", nil
+}
+
+func normalizeSHA256(raw string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	trimmed = strings.TrimPrefix(trimmed, "sha256:")
+	return trimmed
+}
+
+func checkSHA256(data []byte, expected string) bool {
+	sum := sha256.Sum256(data)
+	actual := hex.EncodeToString(sum[:])
+	return strings.EqualFold(actual, expected)
+}
+
+func upsertPresetByName(presets []ensemble.EnsemblePreset, preset ensemble.EnsemblePreset) []ensemble.EnsemblePreset {
+	for i := range presets {
+		if presets[i].Name == preset.Name {
+			presets[i] = preset
+			return presets
+		}
+	}
+	return append(presets, preset)
+}
+
+func detectPresetConflict(presets []ensemble.EnsemblePreset, incoming ensemble.EnsemblePreset) (bool, error) {
+	for _, existing := range presets {
+		if existing.Name != incoming.Name {
+			continue
+		}
+		left, err := presetFingerprint(existing)
+		if err != nil {
+			return false, err
+		}
+		right, err := presetFingerprint(incoming)
+		if err != nil {
+			return false, err
+		}
+		return left != right, nil
+	}
+	return false, nil
+}
+
+func presetFingerprint(p ensemble.EnsemblePreset) (string, error) {
+	clone := p
+	clone.Source = ""
+	data, err := json.Marshal(clone)
+	if err != nil {
+		return "", fmt.Errorf("marshal preset: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // renderPresetsSummary renders presets in summary format.
@@ -408,7 +749,7 @@ func renderPresetsTableVerbose(w io.Writer, details []ensemblePresetDetail) erro
 }
 
 // renderYAML outputs data as YAML.
-func renderYAML(w io.Writer, v interface{}) error {
+func renderYAML(w io.Writer, v any) error {
 	data, err := yaml.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("marshal yaml: %w", err)

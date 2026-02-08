@@ -371,9 +371,13 @@ func (bc *BackoffController) calculateDelay() time.Duration {
 	delayWithJitter := time.Duration(float64(delay) + randomJitter)
 
 	// Update for next call (exponential increase)
-	bc.currentDelay = time.Duration(float64(bc.currentDelay) * bc.config.Multiplier)
-	if bc.currentDelay > bc.config.MaxDelay {
+	// Guard against overflow: cap the float64 value BEFORE converting to time.Duration
+	// to prevent int64 overflow when float64(currentDelay) * Multiplier exceeds MaxInt64
+	nextDelay := float64(bc.currentDelay) * bc.config.Multiplier
+	if nextDelay > float64(bc.config.MaxDelay) {
 		bc.currentDelay = bc.config.MaxDelay
+	} else {
+		bc.currentDelay = time.Duration(nextDelay)
 	}
 
 	// Ensure minimum delay

@@ -200,6 +200,7 @@ func TestNormalizeLanguage(t *testing.T) {
 		{"", "text"},
 		{"go", "go"},
 		{"rust", "rust"},
+		{"cobol", "cobol"}, // not in languageMap, fallback return
 	}
 
 	for _, tc := range tests {
@@ -334,5 +335,65 @@ func TestExtractionStruct(t *testing.T) {
 	}
 	if extraction.Source != "myproject:cc_1" {
 		t.Errorf("Source = %q, want %q", extraction.Source, "myproject:cc_1")
+	}
+}
+
+func TestDetectLanguage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		// Common extensions from extensionMap
+		{"go file", "src/main.go", "go"},
+		{"python file", "script.py", "python"},
+		{"javascript file", "app.js", "javascript"},
+		{"typescript file", "index.ts", "typescript"},
+		{"rust file", "lib.rs", "rust"},
+		{"ruby file", "config.rb", "ruby"},
+		{"java file", "Main.java", "java"},
+		{"c file", "util.c", "c"},
+		{"cpp file", "algo.cpp", "cpp"},
+		{"shell script", "deploy.sh", "bash"},
+		{"yaml file", "config.yaml", "yaml"},
+		{"yml file", "config.yml", "yaml"},
+		{"json file", "data.json", "json"},
+		{"html file", "index.html", "html"},
+		{"css file", "style.css", "css"},
+		{"markdown file", "README.md", "markdown"},
+		{"sql file", "schema.sql", "sql"},
+
+		// Filename without extension
+		{"dockerfile", "Dockerfile", "dockerfile"},
+		{"dockerfile lowercase", "dockerfile", "dockerfile"},
+		{"makefile", "Makefile", "makefile"},
+		{"makefile lowercase", "makefile", "makefile"},
+		{"gnumakefile", "GNUmakefile", "makefile"},
+
+		// Case insensitivity for extensions
+		{"uppercase extension", "main.GO", "go"},
+		{"mixed case extension", "App.Ts", "typescript"},
+
+		// Path with directories
+		{"nested path", "src/internal/utils/helper.go", "go"},
+		{"deeply nested", "a/b/c/d/e.py", "python"},
+
+		// No detectable language
+		{"no extension", "README", ""},
+		{"unknown extension", "file.xyz", ""},
+		{"empty string", "", ""},
+		{"just directory", "path/to/dir/", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := DetectLanguage(tc.path)
+			if got != tc.want {
+				t.Errorf("DetectLanguage(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
 	}
 }

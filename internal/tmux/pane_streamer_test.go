@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -273,6 +274,44 @@ func TestPaneStreamer_NextSeq(t *testing.T) {
 	seq3 := ps.nextSeq()
 	if seq3 != 3 {
 		t.Errorf("expected third seq to be 3, got %d", seq3)
+	}
+}
+
+func TestPipePaneCatCommand_QuotesPath(t *testing.T) {
+	fifoPath := "/tmp/ntm_pane_streams/pane_session;rm -rf /_123.fifo"
+
+	got := pipePaneCatCommand(fifoPath)
+	want := "cat >> " + ShellQuote(fifoPath)
+
+	if got != want {
+		t.Fatalf("pipePaneCatCommand(%q) = %q, want %q", fifoPath, got, want)
+	}
+}
+
+func TestPaneStreamer_Start_RollsBackStateOnFIFODirError(t *testing.T) {
+	tmp := t.TempDir()
+	fifoDirAsFile := filepath.Join(tmp, "not-a-dir")
+	if err := os.WriteFile(fifoDirAsFile, []byte("x"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	ps := NewPaneStreamer(nil, "mysession:0", func(StreamEvent) {}, PaneStreamerConfig{FIFODir: fifoDirAsFile})
+	if err := ps.Start(nil); err == nil {
+		t.Fatalf("Start() expected error for FIFODir=%q, got nil", fifoDirAsFile)
+	}
+
+	ps.mu.Lock()
+	running := ps.running
+	ps.mu.Unlock()
+
+	if running {
+		t.Fatalf("Start() error left ps.running=true")
+	}
+	if ps.ctx != nil {
+		t.Fatalf("Start() error left ps.ctx non-nil")
+	}
+	if ps.stopCh != nil {
+		t.Fatalf("Start() error left ps.stopCh non-nil")
 	}
 }
 

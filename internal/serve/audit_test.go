@@ -547,3 +547,243 @@ func TestRecordWebSocketAction(t *testing.T) {
 		t.Errorf("expected 2 topics, got %d", len(topics))
 	}
 }
+
+func TestDefaultAuditStoreConfig(t *testing.T) {
+	dataDir := "/tmp/test-data"
+	cfg := DefaultAuditStoreConfig(dataDir)
+
+	expectedDBPath := filepath.Join(dataDir, "audit.db")
+	if cfg.DBPath != expectedDBPath {
+		t.Errorf("DBPath = %q, want %q", cfg.DBPath, expectedDBPath)
+	}
+
+	expectedJSONLPath := filepath.Join(dataDir, "audit.jsonl")
+	if cfg.JSONLPath != expectedJSONLPath {
+		t.Errorf("JSONLPath = %q, want %q", cfg.JSONLPath, expectedJSONLPath)
+	}
+
+	expectedRetention := 90 * 24 * time.Hour
+	if cfg.Retention != expectedRetention {
+		t.Errorf("Retention = %v, want %v", cfg.Retention, expectedRetention)
+	}
+
+	expectedCleanupInterval := 24 * time.Hour
+	if cfg.CleanupInterval != expectedCleanupInterval {
+		t.Errorf("CleanupInterval = %v, want %v", cfg.CleanupInterval, expectedCleanupInterval)
+	}
+}
+
+func TestSetAuditApproval(t *testing.T) {
+	// Create a request with audit context
+	req := httptest.NewRequest("POST", "/api/v1/test", nil)
+
+	// Set audit context on the request
+	ac := &AuditContext{}
+	req = req.WithContext(context.WithValue(req.Context(), ctxKeyAudit, ac))
+
+	// Set approval ID
+	SetAuditApproval(req, "approval-xyz")
+
+	if ac.ApprovalID != "approval-xyz" {
+		t.Errorf("ApprovalID = %q, want %q", ac.ApprovalID, "approval-xyz")
+	}
+}
+
+func TestSetAuditApproval_NilContext(t *testing.T) {
+	// Create a request without audit context
+	req := httptest.NewRequest("POST", "/api/v1/test", nil)
+
+	// Should not panic when context is nil
+	SetAuditApproval(req, "approval-xyz")
+	// No assertion needed - just verify no panic
+}
+
+func TestSetAuditAction(t *testing.T) {
+	// Create a request with audit context
+	req := httptest.NewRequest("POST", "/api/v1/test", nil)
+
+	// Set audit context on the request
+	ac := &AuditContext{}
+	req = req.WithContext(context.WithValue(req.Context(), ctxKeyAudit, ac))
+
+	// Set action
+	SetAuditAction(req, AuditActionApprove)
+
+	if ac.Action != AuditActionApprove {
+		t.Errorf("Action = %q, want %q", ac.Action, AuditActionApprove)
+	}
+}
+
+func TestSetAuditAction_NilContext(t *testing.T) {
+	// Create a request without audit context
+	req := httptest.NewRequest("GET", "/api/v1/test", nil)
+
+	// Should not panic when context is nil
+	SetAuditAction(req, AuditActionExecute)
+	// No assertion needed - just verify no panic
+}
+
+func TestNewAuditStore_DefaultRetentionValues(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := AuditStoreConfig{
+		DBPath:          filepath.Join(tmpDir, "audit.db"),
+		Retention:       0,  // Should default to 90 days
+		CleanupInterval: -1, // Should default to 24h
+	}
+	store, err := NewAuditStore(cfg)
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+	defer store.Close()
+
+	if store.retention != 90*24*time.Hour {
+		t.Errorf("retention = %v, want 90 days", store.retention)
+	}
+}
+
+func TestNewAuditStore_DBOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := AuditStoreConfig{
+		DBPath:          filepath.Join(tmpDir, "audit.db"),
+		Retention:       24 * time.Hour,
+		CleanupInterval: time.Hour,
+		// No JSONLPath
+	}
+	store, err := NewAuditStore(cfg)
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+	defer store.Close()
+
+	if store.db == nil {
+		t.Error("db should not be nil")
+	}
+	if store.jsonlFile != nil {
+		t.Error("jsonlFile should be nil when no JSONLPath")
+	}
+
+	// Recording should still work (just DB, no JSONL)
+	rec := &AuditRecord{
+		RequestID:  "req-db-only",
+		UserID:     "user",
+		Role:       RoleViewer,
+		Action:     AuditActionExecute,
+		Resource:   "test",
+		Method:     "GET",
+		Path:       "/test",
+		StatusCode: 200,
+		RemoteAddr: "127.0.0.1",
+	}
+	if err := store.Record(rec); err != nil {
+		t.Fatalf("Record error: %v", err)
+	}
+	records, _ := store.Query(AuditFilter{RequestID: "req-db-only"})
+	if len(records) != 1 {
+		t.Errorf("expected 1 record, got %d", len(records))
+	}
+}
+
+func TestNewAuditStore_JSONLOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := AuditStoreConfig{
+		JSONLPath:       filepath.Join(tmpDir, "audit.jsonl"),
+		Retention:       24 * time.Hour,
+		CleanupInterval: time.Hour,
+		// No DBPath
+	}
+	store, err := NewAuditStore(cfg)
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+	defer store.Close()
+
+	if store.db != nil {
+		t.Error("db should be nil when no DBPath")
+	}
+	if store.jsonlFile == nil {
+		t.Error("jsonlFile should not be nil")
+	}
+
+	// Recording should still work (just JSONL, no DB)
+	rec := &AuditRecord{
+		RequestID:  "req-jsonl-only",
+		UserID:     "user",
+		Role:       RoleViewer,
+		Action:     AuditActionExecute,
+		Resource:   "test",
+		Method:     "GET",
+		Path:       "/test",
+		StatusCode: 200,
+		RemoteAddr: "127.0.0.1",
+	}
+	if err := store.Record(rec); err != nil {
+		t.Fatalf("Record error: %v", err)
+	}
+
+	data, _ := os.ReadFile(cfg.JSONLPath)
+	if len(data) == 0 {
+		t.Error("JSONL file should have content")
+	}
+}
+
+func TestAuditStore_CleanupNilDB(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := AuditStoreConfig{
+		JSONLPath:       filepath.Join(tmpDir, "audit.jsonl"),
+		Retention:       time.Millisecond,
+		CleanupInterval: time.Hour,
+	}
+	store, err := NewAuditStore(cfg)
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+	defer store.Close()
+
+	// cleanup with nil db should not panic
+	store.cleanup()
+}
+
+func TestAuditStore_Close_DBOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := AuditStoreConfig{
+		DBPath:          filepath.Join(tmpDir, "audit.db"),
+		Retention:       24 * time.Hour,
+		CleanupInterval: time.Hour,
+	}
+	store, err := NewAuditStore(cfg)
+	if err != nil {
+		t.Fatalf("NewAuditStore error: %v", err)
+	}
+
+	// Close with only DB (no JSONL file)
+	if err := store.Close(); err != nil {
+		t.Errorf("Close error: %v", err)
+	}
+}
+
+func TestAuditContextFromRequest_NilContext(t *testing.T) {
+	req := httptest.NewRequest("GET", "/test", nil)
+
+	// Should return nil when no audit context is set
+	ac := AuditContextFromRequest(req)
+	if ac != nil {
+		t.Error("Expected nil audit context from request without context")
+	}
+}
+
+func TestAuditContextFromRequest_WithContext(t *testing.T) {
+	req := httptest.NewRequest("GET", "/test", nil)
+	expected := &AuditContext{
+		Resource:   "test",
+		ResourceID: "123",
+	}
+	req = req.WithContext(context.WithValue(req.Context(), ctxKeyAudit, expected))
+
+	ac := AuditContextFromRequest(req)
+	if ac != expected {
+		t.Error("Expected audit context from request")
+	}
+	if ac.Resource != "test" {
+		t.Errorf("Resource = %q, want %q", ac.Resource, "test")
+	}
+}

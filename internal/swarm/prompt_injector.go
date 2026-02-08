@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
+	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -247,9 +248,21 @@ func (p *PromptInjector) InjectPromptWithResult(sessionPane, agentType, prompt s
 func (p *PromptInjector) sendToPane(sessionPane, agentType, prompt string) error {
 	client := p.tmuxClient()
 
-	// Use PasteKeys for reliable multi-line prompt delivery
+	// Wait for agent to be ready (at idle prompt)
+	// This prevents race conditions where we send input before the agent process is fully started
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := p.WaitForReady(ctx, sessionPane, agentType); err != nil {
+		p.logger().Warn("[PromptInjector] wait_ready_failed", 
+			"target", sessionPane, 
+			"error", err,
+			"proceeding", true)
+	}
+
+	// Use agent-aware send method for reliable multi-line prompt delivery
+	// For Gemini, this uses buffer-based paste to avoid newline interpretation issues
 	// Send without Enter first
-	if err := client.PasteKeys(sessionPane, prompt, false); err != nil {
+	if err := client.SendKeysForAgent(sessionPane, prompt, false, tmux.AgentType(agentType)); err != nil {
 		return fmt.Errorf("send prompt text: %w", err)
 	}
 
@@ -271,6 +284,28 @@ func (p *PromptInjector) sendToPane(sessionPane, agentType, prompt string) error
 	}
 
 	return nil
+}
+
+// WaitForReady waits for the agent to show an idle prompt.
+func (p *PromptInjector) WaitForReady(ctx context.Context, target, agentType string) error {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			output, err := p.tmuxClient().CaptureForStatusDetectionContext(ctx, target)
+			if err != nil {
+				continue
+			}
+
+			if status.DetectIdleFromOutput(output, agentType) {
+				return nil
+			}
+		}
+	}
 }
 
 // needsDoubleEnter returns true if the agent type requires double-Enter.
@@ -377,16 +412,47 @@ func (p *PromptInjector) InjectSwarm(plan *SwarmPlan, prompt string) (*BatchInje
 // InjectSwarmWithContext sends marching orders to all panes in a SwarmPlan with context support.
 // Each pane receives the same prompt. The operation can be cancelled via context.
 func (p *PromptInjector) InjectSwarmWithContext(ctx context.Context, plan *SwarmPlan, prompt string) (*BatchInjectionResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if plan == nil {
 		return nil, fmt.Errorf("plan cannot be nil")
 	}
 
 	// Build targets from plan
+	client := p.tmuxClient()
+	targetingCache := make(map[string]swarmSessionTargeting, len(plan.Sessions))
 	var targets []InjectionTarget
 	for _, sessionSpec := range plan.Sessions {
+		targeting, targetingOK := targetingCache[sessionSpec.Name]
+		if !targetingOK && ctx.Err() == nil {
+			resolved, err := resolveSwarmSessionTargeting(ctx, client, sessionSpec.Name)
+			if err != nil {
+				p.logger().Warn("[PromptInjector] session_targeting_resolve_failed",
+					"session", sessionSpec.Name,
+					"error", err)
+			} else {
+				targeting = resolved
+				targetingCache[sessionSpec.Name] = resolved
+				targetingOK = true
+			}
+		}
+
 		for _, paneSpec := range sessionSpec.Panes {
+			sessionPane := formatPaneTarget(sessionSpec.Name, paneSpec.Index)
+			if targetingOK {
+				if resolved, err := swarmPaneTargetFromPlanIndex(sessionSpec.Name, targeting, paneSpec.Index); err == nil {
+					sessionPane = resolved
+				} else {
+					p.logger().Warn("[PromptInjector] pane_target_resolve_failed",
+						"session", sessionSpec.Name,
+						"pane_index", paneSpec.Index,
+						"error", err)
+				}
+			}
+
 			target := InjectionTarget{
-				SessionPane: fmt.Sprintf("%s:%d", sessionSpec.Name, paneSpec.Index),
+				SessionPane: sessionPane,
 				AgentType:   paneSpec.AgentType,
 			}
 			targets = append(targets, target)

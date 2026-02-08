@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,7 +34,7 @@ type DaemonSpec struct {
 	Name        string   `json:"name"`         // Unique identifier: "cm", "bd", "am"
 	Command     string   `json:"command"`      // Command to run: "cm", "bd"
 	Args        []string `json:"args"`         // Arguments: ["serve", "--port", "8765"]
-	HealthURL   string   `json:"health_url"`   // Health check URL: "http://127.0.0.1:8765/health"
+	HealthURL   string   `json:"health_url"`   // Health check URL: "http://127.0.0.1:8765/health/liveness" or "/health"
 	HealthCmd   []string `json:"health_cmd"`   // Health check command: ["bd", "daemon", "--health"]
 	PortFlag    string   `json:"port_flag"`    // Flag to specify port: "--port"
 	DefaultPort int      `json:"default_port"` // Default port if none specified
@@ -222,9 +223,11 @@ func (s *Supervisor) Start(spec DaemonSpec) error {
 		cancelFunc: cancel,
 	}
 
-	// Update health URL with actual port
+	// Update health URL with actual port, preserving the original path
 	if spec.HealthURL != "" {
-		daemon.Spec.HealthURL = fmt.Sprintf("http://127.0.0.1:%d/health", port)
+		if u, err := url.Parse(spec.HealthURL); err == nil {
+			daemon.Spec.HealthURL = fmt.Sprintf("http://127.0.0.1:%d%s", port, u.Path)
+		}
 	}
 
 	s.daemons[spec.Name] = daemon
@@ -450,6 +453,12 @@ func (s *Supervisor) waitForExit(d *ManagedDaemon) {
 // handleDaemonFailure handles a daemon crash and potentially restarts it.
 func (s *Supervisor) handleDaemonFailure(d *ManagedDaemon) {
 	d.mu.Lock()
+	// Avoid double-handling the same failure (e.g. monitor + wait goroutines).
+	// If a daemon is already in a terminal/recovery state, a second failure signal is noise.
+	if d.State == StateStopping || d.State == StateStopped || d.State == StateFailed || d.State == StateRestarting {
+		d.mu.Unlock()
+		return
+	}
 	d.Restarts++
 	restarts := d.Restarts
 	d.State = StateFailed
@@ -500,6 +509,22 @@ func (s *Supervisor) handleDaemonFailure(d *ManagedDaemon) {
 	}
 }
 
+// healthCheckClient is a shared HTTP client for health checks with appropriate timeouts.
+// Using a dedicated client (vs http.DefaultClient) ensures connection timeouts are respected.
+var healthCheckClient = &http.Client{
+	Timeout: 5 * time.Second,
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout: 2 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   2 * time.Second,
+		ResponseHeaderTimeout: 3 * time.Second,
+		IdleConnTimeout:       30 * time.Second,
+		MaxIdleConns:          10,
+		MaxIdleConnsPerHost:   2,
+	},
+}
+
 // checkHealthHTTP performs an HTTP health check.
 func (s *Supervisor) checkHealthHTTP(url string) bool {
 	ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
@@ -510,7 +535,7 @@ func (s *Supervisor) checkHealthHTTP(url string) bool {
 		return false
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := healthCheckClient.Do(req)
 	if err != nil {
 		return false
 	}
@@ -610,7 +635,7 @@ func DefaultSpecs() []DaemonSpec {
 			Name:        "am",
 			Command:     "am",
 			Args:        []string{"serve"},
-			HealthURL:   "http://127.0.0.1:8765/health",
+			HealthURL:   "http://127.0.0.1:8765/health/liveness",
 			PortFlag:    "--port",
 			DefaultPort: 8765,
 		},

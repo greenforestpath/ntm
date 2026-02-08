@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -70,11 +71,13 @@ func CaptureScrollbackContext(ctx context.Context, session, paneID string, confi
 		Lines:  config.Lines,
 	}
 
-	// Format pane target
-	target := fmt.Sprintf("%s:%s", session, paneID)
+	// Use pane ID directly - tmux pane IDs (e.g., %123) are globally unique
+	// and don't need session prefix. The session parameter is kept for API
+	// compatibility but unused for capture.
+	_ = session
 
 	// Capture pane output
-	content, err := tmux.CapturePaneOutputContext(ctx, target, config.Lines)
+	content, err := tmux.CapturePaneOutputContext(ctx, paneID, config.Lines)
 	if err != nil {
 		return nil, fmt.Errorf("capturing pane output: %w", err)
 	}
@@ -187,15 +190,15 @@ func (c *Capturer) captureScrollbackEnhanced(cp *Checkpoint, config ScrollbackCo
 	for i := range cp.Session.Panes {
 		pane := &cp.Session.Panes[i]
 
-		capture, err := CaptureScrollback(cp.SessionName, fmt.Sprintf("%d", pane.Index), config)
+		capture, err := CaptureScrollback(cp.SessionName, pane.ID, config)
 		if err != nil {
 			// Log error but continue with other panes
-			fmt.Fprintf(os.Stderr, "Warning: failed to capture scrollback for pane %d: %v\n", pane.Index, err)
+			slog.Warn("failed to capture scrollback", "pane", pane.Index, "error", err)
 			continue
 		}
 
 		if capture.Skipped {
-			fmt.Fprintf(os.Stderr, "Warning: skipped scrollback for pane %d: %s\n", pane.Index, capture.SkipReason)
+			slog.Warn("skipped scrollback", "pane", pane.Index, "reason", capture.SkipReason)
 			continue
 		}
 
@@ -210,7 +213,7 @@ func (c *Capturer) captureScrollbackEnhanced(cp *Checkpoint, config ScrollbackCo
 		}
 
 		if saveErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to save scrollback for pane %d: %v\n", pane.Index, saveErr)
+			slog.Warn("failed to save scrollback", "pane", pane.Index, "error", saveErr)
 			continue
 		}
 

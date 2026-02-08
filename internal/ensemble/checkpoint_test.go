@@ -162,6 +162,121 @@ func TestCheckpointStore_SaveAndLoadSynthesisCheckpoint(t *testing.T) {
 	t.Logf("TEST: %s - assertion: synthesis checkpoint save/load works", t.Name())
 }
 
+func TestCheckpoint_SaveRestore(t *testing.T) {
+	input := map[string]any{"run": "run-save-restore", "mode": "deductive"}
+	logTestStartCheckpoint(t, input)
+
+	tmpDir := t.TempDir()
+	store, err := NewCheckpointStore(tmpDir)
+	assertNoErrorCheckpoint(t, "new checkpoint store", err)
+
+	checkpoint := ModeCheckpoint{
+		ModeID: "deductive",
+		Output: &ModeOutput{ModeID: "deductive", Thesis: "Checkpoint thesis"},
+		Status: string(AssignmentDone),
+	}
+	assertNoErrorCheckpoint(t, "save checkpoint", store.SaveCheckpoint("run-save-restore", checkpoint))
+
+	loaded, err := store.LoadCheckpoint("run-save-restore", "deductive")
+	logTestResultCheckpoint(t, loaded)
+	assertNoErrorCheckpoint(t, "load checkpoint", err)
+	assertEqualCheckpoint(t, "loaded thesis", loaded.Output.Thesis, checkpoint.Output.Thesis)
+}
+
+func TestCheckpoint_PartialFailure(t *testing.T) {
+	input := map[string]any{"run": "", "mode": ""}
+	logTestStartCheckpoint(t, input)
+
+	tmpDir := t.TempDir()
+	store, err := NewCheckpointStore(tmpDir)
+	assertNoErrorCheckpoint(t, "new checkpoint store", err)
+
+	err = store.SaveCheckpoint("", ModeCheckpoint{})
+	logTestResultCheckpoint(t, err)
+	assertTrueCheckpoint(t, "error on missing run id", err != nil)
+}
+
+func TestCheckpoint_Cleanup(t *testing.T) {
+	input := map[string]any{"run": "run-cleanup"}
+	logTestStartCheckpoint(t, input)
+
+	tmpDir := t.TempDir()
+	store, err := NewCheckpointStore(tmpDir)
+	assertNoErrorCheckpoint(t, "new checkpoint store", err)
+
+	checkpoint := ModeCheckpoint{ModeID: "mode-a", Status: string(AssignmentDone)}
+	assertNoErrorCheckpoint(t, "save checkpoint", store.SaveCheckpoint("run-cleanup", checkpoint))
+	assertNoErrorCheckpoint(t, "delete run", store.DeleteRun("run-cleanup"))
+
+	_, err = store.LoadCheckpoint("run-cleanup", "mode-a")
+	logTestResultCheckpoint(t, err)
+	assertTrueCheckpoint(t, "checkpoint removed", err != nil)
+}
+
+func TestCheckpoint_Concurrent(t *testing.T) {
+	input := map[string]any{"run": "run-concurrent", "modes": []string{"mode-a", "mode-b", "mode-c"}}
+	logTestStartCheckpoint(t, input)
+
+	tmpDir := t.TempDir()
+	store, err := NewCheckpointStore(tmpDir)
+	assertNoErrorCheckpoint(t, "new checkpoint store", err)
+
+	errs := make(chan error, 3)
+	modes := []string{"mode-a", "mode-b", "mode-c"}
+	for _, modeID := range modes {
+		modeID := modeID
+		go func() {
+			errs <- store.SaveCheckpoint("run-concurrent", ModeCheckpoint{ModeID: modeID, Status: string(AssignmentDone)})
+		}()
+	}
+
+	for range modes {
+		err := <-errs
+		assertTrueCheckpoint(t, "concurrent save ok", err == nil)
+	}
+
+	for _, modeID := range modes {
+		loaded, err := store.LoadCheckpoint("run-concurrent", modeID)
+		logTestResultCheckpoint(t, loaded)
+		assertNoErrorCheckpoint(t, "load checkpoint", err)
+		assertEqualCheckpoint(t, "loaded mode id", loaded.ModeID, modeID)
+	}
+}
+
+func logTestStartCheckpoint(t *testing.T, input any) {
+	t.Helper()
+	t.Logf("TEST: %s - starting with input: %v", t.Name(), input)
+}
+
+func logTestResultCheckpoint(t *testing.T, result any) {
+	t.Helper()
+	t.Logf("TEST: %s - got result: %v", t.Name(), result)
+}
+
+func assertNoErrorCheckpoint(t *testing.T, desc string, err error) {
+	t.Helper()
+	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
+	if err != nil {
+		t.Fatalf("%s: %v", desc, err)
+	}
+}
+
+func assertTrueCheckpoint(t *testing.T, desc string, ok bool) {
+	t.Helper()
+	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
+	if !ok {
+		t.Fatalf("assertion failed: %s", desc)
+	}
+}
+
+func assertEqualCheckpoint(t *testing.T, desc string, got, want any) {
+	t.Helper()
+	t.Logf("TEST: %s - assertion: %s", t.Name(), desc)
+	if got != want {
+		t.Fatalf("%s: got %v want %v", desc, got, want)
+	}
+}
+
 func TestCheckpointStore_LoadCheckpoint_NotFound(t *testing.T) {
 	t.Logf("TEST: %s - starting", t.Name())
 

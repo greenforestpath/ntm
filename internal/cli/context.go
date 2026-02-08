@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,7 @@ func newContextCmd() *cobra.Command {
 		newContextShowCmd(),
 		newContextStatsCmd(),
 		newContextClearCmd(),
+		newContextInjectCmd(),
 	)
 
 	return cmd
@@ -77,13 +79,14 @@ The context is rendered in agent-appropriate format:
 			builder := ntmctx.NewContextPackBuilder(store)
 
 			opts := ntmctx.BuildOptions{
-				BeadID:     beadID,
-				AgentType:  agentType,
-				RepoRev:    repoRev,
-				Task:       task,
-				Files:      files,
-				ProjectDir: dir,
-				SessionID:  session,
+				BeadID:          beadID,
+				AgentType:       agentType,
+				RepoRev:         repoRev,
+				Task:            task,
+				Files:           files,
+				ProjectDir:      dir,
+				SessionID:       session,
+				IncludeMSSkills: cfg != nil && cfg.Context.MSSkills,
 			}
 
 			pack, err := builder.Build(cmd.Context(), opts)
@@ -216,6 +219,292 @@ func newContextClearCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// ContextInjectResult is the JSON output for the context inject command.
+type ContextInjectResult struct {
+	Success       bool     `json:"success"`
+	Session       string   `json:"session"`
+	InjectedFiles []string `json:"injected_files"`
+	TotalBytes    int      `json:"total_bytes"`
+	Truncated     bool     `json:"truncated"`
+	PanesInjected []int    `json:"panes_injected"`
+	Error         string   `json:"error,omitempty"`
+}
+
+// defaultContextFiles returns the default files to inject.
+func defaultContextFiles() []string {
+	return []string{"AGENTS.md", "README.md", ".claude/project_context.md"}
+}
+
+func resolveContextInjectPath(projectDir, rawPath string) (string, string, error) {
+	file := strings.TrimSpace(rawPath)
+	if file == "" {
+		return "", "", fmt.Errorf("inject file path cannot be empty")
+	}
+
+	cleaned := filepath.Clean(file)
+	if cleaned == "." {
+		return "", "", fmt.Errorf("inject file path %q is invalid", rawPath)
+	}
+	if filepath.IsAbs(cleaned) {
+		return "", "", fmt.Errorf("inject file %q must be project-relative", rawPath)
+	}
+
+	joined := filepath.Join(projectDir, cleaned)
+	rel, err := filepath.Rel(projectDir, joined)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve inject file %q: %w", rawPath, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("inject file %q escapes project directory", rawPath)
+	}
+
+	return joined, filepath.ToSlash(rel), nil
+}
+
+func selectContextInjectTargetPanes(panes []tmux.Pane, paneIdx int, targetAll bool, session string) ([]tmux.Pane, error) {
+	if paneIdx >= 0 {
+		for _, p := range panes {
+			if p.Index == paneIdx {
+				return []tmux.Pane{p}, nil
+			}
+		}
+		return nil, fmt.Errorf("pane %d not found in session %s", paneIdx, session)
+	}
+	if targetAll {
+		return panes, nil
+	}
+
+	targets := make([]tmux.Pane, 0, len(panes))
+	for _, p := range panes {
+		if p.Index > 0 {
+			targets = append(targets, p)
+		}
+	}
+	return targets, nil
+}
+
+// formatContextInjectContent reads files and formats them for injection.
+func formatContextInjectContent(projectDir string, files []string, maxBytes int) (string, []string, bool, error) {
+	if maxBytes < 0 {
+		return "", nil, false, fmt.Errorf("maxBytes must be >= 0, got %d", maxBytes)
+	}
+	baseDir, err := filepath.Abs(projectDir)
+	if err != nil {
+		return "", nil, false, fmt.Errorf("resolve project directory: %w", err)
+	}
+
+	var parts []string
+	var injected []string
+	totalSize := 0
+	truncated := false
+
+	for _, f := range files {
+		if strings.TrimSpace(f) == "" {
+			continue
+		}
+		path, displayPath, err := resolveContextInjectPath(baseDir, f)
+		if err != nil {
+			return "", nil, false, err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // Skip missing files silently
+			}
+			return "", nil, false, fmt.Errorf("read %s: %w", f, err)
+		}
+
+		content := strings.TrimSpace(string(data))
+		if content == "" {
+			continue
+		}
+
+		// Check if adding this file would exceed max bytes
+		header := fmt.Sprintf("### %s\n\n", displayPath)
+		entrySize := len(header) + len(content) + 2 // +2 for trailing newlines
+		if maxBytes > 0 && totalSize+entrySize > maxBytes {
+			// Truncate this file's content to fit
+			remaining := maxBytes - totalSize - len(header) - len("\n\n...(truncated)\n")
+			if remaining <= 0 {
+				truncated = true
+				break
+			}
+			content = content[:remaining] + "\n\n...(truncated)"
+			truncated = true
+		}
+
+		parts = append(parts, header+content)
+		injected = append(injected, displayPath)
+		totalSize += len(header) + len(content) + 2
+
+		if maxBytes > 0 && truncated {
+			break
+		}
+	}
+
+	if len(parts) == 0 {
+		return "", nil, false, nil
+	}
+
+	result := strings.Join(parts, "\n\n---\n\n")
+	return result, injected, truncated, nil
+}
+
+func newContextInjectCmd() *cobra.Command {
+	var (
+		filesArg  string
+		maxBytes  int
+		targetAll bool
+		paneIdx   int
+		dryRun    bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "inject <session>",
+		Short: "Inject project context files into agent panes",
+		Long: `Read AGENTS.md, README.md, and .claude/project_context.md from the
+project directory and send their contents to agent panes.
+
+Default files (skipped if missing): AGENTS.md, README.md, .claude/project_context.md
+
+Use --files to override the file list.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			session := args[0]
+
+			// Resolve project directory
+			projectDir := ""
+			if cfg != nil {
+				projectDir = cfg.GetProjectDir(session)
+			}
+			if projectDir == "" {
+				dir, _ := os.Getwd()
+				projectDir = dir
+			}
+
+			// Determine files to inject
+			files := defaultContextFiles()
+			if filesArg != "" {
+				files = strings.Split(filesArg, ",")
+				for i := range files {
+					files[i] = strings.TrimSpace(files[i])
+				}
+			}
+
+			// Build the injection content
+			content, injected, truncated, err := formatContextInjectContent(projectDir, files, maxBytes)
+			if err != nil {
+				if IsJSONOutput() {
+					return output.PrintJSON(ContextInjectResult{
+						Success: false,
+						Session: session,
+						Error:   err.Error(),
+					})
+				}
+				return err
+			}
+
+			if len(injected) == 0 {
+				if IsJSONOutput() {
+					return output.PrintJSON(ContextInjectResult{
+						Success:       true,
+						Session:       session,
+						InjectedFiles: []string{},
+						PanesInjected: []int{},
+					})
+				}
+				fmt.Println("No context files found to inject.")
+				return nil
+			}
+
+			// Get panes
+			panes, err := tmux.GetPanes(session)
+			if err != nil {
+				if IsJSONOutput() {
+					return output.PrintJSON(ContextInjectResult{
+						Success: false,
+						Session: session,
+						Error:   fmt.Sprintf("get panes: %s", err),
+					})
+				}
+				return fmt.Errorf("get panes: %w", err)
+			}
+
+			targetPanes, err := selectContextInjectTargetPanes(panes, paneIdx, targetAll, session)
+			if err != nil {
+				if IsJSONOutput() {
+					return output.PrintJSON(ContextInjectResult{
+						Success: false,
+						Session: session,
+						Error:   err.Error(),
+					})
+				}
+				return err
+			}
+
+			// Track injected pane indices
+			var injectedPanes []int
+
+			if !dryRun {
+				// Send content to target panes
+				for _, p := range targetPanes {
+					target := fmt.Sprintf("%s:%d", session, p.Index)
+					if err := tmux.SendKeys(target, content, true); err != nil {
+						slog.Warn("failed to send context to pane",
+							"session", session,
+							"pane", p.Index,
+							"error", err,
+						)
+						continue
+					}
+					injectedPanes = append(injectedPanes, p.Index)
+				}
+			} else {
+				for _, p := range targetPanes {
+					injectedPanes = append(injectedPanes, p.Index)
+				}
+			}
+
+			result := ContextInjectResult{
+				Success:       true,
+				Session:       session,
+				InjectedFiles: injected,
+				TotalBytes:    len(content),
+				Truncated:     truncated,
+				PanesInjected: injectedPanes,
+			}
+
+			if IsJSONOutput() {
+				return output.PrintJSON(result)
+			}
+
+			// Human-readable output
+			if dryRun {
+				fmt.Println("[dry-run] Would inject context:")
+			} else {
+				fmt.Println("Context injected:")
+			}
+			fmt.Printf("  Session: %s\n", session)
+			fmt.Printf("  Files:   %s\n", strings.Join(injected, ", "))
+			fmt.Printf("  Size:    %d bytes\n", len(content))
+			if truncated {
+				fmt.Println("  (content was truncated)")
+			}
+			fmt.Printf("  Panes:   %v\n", injectedPanes)
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&filesArg, "files", "", "Comma-separated list of files to inject (overrides defaults)")
+	cmd.Flags().IntVar(&maxBytes, "max-bytes", 0, "Maximum total content size in bytes (0 = unlimited)")
+	cmd.Flags().BoolVar(&targetAll, "all", false, "Inject to all panes including user pane (default: agent panes only)")
+	cmd.Flags().IntVar(&paneIdx, "pane", -1, "Inject to specific pane index only")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be injected without sending")
+
+	return cmd
 }
 
 // getRepoRev returns the current git HEAD revision

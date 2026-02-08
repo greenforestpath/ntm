@@ -122,6 +122,33 @@ func TestContextPackGenerator_DetectFrameworks_PackageJSON(t *testing.T) {
 	}
 }
 
+func TestContextPackGenerator_DetectFrameworks_CargoToml(t *testing.T) {
+	root := t.TempDir()
+	cargoToml := `
+[package]
+name = "demo"
+
+[dependencies]
+tokio = "1"
+axum = "0.7"
+`
+	writeFile(t, filepath.Join(root, "Cargo.toml"), cargoToml)
+	frameworks := frameworksFromCargo(filepath.Join(root, "Cargo.toml"))
+	if !containsString(frameworks, "Tokio") || !containsString(frameworks, "Axum") {
+		t.Errorf("expected Tokio and Axum in frameworks: %v", frameworks)
+	}
+}
+
+func TestContextPackGenerator_DetectFrameworks_PythonRequirements(t *testing.T) {
+	root := t.TempDir()
+	requirements := "Django==4.2\nfastapi==0.110\n"
+	writeFile(t, filepath.Join(root, "requirements.txt"), requirements)
+	frameworks := frameworksFromPython(filepath.Join(root, "requirements.txt"))
+	if !containsString(frameworks, "Django") || !containsString(frameworks, "FastAPI") {
+		t.Errorf("expected Django and FastAPI in frameworks: %v", frameworks)
+	}
+}
+
 func TestContextPackGenerator_ParseReadme_Full(t *testing.T) {
 	root := t.TempDir()
 	readme := "# My Project\nA short description for testing the parser.\n"

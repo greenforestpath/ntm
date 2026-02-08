@@ -285,6 +285,87 @@ func TestVelocityTracker_Reset(t *testing.T) {
 	}
 }
 
+func TestVelocityTracker_UpdateWithOutput(t *testing.T) {
+	tracker := NewVelocityTracker("test")
+
+	// First update establishes baseline
+	sample1, err := tracker.UpdateWithOutput("hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sample1 == nil {
+		t.Fatal("expected non-nil sample")
+	}
+	// First update should have 0 velocity (no previous capture)
+	if sample1.Velocity != 0 {
+		t.Errorf("first sample should have 0 velocity, got %f", sample1.Velocity)
+	}
+	if tracker.LastCapture != "hello" {
+		t.Errorf("expected LastCapture='hello', got %q", tracker.LastCapture)
+	}
+
+	// Small delay for velocity calculation
+	time.Sleep(10 * time.Millisecond)
+
+	// Second update with more content
+	sample2, err := tracker.UpdateWithOutput("hello world")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should have added 6 chars (" world")
+	if sample2.CharsAdded != 6 {
+		t.Errorf("expected 6 chars added, got %d", sample2.CharsAdded)
+	}
+	// Velocity should be positive
+	if sample2.Velocity <= 0 {
+		t.Errorf("expected positive velocity, got %f", sample2.Velocity)
+	}
+	if tracker.LastCapture != "hello world" {
+		t.Errorf("expected LastCapture='hello world', got %q", tracker.LastCapture)
+	}
+
+	// Verify sample count
+	if tracker.SampleCount() != 2 {
+		t.Errorf("expected 2 samples, got %d", tracker.SampleCount())
+	}
+}
+
+func TestVelocityTracker_UpdateWithOutput_ShrinkingContent(t *testing.T) {
+	tracker := NewVelocityTracker("test")
+
+	// First update establishes baseline
+	_, _ = tracker.UpdateWithOutput("hello world")
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Second update with LESS content (simulating scroll/clear)
+	sample, err := tracker.UpdateWithOutput("hi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// CharsAdded should be 0, not negative
+	if sample.CharsAdded != 0 {
+		t.Errorf("expected 0 chars added for shrinking content, got %d", sample.CharsAdded)
+	}
+}
+
+func TestVelocityTracker_UpdateWithOutput_ANSI(t *testing.T) {
+	tracker := NewVelocityTracker("test")
+
+	// First update with ANSI codes
+	_, _ = tracker.UpdateWithOutput("\x1b[32mhello\x1b[0m")
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Second update with more visible content (ANSI stripped)
+	sample, _ := tracker.UpdateWithOutput("\x1b[32mhello world\x1b[0m")
+
+	// Should only count visible characters added (6 for " world")
+	if sample.CharsAdded != 6 {
+		t.Errorf("expected 6 visible chars added (ANSI stripped), got %d", sample.CharsAdded)
+	}
+}
+
 func TestVelocityManager_GetOrCreate(t *testing.T) {
 	vm := NewVelocityManager()
 

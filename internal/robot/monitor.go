@@ -112,14 +112,9 @@ func (m *Monitor) RunOnce(ctx context.Context) error {
 
 func (m *Monitor) checkOnce(ctx context.Context) error {
 	// Determine panes to check
-	panes := m.config.Panes
-	if len(panes) == 0 {
-		// Get all agent panes (excluding control pane 0)
-		var err error
-		panes, err = m.getAgentPanes()
-		if err != nil {
-			return fmt.Errorf("get panes: %w", err)
-		}
+	panes, err := m.getPanesToCheck()
+	if err != nil {
+		return fmt.Errorf("get panes: %w", err)
 	}
 
 	// Maybe refresh caut data
@@ -133,31 +128,70 @@ func (m *Monitor) checkOnce(ctx context.Context) error {
 	// Check each pane
 	for _, pane := range panes {
 		if err := m.checkPane(ctx, pane); err != nil {
-			m.emitError(fmt.Sprintf("check pane %d failed", pane), err)
+			m.emitError(fmt.Sprintf("check pane %d failed", pane.Index), err)
 		}
 	}
 
 	return nil
 }
 
-func (m *Monitor) getAgentPanes() ([]int, error) {
+func (m *Monitor) getPanesToCheck() ([]tmux.Pane, error) {
+	if len(m.config.Panes) == 0 {
+		return m.getAgentPanes()
+	}
+
 	allPanes, err := tmux.GetPanes(m.config.Session)
 	if err != nil {
 		return nil, err
 	}
 
-	var agentPanes []int
+	indexSet := make(map[int]struct{}, len(m.config.Panes))
+	for _, idx := range m.config.Panes {
+		indexSet[idx] = struct{}{}
+	}
+
+	var selected []tmux.Pane
 	for _, p := range allPanes {
-		if p.Index > 0 { // Skip control pane
-			agentPanes = append(agentPanes, p.Index)
+		if _, ok := indexSet[p.Index]; ok {
+			selected = append(selected, p)
+		}
+	}
+	return selected, nil
+}
+
+func (m *Monitor) getAgentPanes() ([]tmux.Pane, error) {
+	allPanes, err := tmux.GetPanes(m.config.Session)
+	if err != nil {
+		return nil, err
+	}
+
+	// Find minimum pane index to identify control pane
+	minIdx := -1
+	for _, p := range allPanes {
+		if minIdx == -1 || p.Index < minIdx {
+			minIdx = p.Index
+		}
+	}
+
+	var agentPanes []tmux.Pane
+	for _, p := range allPanes {
+		if p.Index != minIdx { // Skip control pane (first pane)
+			agentPanes = append(agentPanes, p)
 		}
 	}
 	return agentPanes, nil
 }
 
-func (m *Monitor) checkPane(ctx context.Context, pane int) error {
+func (m *Monitor) checkPane(ctx context.Context, pane tmux.Pane) error {
 	// Build target
-	target := fmt.Sprintf("%s:1.%d", m.config.Session, pane)
+	target := pane.ID
+	if target == "" {
+		firstWin, err := tmux.GetFirstWindow(m.config.Session)
+		if err != nil {
+			return err
+		}
+		target = fmt.Sprintf("%s:%d.%d", m.config.Session, firstWin, pane.Index)
+	}
 
 	// Capture output
 	output, err := tmux.CapturePaneOutputContext(ctx, target, m.config.LinesCaptured)
@@ -166,19 +200,19 @@ func (m *Monitor) checkPane(ctx context.Context, pane int) error {
 	}
 
 	// Parse state
-	state, err := m.parser.Parse(output)
+	state, err := m.parser.ParseWithHint(output, pane.Type)
 	if err != nil {
 		return err
 	}
 
 	// Record trend sample
-	m.trends.AddSample(pane, TrendSample{
+	m.trends.AddSample(pane.Index, TrendSample{
 		Timestamp:        time.Now(),
 		ContextRemaining: state.ContextRemaining,
 	})
 
 	// Get trend
-	trend, samples := m.trends.GetTrend(pane)
+	trend, samples := m.trends.GetTrend(pane.Index)
 
 	// Generate warnings based on context thresholds
 	if state.ContextRemaining != nil {
@@ -187,7 +221,7 @@ func (m *Monitor) checkPane(ctx context.Context, pane int) error {
 		level := getWarningLevel(ctxPct, m.config)
 		if level != "" {
 			threshold := m.getThresholdForLevel(level)
-			w := NewWarning(level, m.config.Session, pane, string(state.Type),
+			w := NewWarning(level, m.config.Session, pane.Index, string(state.Type),
 				getWarningMessage(level, threshold),
 				getSuggestedAction(level))
 			w = w.WithContext(state.ContextRemaining, string(trend), samples)
@@ -197,7 +231,7 @@ func (m *Monitor) checkPane(ctx context.Context, pane int) error {
 
 	// Check for rate limit
 	if state.IsRateLimited {
-		w := NewWarning(LevelAlert, m.config.Session, pane, string(state.Type),
+		w := NewWarning(LevelAlert, m.config.Session, pane.Index, string(state.Type),
 			"Agent hit rate limit",
 			"Wait for reset or switch account with caam")
 		m.emitWarning(w)
@@ -208,7 +242,7 @@ func (m *Monitor) checkPane(ctx context.Context, pane int) error {
 		provider := caut.AgentTypeToProvider(string(state.Type))
 		if payload, ok := m.cautCache[provider]; ok {
 			if pct := payload.UsedPercent(); pct != nil && *pct >= m.config.AlertThreshold {
-				w := NewWarning(LevelAlert, m.config.Session, pane, string(state.Type),
+				w := NewWarning(LevelAlert, m.config.Session, pane.Index, string(state.Type),
 					formatProviderUsageMessage(m.config.AlertThreshold),
 					"Consider caam account switch")
 				w = w.WithProvider(provider, pct)

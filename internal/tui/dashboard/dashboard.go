@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,13 +24,18 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/cass"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
+	"github.com/Dicklesworthstone/ntm/internal/clipboard"
 	"github.com/Dicklesworthstone/ntm/internal/config"
 	ctxmon "github.com/Dicklesworthstone/ntm/internal/context"
+	"github.com/Dicklesworthstone/ntm/internal/cost"
+	"github.com/Dicklesworthstone/ntm/internal/ensemble"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/history"
 	"github.com/Dicklesworthstone/ntm/internal/integrations/pt"
+	"github.com/Dicklesworthstone/ntm/internal/integrations/rano"
 	"github.com/Dicklesworthstone/ntm/internal/robot"
 	"github.com/Dicklesworthstone/ntm/internal/scanner"
+	sessionPkg "github.com/Dicklesworthstone/ntm/internal/session"
 	"github.com/Dicklesworthstone/ntm/internal/state"
 	"github.com/Dicklesworthstone/ntm/internal/status"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
@@ -41,12 +47,23 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/tui/icons"
 	"github.com/Dicklesworthstone/ntm/internal/tui/layout"
 	"github.com/Dicklesworthstone/ntm/internal/tui/styles"
+	synthtui "github.com/Dicklesworthstone/ntm/internal/tui/synthesizer"
 	"github.com/Dicklesworthstone/ntm/internal/tui/theme"
 	"github.com/Dicklesworthstone/ntm/internal/watcher"
 )
 
 // DashboardTickMsg is sent for animation updates
 type DashboardTickMsg time.Time
+
+// ActivityState tracks dashboard activity for adaptive tick rate
+type ActivityState int
+
+const (
+	// StateActive means user is actively interacting or output is flowing
+	StateActive ActivityState = iota
+	// StateIdle means no activity for a period (reduced tick rate)
+	StateIdle
+)
 
 // RefreshMsg triggers a refresh of session data
 type RefreshMsg struct{}
@@ -109,6 +126,15 @@ type AgentMailInboxDetailMsg struct {
 // CassSelectMsg is sent when a CASS search result is selected
 type CassSelectMsg struct {
 	Hit cass.SearchHit
+}
+
+// EnsembleModesDataMsg provides ensemble session + mode catalog data for the SynthesizerTUI modes view.
+type EnsembleModesDataMsg struct {
+	SessionName string
+	Session     *ensemble.EnsembleSession
+	Catalog     *ensemble.ModeCatalog
+	Panes       []tmux.Pane
+	Err         error
 }
 
 // BeadsUpdateMsg is sent when beads data is fetched
@@ -228,6 +254,18 @@ type DCGStatusUpdateMsg struct {
 	Gen         uint64
 }
 
+// RCHStatusUpdateMsg is sent when RCH status is fetched.
+type RCHStatusUpdateMsg struct {
+	Data panels.RCHPanelData
+	Gen  uint64
+}
+
+// RanoNetworkUpdateMsg is sent when rano network activity is fetched.
+type RanoNetworkUpdateMsg struct {
+	Data panels.RanoNetworkPanelData
+	Gen  uint64
+}
+
 // PendingRotationsUpdateMsg is sent when pending rotations data is fetched
 type PendingRotationsUpdateMsg struct {
 	Pending []*ctxmon.PendingRotation
@@ -283,6 +321,8 @@ const (
 	refreshAgentMail
 	refreshAgentMailInbox
 	refreshRouting
+	refreshRCH
+	refreshRanoNetwork
 	refreshDCG
 	refreshPendingRotations
 	refreshPTHealth
@@ -389,6 +429,14 @@ type Model struct {
 	paneOutputLastCaptured  map[string]time.Time
 	renderedOutputCache     map[string]string // Cache for expensive markdown rendering
 
+	// Local agent performance (best-effort; derived from output deltas + prompt history)
+	localPerfByPaneID map[string]*localPerfTracker // keyed by pane ID
+
+	// Ollama /api/ps cache (best-effort)
+	ollamaModelMemory map[string]int64 // model name -> bytes
+	lastOllamaPSFetch time.Time
+	ollamaPSError     error
+
 	// Health badge (bv drift status)
 	healthStatus  string // "ok", "warning", "critical", "no_baseline", "unavailable"
 	healthMessage string
@@ -429,12 +477,22 @@ type Model struct {
 	showCassSearch bool
 	cassSearch     components.CassSearchModel
 
+	// Ensemble modes full-screen view (SynthesizerTUI)
+	showEnsembleModes bool
+	ensembleModes     synthtui.ModeVisualization
+
 	// Help overlay
 	showHelp bool
+
+	// Help verbosity (minimal/full), sourced from config (help_verbosity)
+	helpVerbosity string
 
 	// Panels
 	beadsPanel           *panels.BeadsPanel
 	alertsPanel          *panels.AlertsPanel
+	costPanel            *panels.CostPanel
+	ranoNetworkPanel     *panels.RanoNetworkPanel
+	rchPanel             *panels.RCHPanel
 	metricsPanel         *panels.MetricsPanel
 	historyPanel         *panels.HistoryPanel
 	cassPanel            *panels.CASSPanel
@@ -449,11 +507,23 @@ type Model struct {
 	beadsSummary  bv.BeadsSummary
 	beadsReady    []bv.BeadPreview
 	activeAlerts  []alerts.Alert
+	costData      panels.CostPanelData
+	costError     error
 	metricsData   panels.MetricsData // Cached full metrics data for panel
 	cmdHistory    []history.HistoryEntry
 	fileChanges   []tracker.RecordedFileChange
 	cassContext   []cass.SearchHit
 	routingScores map[string]RoutingScore // keyed by pane ID
+
+	// Cost tracking (estimated; derived from prompt history + pane output deltas)
+	costInputTokens         map[string]int     // paneID -> estimated input tokens
+	costOutputTokens        map[string]int     // paneID -> estimated output tokens
+	costModels              map[string]string  // paneID -> model name (for pricing)
+	costLastCosts           map[string]float64 // paneID -> last computed USD cost
+	costLastPromptTimestamp time.Time          // last processed prompt timestamp
+	costLastPromptRead      time.Time          // last time we attempted to read prompt history
+	costSnapshots           []costSnapshot     // rolling window for last-hour computations
+	costDailyBudgetUSD      float64            // 0 disables budget display
 
 	// Process triage health states (from pt.HealthMonitor)
 	healthStates map[string]*pt.AgentState // pane -> health state
@@ -498,6 +568,17 @@ type Model struct {
 	lastDCGFetch       time.Time
 	dcgRefreshInterval time.Duration // How often to refresh DCG status
 
+	// RCH (Remote Compilation Helper) status
+	rchActive          bool // Whether builds are actively running
+	fetchingRCH        bool // Whether we're currently fetching RCH status
+	lastRCHFetch       time.Time
+	rchRefreshInterval time.Duration // How often to refresh RCH status
+
+	// Rano network activity (best-effort; used by the dashboard network panel).
+	fetchingRanoNetwork        bool
+	lastRanoNetworkFetch       time.Time
+	ranoNetworkRefreshInterval time.Duration
+
 	// Error tracking for data sources (displayed as badges)
 	beadsError       error
 	alertsError      error
@@ -506,6 +587,14 @@ type Model struct {
 	fileChangesError error
 	cassError        error
 	routingError     error
+
+	// Activity state tracking for adaptive tick rate (fixes #32 - dashboard flicker)
+	lastActivity  time.Time     // When user last interacted (key/mouse/pane output)
+	activityState ActivityState // current activity state
+	reduceMotion  bool          // NTM_REDUCE_MOTION=1 disables animations
+	baseTick      time.Duration // Base tick interval when active (default 100ms)
+	idleTick      time.Duration // Tick interval when idle (default 500ms)
+	idleTimeout   time.Duration // Time before entering idle state (default 5s)
 }
 
 // PaneStatus tracks the status of a pane including compaction state
@@ -526,6 +615,13 @@ type PaneStatus struct {
 
 	TokenVelocity float64 // Estimated tokens/sec
 
+	// Local agent performance (Ollama) - best-effort estimates.
+	LocalTokensPerSecond float64
+	LocalTotalTokens     int
+	LocalLastLatency     time.Duration // First-token latency for the most recent prompt (if observed)
+	LocalAvgLatency      time.Duration // Moving average of observed first-token latencies
+	LocalMemoryBytes     int64         // VRAM/CPU bytes (from Ollama /api/ps), 0 if unknown
+
 	// Health tracking
 	HealthStatus  string   // "ok", "warning", "error", "unknown"
 	HealthIssues  []string // List of issue messages (rate limit, crash, etc.)
@@ -535,6 +631,11 @@ type PaneStatus struct {
 	// Rotation tracking
 	IsRotating bool       // True when agent rotation is in progress
 	RotatedAt  *time.Time // When agent was last rotated (nil if never)
+}
+
+type costSnapshot struct {
+	At       time.Time
+	TotalUSD float64
 }
 
 // AgentMailLockInfo represents a file lock for dashboard display
@@ -562,6 +663,7 @@ type KeyMap struct {
 	MailRefresh    key.Binding // 'm' to refresh Agent Mail data
 	InboxToggle    key.Binding // 'i' to toggle inbox details
 	CassSearch     key.Binding // 'ctrl+s' to open CASS search
+	EnsembleModes  key.Binding // 'e' to open ensemble modes view
 	Help           key.Binding // '?' to toggle help overlay
 	Diagnostics    key.Binding // 'd' to toggle diagnostics
 	ScanToggle     key.Binding // 'u' to toggle UBS scanning
@@ -590,12 +692,15 @@ const (
 	BeadsRefreshInterval       = 5 * time.Second
 	CassContextRefreshInterval = 15 * time.Minute
 	ScanRefreshInterval        = 1 * time.Minute
-	DCGRefreshInterval         = 5 * time.Minute // DCG status changes infrequently
+	RCHActiveRefreshInterval   = 5 * time.Second  // Faster polling when builds are active
+	RCHIdleRefreshInterval     = 30 * time.Second // Slower polling when idle
+	DCGRefreshInterval         = 5 * time.Minute  // DCG status changes infrequently
 	CheckpointRefreshInterval  = 30 * time.Second
 	HandoffRefreshInterval     = 30 * time.Second
 	SpawnActiveRefreshInterval = 500 * time.Millisecond // Poll frequently when spawn is active
 	SpawnIdleRefreshInterval   = 2 * time.Second        // Poll slowly when no spawn is active
 	MailInboxRefreshInterval   = 30 * time.Second
+	CostPromptRefreshInterval  = 5 * time.Second // Poll ~/.ntm/sessions/<session>/prompts.json
 )
 
 func (m *Model) initRenderer(width int) {
@@ -617,11 +722,12 @@ var dashKeys = KeyMap{
 	Send:           key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "send prompt")),
 	Refresh:        key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 	Pause:          key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pause/resume auto-refresh")),
-	Quit:           key.NewBinding(key.WithKeys("q", "esc"), key.WithHelp("q/esc", "quit")),
+	Quit:           key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit")),
 	ContextRefresh: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "refresh context")),
 	MailRefresh:    key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "refresh mail")),
 	InboxToggle:    key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "inbox details")),
 	CassSearch:     key.NewBinding(key.WithKeys("ctrl+s"), key.WithHelp("ctrl+s", "cass search")),
+	EnsembleModes:  key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "ensemble modes")),
 	Help:           key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "toggle help")),
 	Diagnostics:    key.NewBinding(key.WithKeys("d", "ctrl+d"), key.WithHelp("d/ctrl+d", "toggle diagnostics")),
 	ScanToggle:     key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "toggle UBS scan")),
@@ -656,6 +762,10 @@ func New(session, projectDir string) Model {
 		paneStatus:                 make(map[int]PaneStatus),
 		detector:                   status.NewDetector(),
 		agentStatuses:              make(map[string]status.AgentStatus),
+		costInputTokens:            make(map[string]int),
+		costOutputTokens:           make(map[string]int),
+		costModels:                 make(map[string]string),
+		costLastCosts:              make(map[string]float64),
 		refreshInterval:            DefaultRefreshInterval,
 		paneRefreshInterval:        PaneRefreshInterval,
 		contextRefreshInterval:     ContextRefreshInterval,
@@ -663,6 +773,8 @@ func New(session, projectDir string) Model {
 		beadsRefreshInterval:       BeadsRefreshInterval,
 		cassContextRefreshInterval: CassContextRefreshInterval,
 		scanRefreshInterval:        ScanRefreshInterval,
+		ranoNetworkRefreshInterval: 1 * time.Second,
+		rchRefreshInterval:         RCHIdleRefreshInterval,
 		dcgRefreshInterval:         DCGRefreshInterval,
 		checkpointRefreshInterval:  CheckpointRefreshInterval,
 		handoffRefreshInterval:     HandoffRefreshInterval,
@@ -679,13 +791,18 @@ func New(session, projectDir string) Model {
 		agentMailInbox:             make(map[string][]agentmail.InboxMessage),
 		agentMailInboxErrors:       make(map[string]error),
 		agentMailAgents:            make(map[string]string),
+		helpVerbosity:              "full",
 		cassSearch: components.NewCassSearch(func(hit cass.SearchHit) tea.Cmd {
 			return func() tea.Msg {
 				return CassSelectMsg{Hit: hit}
 			}
 		}),
+		ensembleModes:        synthtui.NewModeVisualization(),
 		beadsPanel:           panels.NewBeadsPanel(),
 		alertsPanel:          panels.NewAlertsPanel(),
+		costPanel:            panels.NewCostPanel(),
+		ranoNetworkPanel:     panels.NewRanoNetworkPanel(),
+		rchPanel:             panels.NewRCHPanel(),
 		metricsPanel:         panels.NewMetricsPanel(),
 		historyPanel:         panels.NewHistoryPanel(),
 		cassPanel:            panels.NewCASSPanel(),
@@ -710,6 +827,8 @@ func New(session, projectDir string) Model {
 		fetchingCheckpoint:  true,
 		fetchingHandoff:     true,
 		fetchingMailInbox:   true,
+		fetchingRanoNetwork: true,
+		fetchingRCH:         true,
 		fetchingDCG:         true,
 	}
 
@@ -721,11 +840,20 @@ func New(session, projectDir string) Model {
 	m.lastBeadsFetch = now
 	m.lastCassContextFetch = now
 	m.lastScanFetch = now
+	m.lastRanoNetworkFetch = now
+	m.lastRCHFetch = now
 	m.lastDCGFetch = now
 	m.lastCheckpointFetch = now
 	m.lastHandoffFetch = now
 	m.lastSpawnFetch = now
 	m.lastMailInboxFetch = now
+
+	// Initialize activity tracking for adaptive tick rate (fixes #32)
+	m.lastActivity = now
+	m.activityState = StateActive
+	m.baseTick = 100 * time.Millisecond
+	m.idleTick = 500 * time.Millisecond
+	m.idleTimeout = 5 * time.Second
 
 	applyDashboardEnvOverrides(&m)
 
@@ -787,6 +915,8 @@ func (m Model) Init() tea.Cmd {
 		m.fetchCASSContextCmd(),
 		m.fetchCheckpointStatus(),
 		m.fetchHandoffCmd(),
+		m.fetchRanoNetworkStats(),
+		m.fetchRCHStatus(),
 		m.fetchDCGStatus(),
 		m.fetchPendingRotations(),
 		m.fetchPTHealthStatesCmd(),
@@ -898,9 +1028,29 @@ func (m Model) subscribeToConfig() tea.Cmd {
 }
 
 func (m Model) tick() tea.Cmd {
-	return tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg {
+	interval := m.getTickInterval()
+	return tea.Tick(interval, func(t time.Time) tea.Msg {
 		return DashboardTickMsg(t)
 	})
+}
+
+// getTickInterval returns the appropriate tick interval based on activity state
+func (m Model) getTickInterval() time.Duration {
+	baseTick := m.baseTick
+	if baseTick == 0 {
+		baseTick = 100 * time.Millisecond
+	}
+	idleTick := m.idleTick
+	if idleTick == 0 {
+		idleTick = 500 * time.Millisecond
+	}
+
+	switch m.activityState {
+	case StateIdle:
+		return idleTick
+	default:
+		return baseTick
+	}
 }
 
 // fetchHealthStatus performs the health check via bv
@@ -991,6 +1141,178 @@ func (m *Model) fetchScanStatusWithContext(ctx context.Context) tea.Cmd {
 			Duration: dur,
 			Gen:      gen,
 		}
+	}
+}
+
+// fetchRanoNetworkStats fetches per-agent network activity from rano (best-effort).
+func (m *Model) fetchRanoNetworkStats() tea.Cmd {
+	gen := m.nextGen(refreshRanoNetwork)
+	cfg := m.cfg
+	session := m.session
+
+	return func() tea.Msg {
+		data := panels.RanoNetworkPanelData{
+			Loaded: true,
+		}
+
+		enabled := true
+		pollInterval := 1 * time.Second
+		if cfg != nil {
+			enabled = cfg.Integrations.Rano.Enabled
+			if cfg.Integrations.Rano.PollIntervalMs > 0 {
+				pollInterval = time.Duration(cfg.Integrations.Rano.PollIntervalMs) * time.Millisecond
+			}
+		}
+		data.Enabled = enabled
+		data.PollInterval = pollInterval
+
+		if !enabled {
+			return RanoNetworkUpdateMsg{Data: data, Gen: gen}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		adapter := tools.NewRanoAdapter()
+		availability, err := adapter.GetAvailability(ctx)
+		if err != nil {
+			data.Error = err
+			return RanoNetworkUpdateMsg{Data: data, Gen: gen}
+		}
+
+		if availability != nil {
+			data.Available = availability.Available && availability.Compatible && availability.HasCapability && availability.CanReadProc
+			if availability.Version.Raw != "" {
+				data.Version = availability.Version.String()
+			}
+		}
+
+		if !data.Available {
+			return RanoNetworkUpdateMsg{Data: data, Gen: gen}
+		}
+
+		// Refresh PID mapping so we can attribute process stats to panes/agents.
+		pidMap := rano.NewPIDMap(session)
+		if err := pidMap.RefreshContext(ctx); err != nil {
+			data.Error = err
+			return RanoNetworkUpdateMsg{Data: data, Gen: gen}
+		}
+
+		allStats, err := adapter.GetAllProcessStats(ctx)
+		if err != nil {
+			data.Error = err
+			return RanoNetworkUpdateMsg{Data: data, Gen: gen}
+		}
+
+		byPane := make(map[string]*panels.RanoNetworkRow)
+		for i := range allStats {
+			st := allStats[i]
+
+			identity := pidMap.GetPaneForPID(st.PID)
+			if identity == nil {
+				continue
+			}
+			label := identity.PaneTitle
+			if label == "" {
+				label = identity.String()
+			}
+
+			row := byPane[label]
+			if row == nil {
+				row = &panels.RanoNetworkRow{
+					Label:     label,
+					AgentType: string(identity.AgentType),
+				}
+				byPane[label] = row
+			}
+
+			row.RequestCount += st.RequestCount
+			row.BytesOut += st.BytesOut
+			row.BytesIn += st.BytesIn
+
+			if ts := parseRanoTimestamp(st.LastRequest); !ts.IsZero() && ts.After(row.LastRequest) {
+				row.LastRequest = ts
+			}
+		}
+
+		for _, row := range byPane {
+			data.Rows = append(data.Rows, *row)
+			data.TotalRequests += row.RequestCount
+			data.TotalBytesOut += row.BytesOut
+			data.TotalBytesIn += row.BytesIn
+		}
+
+		// Stable ordering by label (the panel will still prioritize recency in View).
+		sort.Slice(data.Rows, func(i, j int) bool {
+			return data.Rows[i].Label < data.Rows[j].Label
+		})
+
+		return RanoNetworkUpdateMsg{Data: data, Gen: gen}
+	}
+}
+
+func parseRanoTimestamp(s string) time.Time {
+	if strings.TrimSpace(s) == "" {
+		return time.Time{}
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return ts
+	}
+	if ts, err := time.Parse(time.RFC3339, s); err == nil {
+		return ts
+	}
+	return time.Time{}
+}
+
+// fetchRCHStatus fetches the current RCH status.
+func (m *Model) fetchRCHStatus() tea.Cmd {
+	gen := m.nextGen(refreshRCH)
+	cfg := m.cfg
+
+	return func() tea.Msg {
+		data := panels.RCHPanelData{
+			Loaded: true,
+		}
+
+		enabled := true
+		if cfg != nil {
+			enabled = cfg.Integrations.RCH.Enabled
+		}
+		data.Enabled = enabled
+
+		if !enabled {
+			return RCHStatusUpdateMsg{Data: data, Gen: gen}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+
+		adapter := tools.NewRCHAdapter()
+		availability, err := adapter.GetAvailability(ctx)
+		if err != nil {
+			data.Error = err
+			return RCHStatusUpdateMsg{Data: data, Gen: gen}
+		}
+
+		if availability != nil {
+			data.Available = availability.Available && availability.Compatible
+			if availability.Version.Raw != "" {
+				data.Version = availability.Version.String()
+			}
+		}
+
+		if !data.Available {
+			return RCHStatusUpdateMsg{Data: data, Gen: gen}
+		}
+
+		status, err := adapter.GetStatus(ctx)
+		if err != nil {
+			data.Error = err
+			return RCHStatusUpdateMsg{Data: data, Gen: gen}
+		}
+		data.Status = status
+
+		return RCHStatusUpdateMsg{Data: data, Gen: gen}
 	}
 }
 
@@ -1112,7 +1434,7 @@ func (m *Model) fetchAgentMailStatus() tea.Cmd {
 			for _, r := range reservations {
 				expiresIn := ""
 				if !r.ExpiresTS.IsZero() {
-					remaining := time.Until(r.ExpiresTS)
+					remaining := time.Until(r.ExpiresTS.Time)
 					if remaining > 0 {
 						if remaining < time.Minute {
 							expiresIn = fmt.Sprintf("%ds", int(remaining.Seconds()))
@@ -1685,27 +2007,45 @@ func (m *Model) fetchSessionDataWithOutputsCtx(ctx context.Context) tea.Cmd {
 
 		plan := planPaneCaptures(panesWithActivity, selectedPaneID, lastCaptured, budget, startCursor)
 
-		var outputs []PaneOutputData
+		// Parallelize output capture
+		type captureResult struct {
+			pane   tmux.PaneActivity
+			output string
+			err    error
+		}
+
+		resultsCh := make(chan captureResult, len(plan.Targets))
 		for _, pane := range plan.Targets {
-			if err := ctx.Err(); err != nil {
-				return SessionDataWithOutputMsg{Err: err, Duration: time.Since(start), Gen: gen}
-			}
+			go func(p tmux.PaneActivity) {
+				capCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				defer cancel()
 
-			out, err := tmux.CapturePaneOutputContext(ctx, pane.Pane.ID, outputLines)
-			if err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return SessionDataWithOutputMsg{Err: ctxErr, Duration: time.Since(start), Gen: gen}
+				out, err := tmux.CapturePaneOutputContext(capCtx, p.Pane.ID, outputLines)
+				resultsCh <- captureResult{pane: p, output: out, err: err}
+			}(pane)
+		}
+
+		var outputs []PaneOutputData
+		for i := 0; i < len(plan.Targets); i++ {
+			select {
+			case res := <-resultsCh:
+				if res.err != nil {
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						return SessionDataWithOutputMsg{Err: ctxErr, Duration: time.Since(start), Gen: gen}
+					}
+					continue
 				}
-				continue
-			}
 
-			outputs = append(outputs, PaneOutputData{
-				PaneID:       pane.Pane.ID,
-				PaneIndex:    pane.Pane.Index,
-				LastActivity: pane.LastActivity,
-				Output:       out,
-				AgentType:    string(pane.Pane.Type), // Simplified mapping
-			})
+				outputs = append(outputs, PaneOutputData{
+					PaneID:       res.pane.Pane.ID,
+					PaneIndex:    res.pane.Pane.Index,
+					LastActivity: res.pane.LastActivity,
+					Output:       res.output,
+					AgentType:    string(res.pane.Pane.Type), // Simplified mapping
+				})
+			case <-ctx.Done():
+				return SessionDataWithOutputMsg{Err: ctx.Err(), Duration: time.Since(start), Gen: gen}
+			}
 		}
 
 		if err := ctx.Err(); err != nil {
@@ -1862,8 +2202,11 @@ func (m *Model) fetchStatuses() tea.Cmd {
 func (m Model) fetchHealthCmd() tea.Cmd {
 	session := m.session
 	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
 		// Get health check from health package
-		sessionHealth, err := health.CheckSession(session)
+		sessionHealth, err := health.CheckSession(ctx, session)
 		if err != nil {
 			return HealthUpdateMsg{Health: nil, Err: err}
 		}
@@ -1894,9 +2237,48 @@ func (m Model) fetchHealthCmd() tea.Cmd {
 	}
 }
 
+func (m Model) fetchEnsembleModesData() tea.Cmd {
+	sessionName := m.session
+	panes := make([]tmux.Pane, len(m.panes))
+	copy(panes, m.panes)
+
+	return func() tea.Msg {
+		sess, err := ensemble.LoadSession(sessionName)
+		if errors.Is(err, os.ErrNotExist) {
+			sess = nil
+			err = nil
+		}
+
+		catalog, catErr := ensemble.GlobalCatalog()
+		if catErr != nil {
+			catalog = nil
+		}
+
+		return EnsembleModesDataMsg{
+			SessionName: sessionName,
+			Session:     sess,
+			Catalog:     catalog,
+			Panes:       panes,
+			Err:         err,
+		}
+	}
+}
+
 // Update implements tea.Model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+
+	// If the ensemble modes overlay is active, consume keyboard input there and skip global shortcuts.
+	if m.showEnsembleModes {
+		if _, ok := msg.(tea.KeyMsg); ok {
+			var cmd tea.Cmd
+			m.ensembleModes, cmd = m.ensembleModes.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return m, tea.Batch(cmds...)
+		}
+	}
 
 	// Handle CASS search updates
 	passToSearch := true
@@ -1918,9 +2300,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.healthMessage = fmt.Sprintf("Selected: %s", msg.Hit.Title)
 		return m, tea.Batch(cmds...)
 
+	case synthtui.CloseMsg:
+		m.showEnsembleModes = false
+		return m, nil
+
+	case synthtui.RefreshMsg:
+		cmds = append(cmds, m.fetchEnsembleModesData())
+		return m, tea.Batch(cmds...)
+
+	case synthtui.ZoomMsg:
+		_ = tmux.ZoomPane(m.session, msg.PaneIndex)
+		return m, tea.Quit
+
+	case EnsembleModesDataMsg:
+		m.ensembleModes.SetData(msg.SessionName, msg.Session, msg.Catalog, msg.Panes, msg.Err)
+		return m, nil
+
 	case panels.ReplayMsg:
 		// Handle replay request from history panel
 		return m, m.executeReplay(msg.Entry)
+
+	case panels.CopyMsg:
+		clip, err := clipboard.New()
+		if err != nil {
+			m.healthMessage = fmt.Sprintf("Clipboard unavailable: %v", err)
+			return m, nil
+		}
+		if err := clip.Copy(msg.Text); err != nil {
+			m.healthMessage = fmt.Sprintf("Copy failed: %v", err)
+			return m, nil
+		}
+		m.healthMessage = "Copied prompt to clipboard"
+		return m, nil
 
 	case BeadsUpdateMsg:
 		if !m.acceptUpdate(refreshBeads, msg.Gen) {
@@ -2123,6 +2534,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		searchH := int(float64(msg.Height) * 0.6)
 		m.cassSearch.SetSize(searchW, searchH)
 
+		modesW := msg.Width - 10
+		modesH := msg.Height - 6
+		if modesW < 30 {
+			modesW = 30
+		}
+		if modesH < 10 {
+			modesH = 10
+		}
+		m.ensembleModes.SetSize(modesW, modesH)
+
 		m.resizePanelsForLayout()
 
 		if dashboardDebugEnabled(&m) {
@@ -2148,13 +2569,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case DashboardTickMsg:
-		m.animTick++
+		// Only increment animation tick when not in reduce motion mode
+		if !m.reduceMotion {
+			m.animTick++
+		}
+
+		// Check for idle state transition (fixes #32 - reduce tick rate when idle)
+		now := time.Now()
+		idleTimeout := m.idleTimeout
+		if idleTimeout == 0 {
+			idleTimeout = 5 * time.Second
+		}
+		if !m.lastActivity.IsZero() && time.Since(m.lastActivity) > idleTimeout {
+			m.activityState = StateIdle
+		}
 
 		// Update ticker panel with current data and animation tick
 		m.updateTickerData()
 
 		// Drive staggered refreshes on the animation ticker to avoid a single heavy burst.
-		now := time.Now()
 		if !m.refreshPaused {
 			cmds = append(cmds, m.scheduleRefreshes(now)...)
 		}
@@ -2174,12 +2607,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionFetchLatency = msg.Duration
 
 		if msg.Err != nil {
-			// Ignore coalescing cancellations; we’ll immediately re-fetch if pending.
+			// Ignore coalescing cancellations; we'll immediately re-fetch if pending.
 			if !errors.Is(msg.Err, context.Canceled) {
 				m.err = msg.Err
 			}
 			return m, followUp
 		}
+
+		// Track activity when new pane output arrives (fixes #32)
+		if len(msg.Outputs) > 0 {
+			m.lastActivity = time.Now()
+			m.activityState = StateActive
+		}
+
 		m.err = nil
 		m.lastRefresh = time.Now()
 		m.markUpdated(refreshSession, time.Now())
@@ -2202,6 +2642,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 
 			m.panes = msg.Panes
+			if m.historyPanel != nil {
+				m.historyPanel.SetPanes(m.panes)
+			}
 
 			// Migrate paneStatus entries from old indices to new indices by pane ID
 			// This prevents stale data when pane indices change (add/remove/reorder)
@@ -2272,11 +2715,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Process compaction checks, context tracking, AND live status updates
 			timelineUpdated := false
 			for _, data := range msg.Outputs {
+				prevOutput := ""
 				if data.PaneID != "" {
-					m.paneOutputCache[data.PaneID] = data.Output
-					if !data.LastActivity.IsZero() {
-						m.paneOutputLastCaptured[data.PaneID] = data.LastActivity
-					}
+					prevOutput = m.paneOutputCache[data.PaneID]
 				}
 
 				// Find the pane to get the variant
@@ -2319,8 +2760,58 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					modelName = currentPane.Variant
 				}
 
+				// Compute delta once (used for cost + local perf).
+				delta := ""
+				deltaTokens := 0
+				if data.PaneID != "" && data.Output != "" {
+					delta = tailDelta(prevOutput, data.Output)
+					if delta != "" {
+						deltaTokens = cost.EstimateTokens(delta)
+					}
+				}
+
+				// Record estimated output delta tokens for cost tracking BEFORE updating caches.
+				if data.PaneID != "" && data.Output != "" {
+					m.recordCostOutputDelta(data.PaneID, modelName, prevOutput, data.Output)
+				}
+
+				// Update output caches after cost tracking
+				if data.PaneID != "" {
+					m.paneOutputCache[data.PaneID] = data.Output
+					if !data.LastActivity.IsZero() {
+						m.paneOutputLastCaptured[data.PaneID] = data.LastActivity
+					}
+				}
+
 				// Get or create pane status
 				ps := m.paneStatus[data.PaneIndex]
+
+				// Local agent performance (Ollama): best-effort token rate + latency tracking.
+				// This is based on output deltas and prompt history timestamps, not on Ollama's
+				// API token counters, because local panes are typically launched via `ollama run`.
+				if isLocalAgentType(statusAgentType) && data.PaneID != "" {
+					tr := m.ensureLocalPerfTracker(data.PaneID)
+					if tr != nil && deltaTokens > 0 && !data.LastActivity.IsZero() {
+						tr.addOutputDelta(data.LastActivity, deltaTokens)
+					}
+					if tr != nil {
+						tps, total, lastLat, avgLat := tr.snapshot()
+						ps.LocalTokensPerSecond = tps
+						ps.LocalTotalTokens = total
+						ps.LocalLastLatency = lastLat
+						ps.LocalAvgLatency = avgLat
+					}
+
+					// Refresh /api/ps memory occasionally and map by model name (pane variant).
+					if found && currentPane.Variant != "" {
+						m.refreshOllamaPSIfNeeded(time.Now())
+						if m.ollamaModelMemory != nil {
+							if mem, ok := m.ollamaModelMemory[currentPane.Variant]; ok {
+								ps.LocalMemoryBytes = mem
+							}
+						}
+					}
+				}
 
 				// Update LIVE STATUS using local analysis (avoid waiting for slow full fetch)
 				st := m.detector.Analyze(data.PaneID, currentPane.Title, statusAgentType, data.Output, data.LastActivity)
@@ -2363,6 +2854,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if timelineUpdated {
 				m.refreshTimelinePanel()
 			}
+
+			// Refresh cost panel from prompt history + accumulated output deltas.
+			now := time.Now()
+			m.updateCostFromPrompts(now)
+			m.refreshCostPanel(now)
 		}
 		return m, followUp
 
@@ -2379,6 +2875,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, p := range m.panes {
 			paneIndexByID[p.ID] = p.Index
 			paneByID[p.ID] = p
+		}
+
+		// Best-effort refresh of Ollama /api/ps, only if we have any local panes.
+		hasOllama := false
+		for _, p := range m.panes {
+			if string(p.Type) == "ollama" {
+				hasOllama = true
+				break
+			}
+		}
+		if hasOllama {
+			m.refreshOllamaPSIfNeeded(msg.Time)
 		}
 
 		timelineUpdated := false
@@ -2402,6 +2910,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Pre-calculate token velocity
 			ps.TokenVelocity = tokenVelocityFromStatus(st)
+
+			// Local perf snapshot + memory enrichment (Ollama panes only).
+			if pane, ok := paneByID[st.PaneID]; ok && string(pane.Type) == "ollama" {
+				if tr := m.ensureLocalPerfTracker(st.PaneID); tr != nil {
+					tps, total, lastLat, avgLat := tr.snapshot()
+					ps.LocalTokensPerSecond = tps
+					ps.LocalTotalTokens = total
+					ps.LocalLastLatency = lastLat
+					ps.LocalAvgLatency = avgLat
+				}
+				if hasOllama && m.ollamaModelMemory != nil && pane.Variant != "" {
+					if mem, ok := m.ollamaModelMemory[pane.Variant]; ok {
+						ps.LocalMemoryBytes = mem
+					}
+				}
+			}
+
 			m.paneStatus[idx] = ps
 			m.agentStatuses[st.PaneID] = st
 			if m.recordTimelineStatus(paneByID[st.PaneID], st) {
@@ -2457,10 +2982,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ConfigReloadMsg:
 		if msg.Config != nil {
 			m.cfg = msg.Config
+			m.helpVerbosity = normalizedHelpVerbosity(msg.Config.HelpVerbosity)
 			// Update theme
 			m.theme = theme.FromName(msg.Config.Theme)
 			// Reload icons (if dependent on config in future, pass cfg)
 			m.icons = icons.Current()
+
+			// Follow integrations.rano.poll_interval_ms (default 1000ms).
+			if msg.Config.Integrations.Rano.PollIntervalMs > 0 {
+				m.ranoNetworkRefreshInterval = time.Duration(msg.Config.Integrations.Rano.PollIntervalMs) * time.Millisecond
+			}
 
 			// Re-initialize renderer with new theme colors
 			_, detailWidth := layout.SplitProportions(m.width)
@@ -2469,6 +3000,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				contentWidth = 20
 			}
 			m.initRenderer(contentWidth)
+
+			// If help verbosity changed, ensure focused panel remains valid.
+			m.cycleFocus(0)
 		}
 		return m, m.subscribeToConfig()
 
@@ -2585,6 +3119,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case RanoNetworkUpdateMsg:
+		if !m.acceptUpdate(refreshRanoNetwork, msg.Gen) {
+			return m, nil
+		}
+		m.fetchingRanoNetwork = false
+		m.lastRanoNetworkFetch = time.Now()
+		if m.ranoNetworkPanel != nil {
+			m.ranoNetworkPanel.SetData(msg.Data)
+		}
+		if msg.Data.Error == nil {
+			m.markUpdated(refreshRanoNetwork, time.Now())
+		}
+		return m, nil
+
+	case RCHStatusUpdateMsg:
+		if !m.acceptUpdate(refreshRCH, msg.Gen) {
+			return m, nil
+		}
+		m.fetchingRCH = false
+		m.lastRCHFetch = time.Now()
+		if m.rchPanel != nil {
+			m.rchPanel.SetData(msg.Data)
+		}
+		if msg.Data.Error == nil {
+			m.markUpdated(refreshRCH, time.Now())
+		}
+		wasActive := m.rchActive
+		m.rchActive = rchStatusActive(msg.Data.Status)
+		if m.rchRefreshInterval == RCHIdleRefreshInterval || m.rchRefreshInterval == RCHActiveRefreshInterval {
+			if m.rchActive {
+				m.rchRefreshInterval = RCHActiveRefreshInterval
+			} else if wasActive && !m.rchActive {
+				m.rchRefreshInterval = RCHIdleRefreshInterval
+			}
+		}
+		return m, nil
+
 	case DCGStatusUpdateMsg:
 		if !m.acceptUpdate(refreshDCG, msg.Gen) {
 			return m, nil
@@ -2667,6 +3238,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Track activity for adaptive tick rate (fixes #32)
+		m.lastActivity = time.Now()
+		m.activityState = StateActive
+
 		// Handle help overlay: Esc or ? closes it
 		if m.showHelp {
 			if msg.String() == "esc" || msg.String() == "?" {
@@ -2698,6 +3273,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.cassSearch.Init())
 			return m, tea.Batch(cmds...)
 
+		case key.Matches(msg, dashKeys.EnsembleModes):
+			m.showEnsembleModes = true
+			m.showCassSearch = false
+			m.showHelp = false
+
+			modesW := m.width - 10
+			modesH := m.height - 6
+			if modesW < 30 {
+				modesW = 30
+			}
+			if modesH < 10 {
+				modesH = 10
+			}
+			m.ensembleModes.SetSize(modesW, modesH)
+
+			cmds = append(cmds, m.fetchEnsembleModesData())
+			return m, tea.Batch(cmds...)
+
 		case key.Matches(msg, dashKeys.Help):
 			m.showHelp = !m.showHelp
 			return m, nil
@@ -2713,13 +3306,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case key.Matches(msg, dashKeys.Up):
-			if m.cursor > 0 {
-				m.cursor--
+			if m.focusedPanel == PanelPaneList || m.focusedPanel == PanelDetail {
+				if m.cursor > 0 {
+					m.cursor--
+				}
 			}
 
 		case key.Matches(msg, dashKeys.Down):
-			if m.cursor < len(m.panes)-1 {
-				m.cursor++
+			if m.focusedPanel == PanelPaneList || m.focusedPanel == PanelDetail {
+				if m.cursor < len(m.panes)-1 {
+					m.cursor++
+				}
 			}
 
 		case key.Matches(msg, dashKeys.Refresh):
@@ -2745,7 +3342,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.createCheckpointCmd()
 
 		case key.Matches(msg, dashKeys.Zoom):
-			if len(m.panes) > 0 && m.cursor < len(m.panes) {
+			if (m.focusedPanel == PanelPaneList || m.focusedPanel == PanelDetail) && len(m.panes) > 0 && m.cursor < len(m.panes) {
 				// Zoom to selected pane
 				p := m.panes[m.cursor]
 				_ = tmux.ZoomPane(m.session, p.Index)
@@ -2812,6 +3409,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if cmd != nil {
 					cmds = append(cmds, cmd)
 				}
+			} else if m.costPanel != nil && m.costPanel.IsFocused() {
+				var cmd tea.Cmd
+				_, cmd = m.costPanel.Update(keyMsg)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			} else if m.metricsPanel != nil && m.metricsPanel.IsFocused() {
 				var cmd tea.Cmd
 				_, cmd = m.metricsPanel.Update(keyMsg)
@@ -2869,22 +3472,7 @@ func (m *Model) selectByNumber(n int) {
 }
 
 func (m *Model) cycleFocus(dir int) {
-	var visiblePanes []PanelID
-	switch {
-	case m.tier >= layout.TierMega:
-		// Use PanelConflicts instead of PanelAlerts when conflicts are present
-		if m.conflictsPanel.HasConflicts() {
-			visiblePanes = []PanelID{PanelPaneList, PanelDetail, PanelBeads, PanelConflicts, PanelSidebar}
-		} else {
-			visiblePanes = []PanelID{PanelPaneList, PanelDetail, PanelBeads, PanelAlerts, PanelSidebar}
-		}
-	case m.tier >= layout.TierUltra:
-		visiblePanes = []PanelID{PanelPaneList, PanelDetail, PanelSidebar}
-	case m.tier >= layout.TierSplit:
-		visiblePanes = []PanelID{PanelPaneList, PanelDetail}
-	default:
-		visiblePanes = []PanelID{PanelPaneList}
-	}
+	visiblePanes := m.visiblePanelsForHelpVerbosity()
 
 	// Find current index in visiblePanes
 	currIdx := -1
@@ -2995,9 +3583,10 @@ func (m *Model) updateTickerData() {
 // View implements tea.Model
 func (m Model) View() string {
 	if m.showHelp {
+		helpOpts := m.dashboardHelpOptions()
 		helpOverlay := components.HelpOverlay(components.HelpOverlayOptions{
 			Title:    "Dashboard Shortcuts",
-			Sections: components.DashboardHelpSections(),
+			Sections: components.DashboardHelpSections(helpOpts),
 			MaxWidth: 60,
 		})
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, helpOverlay)
@@ -3011,6 +3600,17 @@ func (m Model) View() string {
 			Background(m.theme.Base).
 			Padding(1, 2)
 		modal := modalStyle.Render(searchView)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+	}
+
+	if m.showEnsembleModes {
+		modesView := m.ensembleModes.View()
+		modalStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(m.theme.Primary).
+			Background(m.theme.Base).
+			Padding(1, 2)
+		modal := modalStyle.Render(modesView)
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	}
 
@@ -3123,16 +3723,25 @@ func (m Model) renderMainContentSection() string {
 		if m.err != nil {
 			b.WriteString(components.ErrorState(m.err.Error(), hintForSessionFetchError(m.err), stateWidth) + "\n\n")
 		}
-		// Responsive layout selection
-		switch {
-		case m.tier >= layout.TierMega:
-			b.WriteString(m.renderMegaLayout() + "\n")
-		case m.tier >= layout.TierUltra:
-			b.WriteString(m.renderUltraLayout() + "\n")
-		case m.tier >= layout.TierSplit:
-			b.WriteString(m.renderSplitView() + "\n")
-		default:
-			b.WriteString(m.renderPaneGrid() + "\n")
+		// Responsive layout selection, gated by help verbosity.
+		// Minimal mode shows only core panels (activity/status) even on wide terminals.
+		if m.dashboardHelpOptions().Verbosity == components.DashboardHelpVerbosityMinimal {
+			if m.tier >= layout.TierSplit {
+				b.WriteString(m.renderSplitView() + "\n")
+			} else {
+				b.WriteString(m.renderPaneGrid() + "\n")
+			}
+		} else {
+			switch {
+			case m.tier >= layout.TierMega:
+				b.WriteString(m.renderMegaLayout() + "\n")
+			case m.tier >= layout.TierUltra:
+				b.WriteString(m.renderUltraLayout() + "\n")
+			case m.tier >= layout.TierSplit:
+				b.WriteString(m.renderSplitView() + "\n")
+			default:
+				b.WriteString(m.renderPaneGrid() + "\n")
+			}
 		}
 	}
 
@@ -3173,6 +3782,15 @@ func (m Model) renderStatsBar() string {
 	ic := m.icons
 
 	var parts []string
+
+	// Help verbosity indicator (minimal/full)
+	helpLabel := "Help: " + normalizedHelpVerbosity(m.helpVerbosity)
+	helpBadge := lipgloss.NewStyle().
+		Background(t.Surface0).
+		Foreground(t.Subtext).
+		Padding(0, 1).
+		Render(helpLabel)
+	parts = append(parts, helpBadge)
 
 	// Health badge (bv drift status)
 	healthBadge := m.renderHealthBadge()
@@ -3774,28 +4392,31 @@ func (m Model) renderQuickActions() string {
 }
 
 func (m Model) renderHelpBar() string {
-	// Build hints: global navigation first
-	hints := []components.KeyHint{
-		{Key: "↑↓", Desc: "navigate"},
-		{Key: "1-9", Desc: "select"},
-		{Key: "z", Desc: "zoom"},
-	}
+	opts := m.dashboardHelpOptions()
 
-	// Add panel-specific hints (max 3 to avoid overwhelming)
-	panelHints := m.getFocusedPanelHints()
-	for i, hint := range panelHints {
-		if i >= 3 {
-			break
+	// Base hints (no debug extras); debug extras are appended last so they truncate first.
+	baseOpts := opts
+	baseOpts.Debug = false
+	hints := components.DashboardHelpBarHints(baseOpts)
+
+	// Add panel-specific hints (max 3 to avoid overwhelming) in full mode only.
+	if opts.Verbosity != components.DashboardHelpVerbosityMinimal {
+		panelHints := m.getFocusedPanelHints()
+		for i, hint := range panelHints {
+			if i >= 3 {
+				break
+			}
+			hints = append(hints, hint)
 		}
-		hints = append(hints, hint)
 	}
 
-	// Always end with essential global hints
-	hints = append(hints,
-		components.KeyHint{Key: "r", Desc: "refresh"},
-		components.KeyHint{Key: "?", Desc: "help"},
-		components.KeyHint{Key: "q", Desc: "quit"},
-	)
+	if opts.Debug {
+		hints = append(hints,
+			components.KeyHint{Key: "d", Desc: "diag"},
+			components.KeyHint{Key: "u", Desc: "scan"},
+			components.KeyHint{Key: "ctrl+k", Desc: "checkpoint"},
+		)
+	}
 
 	// Use the reusable RenderHelpBar component with width-aware truncation.
 	// Hints are progressively hidden from right-to-left when they don’t fit.
@@ -4369,8 +4990,8 @@ func dashboardDebugEnabled(m *Model) bool {
 	if m != nil && m.showDiagnostics {
 		return true
 	}
-	// Check NTM_TUI_DEBUG (preferred) or NTM_DASH_DEBUG (legacy alias)
-	for _, envVar := range []string{"NTM_TUI_DEBUG", "NTM_DASH_DEBUG"} {
+	// Check NTM_TUI_DEBUG (preferred), NTM_DEBUG (global), or NTM_DASH_DEBUG (legacy alias)
+	for _, envVar := range []string{"NTM_TUI_DEBUG", "NTM_DEBUG", "NTM_DASH_DEBUG"} {
 		value := strings.TrimSpace(os.Getenv(envVar))
 		if value == "" {
 			continue
@@ -4381,6 +5002,46 @@ func dashboardDebugEnabled(m *Model) bool {
 		}
 	}
 	return false
+}
+
+func (m Model) dashboardHelpOptions() components.DashboardHelpOptions {
+	return components.DashboardHelpOptionsFrom(m.helpVerbosity, dashboardDebugEnabled(&m))
+}
+
+func (m *Model) visiblePanelsForHelpVerbosity() []PanelID {
+	opts := m.dashboardHelpOptions()
+	if opts.Verbosity == components.DashboardHelpVerbosityMinimal {
+		// Minimal: core panels only (activity/status).
+		if m.tier >= layout.TierSplit {
+			return []PanelID{PanelPaneList, PanelDetail}
+		}
+		return []PanelID{PanelPaneList}
+	}
+
+	// Full/debug: responsive panel set based on tier.
+	switch {
+	case m.tier >= layout.TierMega:
+		// Use PanelConflicts instead of PanelAlerts when conflicts are present.
+		if m.conflictsPanel.HasConflicts() {
+			return []PanelID{PanelPaneList, PanelDetail, PanelBeads, PanelConflicts, PanelSidebar}
+		}
+		return []PanelID{PanelPaneList, PanelDetail, PanelBeads, PanelAlerts, PanelSidebar}
+	case m.tier >= layout.TierUltra:
+		return []PanelID{PanelPaneList, PanelDetail, PanelSidebar}
+	case m.tier >= layout.TierSplit:
+		return []PanelID{PanelPaneList, PanelDetail}
+	default:
+		return []PanelID{PanelPaneList}
+	}
+}
+
+func normalizedHelpVerbosity(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "minimal":
+		return "minimal"
+	default:
+		return "full"
+	}
 }
 
 type sizedPanel interface {
@@ -4415,6 +5076,12 @@ func tierLabel(tier layout.Tier) string {
 func (m *Model) resizeSidebarPanels(width, height int) {
 	if m.spawnPanel != nil {
 		m.spawnPanel.SetSize(width, height)
+	}
+	if m.costPanel != nil {
+		m.costPanel.SetSize(width, height)
+	}
+	if m.rchPanel != nil {
+		m.rchPanel.SetSize(width, height)
 	}
 	if m.metricsPanel != nil {
 		m.metricsPanel.SetSize(width, height)
@@ -4487,6 +5154,312 @@ func refreshDue(last time.Time, interval time.Duration) bool {
 		return true
 	}
 	return time.Since(last) >= interval
+}
+
+func tailDelta(prev, current string) string {
+	if current == "" {
+		return ""
+	}
+	if prev == "" {
+		curLines := strings.Split(current, "\n")
+		if len(curLines) > 0 && curLines[len(curLines)-1] == "" {
+			curLines = curLines[:len(curLines)-1]
+		}
+		if len(curLines) == 0 {
+			return ""
+		}
+		return strings.Join(curLines, "\n")
+	}
+	if prev == current {
+		return ""
+	}
+
+	prevLines := strings.Split(prev, "\n")
+	curLines := strings.Split(current, "\n")
+	if len(prevLines) > 0 && prevLines[len(prevLines)-1] == "" {
+		prevLines = prevLines[:len(prevLines)-1]
+	}
+	if len(curLines) > 0 && curLines[len(curLines)-1] == "" {
+		curLines = curLines[:len(curLines)-1]
+	}
+	if len(curLines) == 0 {
+		return ""
+	}
+
+	maxOverlap := len(prevLines)
+	if len(curLines) < maxOverlap {
+		maxOverlap = len(curLines)
+	}
+
+	overlap := 0
+	for k := maxOverlap; k > 0; k-- {
+		if slicesEqual(prevLines[len(prevLines)-k:], curLines[:k]) {
+			overlap = k
+			break
+		}
+	}
+
+	deltaLines := curLines[overlap:]
+	if len(deltaLines) == 0 {
+		return ""
+	}
+	return strings.Join(deltaLines, "\n")
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *Model) recordCostOutputDelta(paneID, modelName, prevOutput, currentOutput string) {
+	if paneID == "" || currentOutput == "" {
+		return
+	}
+	if m.costOutputTokens == nil {
+		m.costOutputTokens = make(map[string]int)
+	}
+	if m.costModels == nil {
+		m.costModels = make(map[string]string)
+	}
+
+	delta := tailDelta(prevOutput, currentOutput)
+	if delta == "" {
+		return
+	}
+
+	deltaTokens := cost.EstimateTokens(delta)
+	if deltaTokens <= 0 {
+		return
+	}
+	m.costOutputTokens[paneID] += deltaTokens
+	if modelName != "" {
+		m.costModels[paneID] = modelName
+	}
+}
+
+func (m *Model) updateCostFromPrompts(now time.Time) {
+	if m.session == "" {
+		return
+	}
+	if !m.costLastPromptRead.IsZero() && now.Sub(m.costLastPromptRead) < CostPromptRefreshInterval {
+		return
+	}
+	m.costLastPromptRead = now
+
+	if m.costInputTokens == nil {
+		m.costInputTokens = make(map[string]int)
+	}
+
+	history, err := sessionPkg.LoadPromptHistory(m.session)
+	if err != nil {
+		m.costError = err
+		return
+	}
+
+	// Index panes by index for history targets.
+	paneByIndex := make(map[int]tmux.Pane, len(m.panes))
+	for _, p := range m.panes {
+		paneByIndex[p.Index] = p
+	}
+
+	lastTs := m.costLastPromptTimestamp
+	maxTs := lastTs
+
+	for _, entry := range history.Prompts {
+		if !entry.Timestamp.After(lastTs) {
+			continue
+		}
+
+		promptTokens := cost.EstimateTokens(entry.Content)
+		if promptTokens <= 0 {
+			if entry.Timestamp.After(maxTs) {
+				maxTs = entry.Timestamp
+			}
+			continue
+		}
+
+		for _, target := range entry.Targets {
+			target = strings.TrimSpace(target)
+			if target == "" {
+				continue
+			}
+
+			if strings.EqualFold(target, "all") {
+				for _, p := range m.panes {
+					if p.Type == tmux.AgentUser {
+						continue
+					}
+					m.costInputTokens[p.ID] += promptTokens
+					if string(p.Type) == "ollama" {
+						if tr := m.ensureLocalPerfTracker(p.ID); tr != nil {
+							tr.addPrompt(entry.Timestamp)
+						}
+					}
+				}
+				continue
+			}
+
+			idx, err := strconv.Atoi(target)
+			if err != nil {
+				continue
+			}
+			pane, ok := paneByIndex[idx]
+			if !ok || pane.Type == tmux.AgentUser {
+				continue
+			}
+			m.costInputTokens[pane.ID] += promptTokens
+			if string(pane.Type) == "ollama" {
+				if tr := m.ensureLocalPerfTracker(pane.ID); tr != nil {
+					tr.addPrompt(entry.Timestamp)
+				}
+			}
+		}
+
+		if entry.Timestamp.After(maxTs) {
+			maxTs = entry.Timestamp
+		}
+	}
+
+	if maxTs.After(lastTs) {
+		m.costLastPromptTimestamp = maxTs
+	}
+	m.costError = nil
+}
+
+func (m *Model) resolveCostModelForPane(pane tmux.Pane) string {
+	if pane.Variant != "" {
+		return pane.Variant
+	}
+
+	switch pane.Type {
+	case tmux.AgentClaude:
+		if m.cfg != nil && m.cfg.Models.DefaultClaude != "" {
+			return m.cfg.Models.DefaultClaude
+		}
+		return "claude-sonnet-4-20250514"
+	case tmux.AgentCodex:
+		if m.cfg != nil && m.cfg.Models.DefaultCodex != "" {
+			return m.cfg.Models.DefaultCodex
+		}
+		return "gpt-4"
+	case tmux.AgentGemini:
+		if m.cfg != nil && m.cfg.Models.DefaultGemini != "" {
+			return m.cfg.Models.DefaultGemini
+		}
+		return "gemini-2.0-flash"
+	default:
+		return ""
+	}
+}
+
+func (m *Model) refreshCostPanel(now time.Time) {
+	if m.costPanel == nil {
+		return
+	}
+	if m.costInputTokens == nil {
+		m.costInputTokens = make(map[string]int)
+	}
+	if m.costOutputTokens == nil {
+		m.costOutputTokens = make(map[string]int)
+	}
+	if m.costModels == nil {
+		m.costModels = make(map[string]string)
+	}
+	if m.costLastCosts == nil {
+		m.costLastCosts = make(map[string]float64)
+	}
+
+	var rows []panels.CostAgentRow
+	var total float64
+
+	for _, p := range m.panes {
+		if p.Type == tmux.AgentUser {
+			continue
+		}
+
+		modelName := m.costModels[p.ID]
+		if modelName == "" {
+			modelName = m.resolveCostModelForPane(p)
+			if modelName != "" {
+				m.costModels[p.ID] = modelName
+			}
+		}
+
+		inputTokens := m.costInputTokens[p.ID]
+		outputTokens := m.costOutputTokens[p.ID]
+
+		pricing := cost.GetModelPricing(modelName)
+		costUSD := (float64(inputTokens)/1000.0)*pricing.InputPer1K + (float64(outputTokens)/1000.0)*pricing.OutputPer1K
+		total += costUSD
+
+		prevCost := m.costLastCosts[p.ID]
+		delta := costUSD - prevCost
+		trend := panels.CostTrendFlat
+		if delta > 0.001 {
+			trend = panels.CostTrendUp
+		} else if delta < -0.001 {
+			trend = panels.CostTrendDown
+		}
+		m.costLastCosts[p.ID] = costUSD
+
+		rows = append(rows, panels.CostAgentRow{
+			PaneTitle:    p.Title,
+			Model:        modelName,
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			CostUSD:      costUSD,
+			Trend:        trend,
+		})
+	}
+
+	lastHour := m.updateCostSnapshots(now, total)
+
+	data := panels.CostPanelData{
+		Agents:          rows,
+		SessionTotalUSD: total,
+		LastHourUSD:     lastHour,
+		DailyBudgetUSD:  m.costDailyBudgetUSD,
+		BudgetUsedUSD:   total,
+	}
+
+	m.costData = data
+	m.costPanel.SetData(data, m.costError)
+}
+
+func (m *Model) updateCostSnapshots(now time.Time, total float64) float64 {
+	if m.costSnapshots == nil {
+		m.costSnapshots = make([]costSnapshot, 0, 128)
+	}
+
+	if len(m.costSnapshots) == 0 || total != m.costSnapshots[len(m.costSnapshots)-1].TotalUSD {
+		m.costSnapshots = append(m.costSnapshots, costSnapshot{At: now, TotalUSD: total})
+	}
+
+	cutoff := now.Add(-1 * time.Hour)
+	pruneIdx := 0
+	for pruneIdx < len(m.costSnapshots) && m.costSnapshots[pruneIdx].At.Before(cutoff) {
+		pruneIdx++
+	}
+	if pruneIdx > 0 {
+		m.costSnapshots = m.costSnapshots[pruneIdx:]
+	}
+
+	if len(m.costSnapshots) == 0 {
+		return 0
+	}
+
+	delta := total - m.costSnapshots[0].TotalUSD
+	if delta < 0 {
+		return 0
+	}
+	return delta
 }
 
 func (m *Model) recordTimelineStatus(pane tmux.Pane, st status.AgentStatus) bool {
@@ -4701,6 +5674,18 @@ func (m *Model) scheduleRefreshes(now time.Time) []tea.Cmd {
 		cmds = append(cmds, m.fetchHandoffCmd())
 	}
 
+	if refreshDue(m.lastRanoNetworkFetch, m.ranoNetworkRefreshInterval) && !m.fetchingRanoNetwork {
+		m.fetchingRanoNetwork = true
+		m.lastRanoNetworkFetch = now
+		cmds = append(cmds, m.fetchRanoNetworkStats())
+	}
+
+	if refreshDue(m.lastRCHFetch, m.rchRefreshInterval) && !m.fetchingRCH {
+		m.fetchingRCH = true
+		m.lastRCHFetch = now
+		cmds = append(cmds, m.fetchRCHStatus())
+	}
+
 	if refreshDue(m.lastDCGFetch, m.dcgRefreshInterval) && !m.fetchingDCG {
 		m.fetchingDCG = true
 		m.lastDCGFetch = now
@@ -4717,6 +5702,21 @@ func (m *Model) scheduleSpawnRefresh(now time.Time) tea.Cmd {
 		return m.fetchSpawnStateCmd()
 	}
 	return nil
+}
+
+func rchStatusActive(status *tools.RCHStatus) bool {
+	if status == nil {
+		return false
+	}
+	for _, worker := range status.Workers {
+		if strings.TrimSpace(worker.CurrentBuild) != "" {
+			return true
+		}
+		if worker.Queue > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -4873,6 +5873,66 @@ func (m Model) renderSidebar(width, height int) string {
 	if m.scanStatus != "" && m.scanStatus != "unavailable" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(t.Blue).Bold(true).Render("Scan Status"))
 		lines = append(lines, m.renderScanBadge())
+	}
+
+	// Rano network activity (best-effort, height-gated)
+	if m.ranoNetworkPanel != nil && height > 0 && m.ranoNetworkPanel.HasData() {
+		used := lipgloss.Height(strings.Join(lines, "\n"))
+		spacer := 1
+		panelHeight := height - used - spacer
+		if panelHeight >= m.ranoNetworkPanel.Config().MinHeight {
+			if panelHeight > 16 {
+				panelHeight = 16
+			}
+
+			if m.focusedPanel == PanelSidebar {
+				m.ranoNetworkPanel.Focus()
+			} else {
+				m.ranoNetworkPanel.Blur()
+			}
+			m.ranoNetworkPanel.SetSize(width, panelHeight)
+			lines = append(lines, "", m.ranoNetworkPanel.View())
+		}
+	}
+
+	// RCH build offload status (best-effort, height-gated)
+	if m.rchPanel != nil && height > 0 && m.rchPanel.HasData() {
+		used := lipgloss.Height(strings.Join(lines, "\n"))
+		spacer := 1
+		panelHeight := height - used - spacer
+		if panelHeight >= m.rchPanel.Config().MinHeight {
+			if panelHeight > 18 {
+				panelHeight = 18
+			}
+
+			if m.focusedPanel == PanelSidebar {
+				m.rchPanel.Focus()
+			} else {
+				m.rchPanel.Blur()
+			}
+			m.rchPanel.SetSize(width, panelHeight)
+			lines = append(lines, "", m.rchPanel.View())
+		}
+	}
+
+	// Cost tracking (best-effort, height-gated)
+	if m.costPanel != nil && height > 0 && (m.costPanel.HasData() || m.costDailyBudgetUSD > 0) {
+		used := lipgloss.Height(strings.Join(lines, "\n"))
+		spacer := 1
+		panelHeight := height - used - spacer
+		if panelHeight >= m.costPanel.Config().MinHeight {
+			if panelHeight > 14 {
+				panelHeight = 14
+			}
+
+			if m.focusedPanel == PanelSidebar {
+				m.costPanel.Focus()
+			} else {
+				m.costPanel.Blur()
+			}
+			m.costPanel.SetSize(width, panelHeight)
+			lines = append(lines, "", m.costPanel.View())
+		}
 	}
 
 	// Metrics (best-effort, height-gated)

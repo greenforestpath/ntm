@@ -23,6 +23,28 @@ func TestNewContributionTracker(t *testing.T) {
 	t.Logf("TEST: %s - assertion: tracker created with defaults", t.Name())
 }
 
+func TestNewContributionTrackerWithConfig(t *testing.T) {
+	cfg := ContributionConfig{
+		FindingsWeight:        0.1,
+		UniqueWeight:          0.2,
+		CitationWeight:        0.3,
+		RisksWeight:           0.2,
+		RecommendationsWeight: 0.2,
+		MaxHighlights:         7,
+	}
+
+	tracker := NewContributionTrackerWithConfig(cfg)
+	if tracker == nil {
+		t.Fatal("NewContributionTrackerWithConfig returned nil")
+	}
+	if tracker.modeScores == nil {
+		t.Fatal("modeScores should be initialized")
+	}
+	if tracker.Config != cfg {
+		t.Fatalf("Config = %#v, want %#v", tracker.Config, cfg)
+	}
+}
+
 func TestContributionTracker_RecordOriginalFinding(t *testing.T) {
 	t.Logf("TEST: %s - starting", t.Name())
 

@@ -225,3 +225,26 @@ func TestApplyPagination_LimitExceedsTotal(t *testing.T) {
 		t.Error("expected has_more=false when limit exceeds total")
 	}
 }
+
+func TestApplyPagination_LargePayloadDeterministicNextCursor(t *testing.T) {
+	items := make([]int, 105)
+	for i := range items {
+		items[i] = i + 1
+	}
+
+	got, page := ApplyPagination(items, PaginationOptions{Limit: 100})
+	if page == nil {
+		t.Fatal("expected pagination info, got nil")
+	}
+	t.Logf("ROBOT_TEST: page limit=%d count=%d next=%v", page.Limit, page.Count, page.NextCursor)
+
+	if len(got) != 100 {
+		t.Fatalf("expected 100 items, got %d", len(got))
+	}
+	if page.Total != 105 || page.Count != 100 {
+		t.Fatalf("unexpected pagination info: %+v", page)
+	}
+	if !page.HasMore || page.NextCursor == nil || *page.NextCursor != 100 {
+		t.Fatalf("expected next_cursor=100 and has_more=true, got %+v", page)
+	}
+}

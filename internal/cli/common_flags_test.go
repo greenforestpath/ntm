@@ -87,6 +87,9 @@ func TestSpawnAssignFlags(t *testing.T) {
 		{"assign-quiet", "assign-quiet", "false"},
 		{"assign-timeout", "assign-timeout", "30s"},
 		{"assign-agent", "assign-agent", ""},
+		{"assign-cc-only", "assign-cc-only", "false"},
+		{"assign-cod-only", "assign-cod-only", "false"},
+		{"assign-gmi-only", "assign-gmi-only", "false"},
 	}
 
 	for _, tc := range tests {
@@ -146,6 +149,35 @@ func TestAgentTypeFilterEquivalence(t *testing.T) {
 		assignCodOnly = origCodOnly
 		assignGmiOnly = origGmiOnly
 		assignAgentType = origAgentType
+	}
+}
+
+// TestSpawnAssignAgentTypeAliases verifies spawn --assign agent filter aliases match assign behavior.
+func TestSpawnAssignAgentTypeAliases(t *testing.T) {
+	tests := []struct {
+		ccOnly  bool
+		codOnly bool
+		gmiOnly bool
+		agent   string
+		want    string
+	}{
+		{false, false, false, "", ""},
+		{true, false, false, "", "claude"},
+		{false, true, false, "", "codex"},
+		{false, false, true, "", "gemini"},
+		{false, false, false, "claude", "claude"},
+		{false, false, false, "Codex", "codex"},
+		{false, false, false, "GEMINI", "gemini"},
+		// --assign-agent should take precedence
+		{true, false, false, "codex", "codex"},
+	}
+
+	for _, tc := range tests {
+		got := resolveSpawnAssignAgentType(tc.agent, tc.ccOnly, tc.codOnly, tc.gmiOnly)
+		if got != tc.want {
+			t.Errorf("resolveSpawnAssignAgentType(agent=%q, cc=%v, cod=%v, gmi=%v) = %q, want %q",
+				tc.agent, tc.ccOnly, tc.codOnly, tc.gmiOnly, got, tc.want)
+		}
 	}
 }
 
