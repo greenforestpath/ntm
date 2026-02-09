@@ -8379,5 +8379,189 @@ func TestToJSONMap_MarshalError(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// BATCH 21 — approval flows, pipeline handlers, deeper handler branches
+// =============================================================================
+
+// --- Approval request → approve → approve-again (conflict) ---
+
+func TestApprovalFlow_RequestThenApprove(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	// 1. Create an approval request
+	body := strings.NewReader(`{"action":"git push --force","resource":"main","reason":"deploy fix"}`)
+	req := httptest.NewRequest("POST", "/api/v1/safety/approvals/request", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handleApprovalRequestV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("request approval: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	approvalID, _ := resp["id"].(string)
+	if approvalID == "" {
+		t.Fatalf("no approval ID in response: %s", rec.Body.String())
+	}
+
+	// 2. Approve it
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", approvalID)
+	req2 := httptest.NewRequest("POST", "/api/v1/safety/approvals/"+approvalID+"/approve", nil)
+	req2 = req2.WithContext(context.WithValue(req2.Context(), chi.RouteCtxKey, rctx))
+	rec2 := httptest.NewRecorder()
+
+	s.handleApprovalApproveV1(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("approve: expected 200, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	// 3. Try to approve again → conflict (already approved)
+	rec3 := httptest.NewRecorder()
+	req3 := httptest.NewRequest("POST", "/api/v1/safety/approvals/"+approvalID+"/approve", nil)
+	req3 = req3.WithContext(context.WithValue(req3.Context(), chi.RouteCtxKey, rctx))
+
+	s.handleApprovalApproveV1(rec3, req3)
+
+	if rec3.Code != http.StatusConflict {
+		t.Fatalf("re-approve: expected 409 conflict, got %d", rec3.Code)
+	}
+}
+
+// --- Approval deny then deny again (conflict) ---
+
+func TestApprovalFlow_RequestThenDeny(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	// Create request
+	body := strings.NewReader(`{"action":"rm -rf /","resource":"system"}`)
+	req := httptest.NewRequest("POST", "/api/v1/safety/approvals/request", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handleApprovalRequestV1(rec, req)
+
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	approvalID, _ := resp["id"].(string)
+	if approvalID == "" {
+		t.Fatalf("no approval ID in response: %s", rec.Body.String())
+	}
+
+	// Deny it
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", approvalID)
+	req2 := httptest.NewRequest("POST", "/api/v1/safety/approvals/"+approvalID+"/deny", nil)
+	req2 = req2.WithContext(context.WithValue(req2.Context(), chi.RouteCtxKey, rctx))
+	rec2 := httptest.NewRecorder()
+
+	s.handleApprovalDenyV1(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("deny: expected 200, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	// Try to deny again → conflict
+	rec3 := httptest.NewRecorder()
+	req3 := httptest.NewRequest("POST", "/api/v1/safety/approvals/"+approvalID+"/deny", nil)
+	req3 = req3.WithContext(context.WithValue(req3.Context(), chi.RouteCtxKey, rctx))
+
+	s.handleApprovalDenyV1(rec3, req3)
+
+	if rec3.Code != http.StatusConflict {
+		t.Fatalf("re-deny: expected 409 conflict, got %d", rec3.Code)
+	}
+}
+
+// --- Approval approve not found ---
+
+func TestApprovalApproveV1_NotFound(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "apr-nonexistent")
+	req := httptest.NewRequest("POST", "/api/v1/safety/approvals/apr-nonexistent/approve", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleApprovalApproveV1(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+// --- Approval deny not found ---
+
+func TestApprovalDenyV1_NotFound(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "apr-nonexistent")
+	req := httptest.NewRequest("POST", "/api/v1/safety/approvals/apr-nonexistent/deny", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleApprovalDenyV1(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+// --- Approval request with TTL ---
+
+func TestApprovalRequestV1_WithTTL(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	body := strings.NewReader(`{"action":"deploy","ttl_seconds":60}`)
+	req := httptest.NewRequest("POST", "/api/v1/safety/approvals/request", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handleApprovalRequestV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- Pipeline list (exercises empty list path) ---
+
+func TestHandleListPipelines_Empty(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/pipelines", nil)
+	rec := httptest.NewRecorder()
+
+	s.handleListPipelines(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+
+// --- publishApprovalEvent with nil wsHub (exercises nil guard) ---
+
+func TestPublishApprovalEvent_NilHub(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+	s.wsHub = nil
+
+	// Should not panic
+	s.publishApprovalEvent("approval.test", map[string]interface{}{
+		"test": true,
+	})
+}
+
+
 // Ensure kernel import is used
 var _ = kernel.Run
