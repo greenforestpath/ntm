@@ -135,6 +135,70 @@ func TestDetectErrors_MultipleErrors(t *testing.T) {
 	}
 }
 
+func TestDetectErrors_ConnectionError(t *testing.T) {
+	t.Parallel()
+	output := "connection refused"
+	issues := detectErrors(output)
+	found := false
+	for _, issue := range issues {
+		if issue.Type == "network_error" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("detectErrors should detect connection error as network_error")
+	}
+}
+
+func TestDetectErrors_GenericError(t *testing.T) {
+	t.Parallel()
+	output := "npm ERR! something went wrong"
+	issues := detectErrors(output)
+	found := false
+	for _, issue := range issues {
+		if issue.Type == "error" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("detectErrors should detect npm error as generic error")
+	}
+}
+
+func TestDetectErrors_CrashOnly(t *testing.T) {
+	t.Parallel()
+	output := "panic: runtime error: index out of range"
+	issues := detectErrors(output)
+	found := false
+	for _, issue := range issues {
+		if issue.Type == "crash" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("detectErrors should detect panic as crash")
+	}
+}
+
+func TestDetectErrors_AuthOnly(t *testing.T) {
+	t.Parallel()
+	output := "Authentication failed: invalid API key"
+	issues := detectErrors(output)
+	found := false
+	for _, issue := range issues {
+		if issue.Type == "auth_error" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("detectErrors should detect auth failure")
+	}
+}
+
 // =============================================================================
 // calculateStatus edge cases
 // =============================================================================
