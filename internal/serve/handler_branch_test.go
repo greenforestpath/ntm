@@ -2406,3 +2406,356 @@ func TestCheckMemoryDaemon_ValidPIDFile(t *testing.T) {
 		t.Errorf("SessionID = %q, want 'mysession'", info.SessionID)
 	}
 }
+
+// =============================================================================
+// FIFTH BATCH: checkpoint handlers, export format validation,
+// import validation, rollback, more pipeline coverage
+// =============================================================================
+
+// handleCreateCheckpoint — session not found (tmux check)
+
+func TestHandleCreateCheckpoint_SessionNotFound(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	body := `{"name":"test-checkpoint"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/__nonexistent__/checkpoints", strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "__nonexistent__")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleCreateCheckpoint(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleCreateCheckpoint_InvalidBody(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/s/checkpoints", strings.NewReader("{bad"))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "s")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleCreateCheckpoint(rec, req)
+
+	// Session check first — either 404 (session not found) or 400 (bad body)
+	if rec.Code != http.StatusNotFound && rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 404 or 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// handleRestoreCheckpoint — invalid body
+
+func TestHandleRestoreCheckpoint_InvalidBody(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/s/checkpoints/cp1/restore", strings.NewReader("{bad"))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "s")
+	rctx.URLParams.Add("checkpointId", "cp1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleRestoreCheckpoint(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleRestoreCheckpoint_NotFound(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	body := `{"force":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/__nosess__/checkpoints/__nocp__/restore", strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "__nosess__")
+	rctx.URLParams.Add("checkpointId", "__nocp__")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleRestoreCheckpoint(rec, req)
+
+	// Restore will fail because checkpoint doesn't exist
+	if rec.Code != http.StatusInternalServerError && rec.Code != http.StatusBadRequest && rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want error code; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// handleVerifyCheckpoint — checkpoint not found
+
+func TestHandleVerifyCheckpoint_NotFound(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/__nosess__/checkpoints/__nocp__/verify", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "__nosess__")
+	rctx.URLParams.Add("checkpointId", "__nocp__")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleVerifyCheckpoint(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// handleExportCheckpoint — invalid format + not found
+
+func TestHandleExportCheckpoint_InvalidFormat(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	body := `{"format":"invalid"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/s/checkpoints/cp1/export", strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "s")
+	rctx.URLParams.Add("checkpointId", "cp1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleExportCheckpoint(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleExportCheckpoint_NotFound(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	body := `{"format":"tar.gz"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/__nosess__/checkpoints/__nocp__/export", strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "__nosess__")
+	rctx.URLParams.Add("checkpointId", "__nocp__")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleExportCheckpoint(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleExportCheckpoint_GetDefaultFormat(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	// GET request exercises the query-param parsing branch
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/__nosess__/checkpoints/__nocp__/export?redact_secrets=true", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "__nosess__")
+	rctx.URLParams.Add("checkpointId", "__nocp__")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleExportCheckpoint(rec, req)
+
+	// Default format is tar.gz; checkpoint not found → 404
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleExportCheckpoint_InvalidBody(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/s/checkpoints/cp1/export", strings.NewReader("{bad"))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "s")
+	rctx.URLParams.Add("checkpointId", "cp1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleExportCheckpoint(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// handleImportCheckpoint — validation branches
+
+func TestHandleImportCheckpoint_InvalidBody(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/s/checkpoints/import", strings.NewReader("{bad"))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "s")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleImportCheckpoint(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleImportCheckpoint_MissingData(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	body := `{"data":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/s/checkpoints/import", strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "s")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleImportCheckpoint(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleImportCheckpoint_InvalidBase64(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	body := `{"data":"not!valid!base64!!!"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/s/checkpoints/import", strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "s")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleImportCheckpoint(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// handleRollback — validation branches
+
+func TestHandleRollback_InvalidBody(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/s/rollback", strings.NewReader("{bad"))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "s")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleRollback(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleRollback_CheckpointNotFound(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	body := `{"checkpoint_ref":"__nonexistent__"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/__nosess__/rollback", strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "__nosess__")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleRollback(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleRollback_DefaultRef(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	// Empty body → default ref "latest"
+	body := `{}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/__nosess__/rollback", strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "__nosess__")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleRollback(rec, req)
+
+	// No checkpoints → not found
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// handleGetCheckpoint — not found (different name from extra tests)
+
+func TestHandleGetCheckpoint_Branch_NotFound(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/__nosess__/checkpoints/__nocp__", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "__nosess__")
+	rctx.URLParams.Add("checkpointId", "__nocp__")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleGetCheckpoint(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// handleListPipelineTemplates — should return 200 with templates list
+
+func TestHandleListPipelineTemplates_Branch(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pipelines/templates", nil)
+
+	srv.handleListPipelineTemplates(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := resp["templates"]; !ok {
+		t.Error("expected 'templates' key in response")
+	}
+}
+
+// handleListPipelines — should return 200 with empty list
+
+func TestHandleListPipelines_Branch(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pipelines", nil)
+
+	srv.handleListPipelines(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+}
