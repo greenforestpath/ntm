@@ -9947,5 +9947,315 @@ func TestHandleDeleteCheckpoint_Success(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Batch 25 – checkpoint list/get, rollback dry-run branches, export POST,
+//            search messages missing query, get message invalid ID
+// =============================================================================
+
+// --- handleListCheckpoints: success with fake checkpoint data ---
+
+func TestHandleListCheckpoints_WithFakeCheckpoint(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Create fake checkpoint
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "list-sess", "cp-list-1")
+	os.MkdirAll(cpDir, 0755)
+	metadata := `{"version":1,"id":"cp-list-1","name":"list-test","session_name":"list-sess","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":2}`
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "list-sess")
+
+	req := httptest.NewRequest("GET", "/api/v1/sessions/list-sess/checkpoints", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleListCheckpoints(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if count, ok := resp["count"].(float64); !ok || count != 1 {
+		t.Fatalf("expected count=1, got %v", resp["count"])
+	}
+}
+
+// --- handleListCheckpoints: with details=true and description ---
+
+func TestHandleListCheckpoints_WithDetailsFakeCP(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "det-sess", "cp-det-1")
+	os.MkdirAll(cpDir, 0755)
+	metadata := `{"version":1,"id":"cp-det-1","name":"detail-test","description":"with details","session_name":"det-sess","working_dir":"/tmp/proj","created_at":"2025-06-01T12:00:00Z","pane_count":3}`
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "det-sess")
+
+	req := httptest.NewRequest("GET", "/api/v1/sessions/det-sess/checkpoints?details=true", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleListCheckpoints(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handleGetCheckpoint: success with fake checkpoint data ---
+
+func TestHandleGetCheckpoint_FakeCheckpointSuccess(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "get-sess", "cp-get-1")
+	os.MkdirAll(cpDir, 0755)
+	metadata := `{"version":1,"id":"cp-get-1","name":"get-test","session_name":"get-sess","working_dir":"/tmp","created_at":"2025-01-15T00:00:00Z","pane_count":1}`
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "get-sess")
+	rctx.URLParams.Add("checkpointId", "cp-get-1")
+
+	req := httptest.NewRequest("GET", "/api/v1/sessions/get-sess/checkpoints/cp-get-1", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleGetCheckpoint(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handleRollback: no working directory in checkpoint ---
+
+func TestHandleRollback_NoWorkingDir(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-nowd", "cp-nowd")
+	os.MkdirAll(cpDir, 0755)
+	// working_dir is empty string
+	metadata := `{"version":1,"id":"cp-nowd","name":"no-wd","session_name":"rb-nowd","working_dir":"","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890","branch":"main"}}`
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "rb-nowd")
+
+	body := `{"checkpoint_ref":"cp-nowd"}`
+	req := httptest.NewRequest("POST", "/api/v1/sessions/rb-nowd/checkpoints/rollback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleRollback(rec, req)
+
+	// Should fail with "checkpoint has no working directory"
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "working directory") {
+		t.Fatalf("expected working directory error, got: %s", rec.Body.String())
+	}
+}
+
+// --- handleRollback: dry run with dirty + stash warning ---
+
+func TestHandleRollback_DryRunDirtyStash(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-dirty", "cp-dirty")
+	os.MkdirAll(cpDir, 0755)
+	// IsDirty=true to exercise the stash warning path
+	metadata := `{"version":1,"id":"cp-dirty","name":"dirty-test","session_name":"rb-dirty","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890","branch":"main","is_dirty":true}}`
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "rb-dirty")
+
+	body := `{"checkpoint_ref":"cp-dirty","dry_run":true}`
+	req := httptest.NewRequest("POST", "/api/v1/sessions/rb-dirty/checkpoints/rollback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleRollback(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// Should include stash warning
+	body2 := rec.Body.String()
+	if !strings.Contains(body2, "would rollback") {
+		t.Fatalf("expected rollback warning, got: %s", body2)
+	}
+	if !strings.Contains(body2, "would stash") {
+		t.Fatalf("expected stash warning for dirty checkpoint, got: %s", body2)
+	}
+}
+
+// --- handleRollback: dry run with no_git flag (no stash warning) ---
+
+func TestHandleRollback_DryRunNoGitFlag(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "rb-nogit", "cp-nogit")
+	os.MkdirAll(cpDir, 0755)
+	metadata := `{"version":1,"id":"cp-nogit","name":"nogit-test","session_name":"rb-nogit","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def67890","branch":"main","is_dirty":true}}`
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "rb-nogit")
+
+	body := `{"checkpoint_ref":"cp-nogit","dry_run":true,"no_git":true}`
+	req := httptest.NewRequest("POST", "/api/v1/sessions/rb-nogit/checkpoints/rollback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleRollback(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// With no_git=true, should NOT have stash warning
+	if strings.Contains(rec.Body.String(), "would stash") {
+		t.Fatalf("no_git=true should skip stash warning, got: %s", rec.Body.String())
+	}
+}
+
+// --- handleExportCheckpoint: unsupported format ---
+
+func TestHandleExportCheckpoint_UnsupportedFormat(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "exp-fmt", "cp-fmt")
+	os.MkdirAll(cpDir, 0755)
+	metadata := `{"version":1,"id":"cp-fmt","name":"fmt-test","session_name":"exp-fmt","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "exp-fmt")
+	rctx.URLParams.Add("checkpointId", "cp-fmt")
+
+	req := httptest.NewRequest("GET", "/api/v1/sessions/exp-fmt/checkpoints/cp-fmt/export?format=7z", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleExportCheckpoint(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unsupported format, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "unsupported format") {
+		t.Fatalf("expected unsupported format error, got: %s", rec.Body.String())
+	}
+}
+
+// --- handleExportCheckpoint: POST with body flags ---
+
+func TestHandleExportCheckpoint_PostWithFlags(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "exp-post", "cp-post")
+	os.MkdirAll(cpDir, 0755)
+	metadata := `{"version":1,"id":"cp-post","name":"post-test","session_name":"exp-post","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "exp-post")
+	rctx.URLParams.Add("checkpointId", "cp-post")
+
+	// POST with JSON body specifying format and options
+	body := `{"format":"tar.gz","include_scrollback":false,"include_git_patch":false,"redact_secrets":true}`
+	req := httptest.NewRequest("POST", "/api/v1/sessions/exp-post/checkpoints/cp-post/export", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleExportCheckpoint(rec, req)
+
+	// Should succeed (or fail gracefully trying to export real data)
+	// The key is we exercise the POST parsing path + include_scrollback/include_git_patch flags
+	// Status may be 200 (if export works) or 500 (if export fails on fake data)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 200 or 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handleExportCheckpoint: POST with invalid JSON body ---
+
+func TestHandleExportCheckpoint_PostInvalidBody(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "any-sess")
+	rctx.URLParams.Add("checkpointId", "any-cp")
+
+	req := httptest.NewRequest("POST", "/api/v1/sessions/any-sess/checkpoints/any-cp/export", strings.NewReader("{invalid"))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleExportCheckpoint(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid body, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handleRollback: default checkpoint_ref to latest (empty ref) ---
+
+func TestHandleRollback_DefaultRefToLatest(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Don't create any checkpoints — so "latest" won't resolve
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "rb-latest")
+
+	body := `{}`
+	req := httptest.NewRequest("POST", "/api/v1/sessions/rb-latest/checkpoints/rollback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleRollback(rec, req)
+
+	// Should 404 because "latest" resolves to nothing
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // Ensure kernel import is used
 var _ = kernel.Run
