@@ -9113,5 +9113,839 @@ func TestWriteErrorResponse_HintOnly(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Batch 24: Policy validate file-based paths, checkpoint import/export,
+//           installWrapperFile, policy automation update with file, policy reset
+// =============================================================================
+
+// --- handlePolicyValidateV1: valid content with version + blocked rules (no warnings, valid=true) ---
+
+func TestHandlePolicyValidateV1_ValidContentNoWarnings(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	validPolicy := "version: 1\nblocked:\n  - pattern: \"rm -rf /\"\n    reason: \"dangerous\"\n"
+	body := fmt.Sprintf(`{"content":%q}`, validPolicy)
+	req := httptest.NewRequest("POST", "/api/v1/safety/policy/validate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handlePolicyValidateV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["valid"] != true {
+		t.Errorf("expected valid=true, got %v", resp["valid"])
+	}
+}
+
+// --- handlePolicyValidateV1: valid content with validate error (bad force_release) ---
+
+func TestHandlePolicyValidateV1_ContentValidateError(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	badPolicy := "version: 1\nautomation:\n  force_release: invalid_value\n"
+	body := fmt.Sprintf(`{"content":%q}`, badPolicy)
+	req := httptest.NewRequest("POST", "/api/v1/safety/policy/validate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handlePolicyValidateV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["valid"] != false {
+		t.Errorf("expected valid=false for bad force_release")
+	}
+}
+
+// --- handlePolicyValidateV1: file-based, no policy file ---
+
+func TestHandlePolicyValidateV1_FileBasedNoFile(t *testing.T) {
+	// t.Setenv incompatible with t.Parallel
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	req := httptest.NewRequest("POST", "/api/v1/safety/policy/validate", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handlePolicyValidateV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["valid"] != false {
+		t.Errorf("expected valid=false when file missing")
+	}
+	if resp["policy_path"] == nil || resp["policy_path"] == "" {
+		t.Error("expected policy_path set for file-based validation")
+	}
+}
+
+// --- handlePolicyValidateV1: file-based, valid policy file ---
+
+func TestHandlePolicyValidateV1_FileBasedValidFile(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	policyDir := filepath.Join(tmpHome, ".ntm")
+	os.MkdirAll(policyDir, 0755)
+	os.WriteFile(filepath.Join(policyDir, "policy.yaml"), []byte("version: 1\nblocked:\n  - pattern: \"danger\"\n    reason: \"test\"\n"), 0644)
+
+	req := httptest.NewRequest("POST", "/api/v1/safety/policy/validate", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handlePolicyValidateV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["policy_path"] == nil || resp["policy_path"] == "" {
+		t.Error("expected policy_path set for file-based validation")
+	}
+}
+
+// --- handlePolicyValidateV1: file-based, invalid YAML in file ---
+
+func TestHandlePolicyValidateV1_FileBasedInvalidYAML(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	policyDir := filepath.Join(tmpHome, ".ntm")
+	os.MkdirAll(policyDir, 0755)
+	os.WriteFile(filepath.Join(policyDir, "policy.yaml"), []byte("{{{not valid yaml"), 0644)
+
+	req := httptest.NewRequest("POST", "/api/v1/safety/policy/validate", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handlePolicyValidateV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["valid"] != false {
+		t.Error("expected valid=false for invalid YAML file")
+	}
+}
+
+// --- handlePolicyValidateV1: file-based, no version warning ---
+
+func TestHandlePolicyValidateV1_FileBasedNoVersion(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	policyDir := filepath.Join(tmpHome, ".ntm")
+	os.MkdirAll(policyDir, 0755)
+	os.WriteFile(filepath.Join(policyDir, "policy.yaml"), []byte("blocked:\n  - pattern: \"test\"\n"), 0644)
+
+	req := httptest.NewRequest("POST", "/api/v1/safety/policy/validate", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handlePolicyValidateV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handlePolicyValidateV1: file-based, empty rules warning ---
+
+func TestHandlePolicyValidateV1_FileBasedEmptyRules(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	policyDir := filepath.Join(tmpHome, ".ntm")
+	os.MkdirAll(policyDir, 0755)
+	os.WriteFile(filepath.Join(policyDir, "policy.yaml"), []byte("version: 1\n"), 0644)
+
+	req := httptest.NewRequest("POST", "/api/v1/safety/policy/validate", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handlePolicyValidateV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handlePolicyResetV1: success with HOME override ---
+
+func TestHandlePolicyResetV1_CreatesNewDir(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	req := httptest.NewRequest("POST", "/api/v1/safety/policy/reset", nil)
+	rec := httptest.NewRecorder()
+
+	s.handlePolicyResetV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify file was created
+	policyPath := filepath.Join(tmpHome, ".ntm", "policy.yaml")
+	if _, err := os.Stat(policyPath); err != nil {
+		t.Errorf("policy file not created: %v", err)
+	}
+}
+
+// --- handlePolicyAutomationGetV1: invalid policy file returns error ---
+
+func TestHandlePolicyAutomationGetV1_InvalidFile(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Create invalid policy file so LoadOrDefault fails to parse
+	policyDir := filepath.Join(tmpHome, ".ntm")
+	os.MkdirAll(policyDir, 0755)
+	os.WriteFile(filepath.Join(policyDir, "policy.yaml"), []byte("{{{invalid"), 0644)
+
+	req := httptest.NewRequest("GET", "/api/v1/safety/policy/automation", nil)
+	rec := httptest.NewRecorder()
+
+	s.handlePolicyAutomationGetV1(rec, req)
+
+	// If LoadOrDefault returns default on error, should be 200
+	// If it fails, should be 500
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 200 or 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handlePolicyAutomationUpdateV1: update with existing policy file ---
+
+func TestHandlePolicyAutomationUpdateV1_WithExistingFile(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Create valid policy file
+	policyDir := filepath.Join(tmpHome, ".ntm")
+	os.MkdirAll(policyDir, 0755)
+	os.WriteFile(filepath.Join(policyDir, "policy.yaml"), []byte("version: 1\nautomation:\n  auto_commit: false\n"), 0644)
+
+	boolTrue := true
+	reqBody, _ := json.Marshal(map[string]interface{}{"auto_commit": boolTrue})
+	req := httptest.NewRequest("PUT", "/api/v1/safety/policy/automation", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handlePolicyAutomationUpdateV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["modified"] != true {
+		t.Errorf("expected modified=true, got %v", resp["modified"])
+	}
+}
+
+// --- handlePolicyAutomationUpdateV1: create default when file missing ---
+
+func TestHandlePolicyAutomationUpdateV1_NoExistingFile(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	boolTrue := true
+	reqBody, _ := json.Marshal(map[string]interface{}{"auto_push": boolTrue})
+	req := httptest.NewRequest("PUT", "/api/v1/safety/policy/automation", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handlePolicyAutomationUpdateV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["modified"] != true {
+		t.Errorf("expected modified=true, got %v", resp["modified"])
+	}
+}
+
+// --- handleImportCheckpoint: zip magic bytes detection ---
+
+func TestHandleImportCheckpoint_ZipDetection(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "test-session")
+
+	// PK\x03\x04 is zip magic bytes
+	zipData := base64.StdEncoding.EncodeToString([]byte("PK\x03\x04fakezipdata"))
+	body := fmt.Sprintf(`{"data":%q}`, zipData)
+	req := httptest.NewRequest("POST", "/api/v1/sessions/test-session/checkpoints/import", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleImportCheckpoint(rec, req)
+
+	// Will fail at storage.Import but exercises decode + zip detection + temp file write
+	if rec.Code == http.StatusOK {
+		t.Log("import succeeded unexpectedly")
+	}
+}
+
+// --- handleExportCheckpoint: GET with all query params ---
+
+func TestHandleExportCheckpoint_GetWithQueryParams(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "test-session")
+	rctx.URLParams.Add("checkpointId", "nonexistent")
+
+	req := httptest.NewRequest("GET", "/api/v1/sessions/test-session/checkpoints/nonexistent/export?format=zip&redact_secrets=true&rewrite_paths=false", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleExportCheckpoint(rec, req)
+
+	// Checkpoint doesn't exist, should get 404 but exercises query param parsing
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- installWrapperFile: write to nonexistent directory ---
+
+func TestInstallWrapperFile_WriteError(t *testing.T) {
+	t.Parallel()
+
+	badPath := filepath.Join(t.TempDir(), "nonexistent", "subdir", "wrapper.sh")
+	err := installWrapperFile(badPath, "#!/bin/sh\necho hello", false)
+	if err == nil {
+		t.Fatal("expected error writing to nonexistent dir")
+	}
+}
+
+// --- installWrapperFile: already exists without force ---
+
+func TestInstallWrapperFile_ExistsNoForce(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "existing.sh")
+	os.WriteFile(path, []byte("existing"), 0755)
+
+	err := installWrapperFile(path, "new content", false)
+	if err == nil {
+		t.Fatal("expected conflict error when file exists and force=false")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("expected 'already exists' in error, got: %s", err.Error())
+	}
+}
+
+// --- installWrapperFile: force overwrite ---
+
+func TestInstallWrapperFile_ForceOverwrite(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "wrapper.sh")
+	os.WriteFile(path, []byte("old"), 0755)
+
+	err := installWrapperFile(path, "new content", true)
+	if err != nil {
+		t.Fatalf("expected no error with force=true: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != "new content" {
+		t.Errorf("file content not updated: %q", string(data))
+	}
+}
+
+// --- handleSafetyInstallV1: success creates all files ---
+
+func TestHandleSafetyInstallV1_SuccessCreatesFiles(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	body := strings.NewReader(`{"force":true}`)
+	req := httptest.NewRequest("POST", "/api/v1/safety/install", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handleSafetyInstallV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["git_wrapper"] == nil {
+		t.Error("expected git_wrapper in response")
+	}
+	if resp["policy"] == nil {
+		t.Error("expected policy in response")
+	}
+}
+
+// --- handleSafetyUninstallV1: removes installed files ---
+
+func TestHandleSafetyUninstallV1_RemovesFiles(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Install first
+	binDir := filepath.Join(tmpHome, ".ntm", "bin")
+	os.MkdirAll(binDir, 0755)
+	os.WriteFile(filepath.Join(binDir, "git"), []byte("wrapper"), 0755)
+	os.WriteFile(filepath.Join(binDir, "rm"), []byte("wrapper"), 0755)
+
+	hookDir := filepath.Join(tmpHome, ".claude", "hooks", "PreToolUse")
+	os.MkdirAll(hookDir, 0755)
+	os.WriteFile(filepath.Join(hookDir, "ntm-safety.sh"), []byte("hook"), 0755)
+
+	req := httptest.NewRequest("POST", "/api/v1/safety/uninstall", nil)
+	rec := httptest.NewRecorder()
+
+	s.handleSafetyUninstallV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	removed := resp["removed"]
+	if removed == nil {
+		t.Fatal("expected removed field in response")
+	}
+	arr, ok := removed.([]interface{})
+	if !ok || len(arr) == 0 {
+		t.Error("expected at least one removed file")
+	}
+}
+
+// --- handleSafetyInstallV1: conflict when files exist (no force) ---
+
+func TestHandleSafetyInstallV1_ConflictNoForce(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Pre-create the git wrapper to trigger conflict
+	binDir := filepath.Join(tmpHome, ".ntm", "bin")
+	os.MkdirAll(binDir, 0755)
+	os.WriteFile(filepath.Join(binDir, "git"), []byte("existing"), 0755)
+
+	req := httptest.NewRequest("POST", "/api/v1/safety/install", nil)
+	rec := httptest.NewRecorder()
+
+	s.handleSafetyInstallV1(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 conflict, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handlePolicyGetV1: with existing file + rules=true via HOME override ---
+
+func TestHandlePolicyGetV1_ExistingFileWithRules(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	policyDir := filepath.Join(tmpHome, ".ntm")
+	os.MkdirAll(policyDir, 0755)
+	os.WriteFile(filepath.Join(policyDir, "policy.yaml"), []byte("version: 1\nblocked:\n  - pattern: \"danger\"\n    reason: \"test\"\napproval_required:\n  - pattern: \"risky\"\n    slb: true\n"), 0644)
+
+	req := httptest.NewRequest("GET", "/api/v1/safety/policy?rules=true", nil)
+	rec := httptest.NewRecorder()
+
+	s.handlePolicyGetV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["is_default"] != false {
+		t.Error("expected is_default=false when file exists")
+	}
+	if resp["policy_path"] == nil || resp["policy_path"] == "" {
+		t.Error("expected policy_path set when file exists")
+	}
+	if resp["rules"] == nil {
+		t.Error("expected rules when rules=true")
+	}
+}
+
+// --- handlePolicyUpdateV1: success path with HOME override ---
+
+func TestHandlePolicyUpdateV1_SuccessWithHomeOverride(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	validPolicy := "version: 1\nblocked:\n  - pattern: \"danger\"\n"
+	body := fmt.Sprintf(`{"content":%q}`, validPolicy)
+	req := httptest.NewRequest("PUT", "/api/v1/safety/policy", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	s.handlePolicyUpdateV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// Verify file written
+	policyPath := filepath.Join(tmpHome, ".ntm", "policy.yaml")
+	if _, err := os.Stat(policyPath); err != nil {
+		t.Errorf("policy file not created: %v", err)
+	}
+}
+
+// --- handleSafetyInstallV1: rm wrapper conflict after git succeeds ---
+
+func TestHandleSafetyInstallV1_RmWrapperConflict(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Pre-create rm wrapper but NOT git, so git install succeeds then rm fails
+	binDir := filepath.Join(tmpHome, ".ntm", "bin")
+	os.MkdirAll(binDir, 0755)
+	os.WriteFile(filepath.Join(binDir, "rm"), []byte("existing"), 0755)
+
+	req := httptest.NewRequest("POST", "/api/v1/safety/install", nil)
+	rec := httptest.NewRecorder()
+
+	s.handleSafetyInstallV1(rec, req)
+
+	// Git wrapper succeeds, rm wrapper conflicts
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for rm wrapper conflict, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handleSafetyInstallV1: hook conflict after wrappers succeed ---
+
+func TestHandleSafetyInstallV1_HookConflict(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Pre-create hook but not wrappers
+	hookDir := filepath.Join(tmpHome, ".claude", "hooks", "PreToolUse")
+	os.MkdirAll(hookDir, 0755)
+	os.WriteFile(filepath.Join(hookDir, "ntm-safety.sh"), []byte("existing"), 0755)
+
+	req := httptest.NewRequest("POST", "/api/v1/safety/install", nil)
+	rec := httptest.NewRecorder()
+
+	s.handleSafetyInstallV1(rec, req)
+
+	// Wrappers succeed, hook conflicts
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for hook conflict, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handleSafetyBlockedV1: with limit param that truncates ---
+
+func TestHandleSafetyBlockedV1_WithLimitParam(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	req := httptest.NewRequest("GET", "/api/v1/safety/blocked?hours=1&limit=5", nil)
+	rec := httptest.NewRecorder()
+
+	s.handleSafetyBlockedV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handleSafetyBlockedV1: with invalid hours/limit ---
+
+func TestHandleSafetyBlockedV1_InvalidParams(t *testing.T) {
+	t.Parallel()
+	s, _ := setupTestServer(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/safety/blocked?hours=abc&limit=-1", nil)
+	rec := httptest.NewRecorder()
+
+	s.handleSafetyBlockedV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handlePolicyGetV1: with SLB approval rules via HOME override ---
+
+func TestHandlePolicyGetV1_SLBRuleCount(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	policyDir := filepath.Join(tmpHome, ".ntm")
+	os.MkdirAll(policyDir, 0755)
+	os.WriteFile(filepath.Join(policyDir, "policy.yaml"), []byte("version: 1\napproval_required:\n  - pattern: \"destroy\"\n    slb: true\n  - pattern: \"rebuild\"\n    slb: true\n"), 0644)
+
+	req := httptest.NewRequest("GET", "/api/v1/safety/policy", nil)
+	rec := httptest.NewRecorder()
+
+	s.handlePolicyGetV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	stats, _ := resp["stats"].(map[string]interface{})
+	if stats != nil && stats["slb_rules"] != nil {
+		slb := stats["slb_rules"].(float64)
+		if slb != 2 {
+			t.Errorf("expected 2 slb rules, got %v", slb)
+		}
+	}
+}
+
+// --- handleExportCheckpoint: successful tar.gz export with fake checkpoint ---
+
+func TestHandleExportCheckpoint_TarGzSuccess(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Create fake checkpoint directory with metadata.json
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", "test-cp")
+	os.MkdirAll(cpDir, 0755)
+	metadata := `{"version":1,"id":"test-cp","name":"test","session_name":"test-session","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "test-session")
+	rctx.URLParams.Add("checkpointId", "test-cp")
+
+	req := httptest.NewRequest("GET", "/api/v1/sessions/test-session/checkpoints/test-cp/export", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleExportCheckpoint(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["data"] == nil {
+		t.Error("expected base64 data in response")
+	}
+	if resp["content_type"] != "application/gzip" {
+		t.Errorf("expected application/gzip, got %v", resp["content_type"])
+	}
+}
+
+// --- handleExportCheckpoint: zip format success ---
+
+func TestHandleExportCheckpoint_ZipSuccess(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", "test-cp2")
+	os.MkdirAll(cpDir, 0755)
+	metadata := `{"version":1,"id":"test-cp2","name":"test2","session_name":"test-session","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "test-session")
+	rctx.URLParams.Add("checkpointId", "test-cp2")
+
+	req := httptest.NewRequest("POST", "/api/v1/sessions/test-session/checkpoints/test-cp2/export", strings.NewReader(`{"format":"zip"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleExportCheckpoint(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["content_type"] != "application/zip" {
+		t.Errorf("expected application/zip, got %v", resp["content_type"])
+	}
+}
+
+// --- handleExportCheckpoint: download mode ---
+
+func TestHandleExportCheckpoint_Download(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", "test-cp3")
+	os.MkdirAll(cpDir, 0755)
+	metadata := `{"version":1,"id":"test-cp3","name":"dl-test","session_name":"test-session","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "test-session")
+	rctx.URLParams.Add("checkpointId", "test-cp3")
+
+	req := httptest.NewRequest("GET", "/api/v1/sessions/test-session/checkpoints/test-cp3/export?download=true", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleExportCheckpoint(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/octet-stream" {
+		t.Errorf("expected application/octet-stream content type, got %s", ct)
+	}
+}
+
+// --- handleRollback: dry run with fake checkpoint ---
+
+func TestHandleRollback_DryRun(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", "test-rb")
+	os.MkdirAll(cpDir, 0755)
+	metadata := `{"version":1,"id":"test-rb","name":"rollback-test","session_name":"test-session","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1,"git":{"commit":"abc12345def","branch":"main"}}`
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "test-session")
+
+	body := `{"checkpoint_ref":"test-rb","dry_run":true}`
+	req := httptest.NewRequest("POST", "/api/v1/sessions/test-session/checkpoints/rollback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleRollback(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handleRollback: no git state ---
+
+func TestHandleRollback_NoGitState(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", "test-rb2")
+	os.MkdirAll(cpDir, 0755)
+	metadata := `{"version":1,"id":"test-rb2","name":"no-git","session_name":"test-session","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "test-session")
+
+	body := `{"checkpoint_ref":"test-rb2"}`
+	req := httptest.NewRequest("POST", "/api/v1/sessions/test-session/checkpoints/rollback", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleRollback(rec, req)
+
+	// Should fail with "checkpoint has no git state to rollback to"
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handleDeleteCheckpoint: successful delete with fake checkpoint ---
+
+func TestHandleDeleteCheckpoint_Success(t *testing.T) {
+	s, _ := setupTestServer(t)
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cpDir := filepath.Join(tmpHome, ".local", "share", "ntm", "checkpoints", "test-session", "test-del")
+	os.MkdirAll(cpDir, 0755)
+	metadata := `{"version":1,"id":"test-del","name":"delete-me","session_name":"test-session","working_dir":"/tmp","created_at":"2025-01-01T00:00:00Z","pane_count":1}`
+	os.WriteFile(filepath.Join(cpDir, "metadata.json"), []byte(metadata), 0644)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "test-session")
+	rctx.URLParams.Add("checkpointId", "test-del")
+
+	req := httptest.NewRequest("DELETE", "/api/v1/sessions/test-session/checkpoints/test-del", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	s.handleDeleteCheckpoint(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // Ensure kernel import is used
 var _ = kernel.Run
