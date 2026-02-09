@@ -7,6 +7,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/bv"
 	"github.com/Dicklesworthstone/ntm/internal/checkpoint"
 	"github.com/Dicklesworthstone/ntm/internal/cli/tiers"
+	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
 // =============================================================================
@@ -861,5 +862,406 @@ func TestSummarizeAssignmentCounts_Mixed(t *testing.T) {
 	}
 	if got.failed != 1 {
 		t.Errorf("failed = %d, want 1", got.failed)
+	}
+}
+
+// =============================================================================
+// generateAssignmentsEnhanced tests — all 5 strategy branches
+// =============================================================================
+
+// helpers to build test agents/beads
+func makeTestAgent(paneIndex int, agentType string) assignAgentInfo {
+	return assignAgentInfo{
+		pane:      tmux.Pane{Index: paneIndex},
+		agentType: agentType,
+		model:     "test-model",
+		state:     "idle",
+	}
+}
+
+func makeTestBead(id, title, priority string) bv.BeadPreview {
+	return bv.BeadPreview{ID: id, Title: title, Priority: priority}
+}
+
+// --- Round-Robin strategy ---
+
+func TestGenerateAssignmentsEnhanced_RoundRobin_Basic(t *testing.T) {
+	t.Parallel()
+	agents := []assignAgentInfo{
+		makeTestAgent(0, "claude"),
+		makeTestAgent(1, "codex"),
+		makeTestAgent(2, "gemini"),
+	}
+	beads := []bv.BeadPreview{
+		makeTestBead("b1", "Task 1", "P1"),
+		makeTestBead("b2", "Task 2", "P1"),
+		makeTestBead("b3", "Task 3", "P2"),
+		makeTestBead("b4", "Task 4", "P2"),
+		makeTestBead("b5", "Task 5", "P3"),
+	}
+	opts := &AssignCommandOptions{Strategy: "round-robin"}
+	got := generateAssignmentsEnhanced(agents, beads, opts)
+
+	if len(got) != 5 {
+		t.Fatalf("round-robin: got %d assignments, want 5", len(got))
+	}
+	// Verify round-robin pattern: b1→agent0, b2→agent1, b3→agent2, b4→agent0, b5→agent1
+	expectedPanes := []int{0, 1, 2, 0, 1}
+	for i, a := range got {
+		if a.Pane != expectedPanes[i] {
+			t.Errorf("assignment[%d].Pane = %d, want %d", i, a.Pane, expectedPanes[i])
+		}
+		if a.Score != 1.0 {
+			t.Errorf("assignment[%d].Score = %.2f, want 1.0", i, a.Score)
+		}
+		if a.BeadID != beads[i].ID {
+			t.Errorf("assignment[%d].BeadID = %q, want %q", i, a.BeadID, beads[i].ID)
+		}
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_RoundRobin_NoAgents(t *testing.T) {
+	t.Parallel()
+	beads := []bv.BeadPreview{makeTestBead("b1", "Task 1", "P1")}
+	opts := &AssignCommandOptions{Strategy: "round-robin"}
+	got := generateAssignmentsEnhanced(nil, beads, opts)
+	if len(got) != 0 {
+		t.Errorf("round-robin with no agents: got %d assignments, want 0", len(got))
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_RoundRobin_NoBeads(t *testing.T) {
+	t.Parallel()
+	agents := []assignAgentInfo{makeTestAgent(0, "claude")}
+	opts := &AssignCommandOptions{Strategy: "round-robin"}
+	got := generateAssignmentsEnhanced(agents, nil, opts)
+	if len(got) != 0 {
+		t.Errorf("round-robin with no beads: got %d assignments, want 0", len(got))
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_RoundRobin_SingleAgent(t *testing.T) {
+	t.Parallel()
+	agents := []assignAgentInfo{makeTestAgent(0, "claude")}
+	beads := []bv.BeadPreview{
+		makeTestBead("b1", "Task 1", "P1"),
+		makeTestBead("b2", "Task 2", "P2"),
+		makeTestBead("b3", "Task 3", "P3"),
+	}
+	opts := &AssignCommandOptions{Strategy: "round-robin"}
+	got := generateAssignmentsEnhanced(agents, beads, opts)
+	if len(got) != 3 {
+		t.Fatalf("single agent round-robin: got %d, want 3", len(got))
+	}
+	for i, a := range got {
+		if a.Pane != 0 {
+			t.Errorf("assignment[%d].Pane = %d, want 0", i, a.Pane)
+		}
+	}
+}
+
+// --- Quality strategy ---
+
+func TestGenerateAssignmentsEnhanced_Quality_BestMatch(t *testing.T) {
+	t.Parallel()
+	agents := []assignAgentInfo{
+		makeTestAgent(0, "claude"),
+		makeTestAgent(1, "codex"),
+	}
+	beads := []bv.BeadPreview{
+		makeTestBead("b1", "Implement new API endpoint", "P1"), // implementation → codex should score well
+	}
+	opts := &AssignCommandOptions{Strategy: "quality"}
+	got := generateAssignmentsEnhanced(agents, beads, opts)
+	if len(got) != 1 {
+		t.Fatalf("quality: got %d assignments, want 1", len(got))
+	}
+	// Just verify it picks one agent and sets reasoning
+	if got[0].Score <= 0 {
+		t.Errorf("quality: score = %.2f, want > 0", got[0].Score)
+	}
+	if got[0].Reasoning == "" {
+		t.Error("quality: reasoning should not be empty")
+	}
+	if got[0].Status != "assigned" {
+		t.Errorf("quality: status = %q, want 'assigned'", got[0].Status)
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_Quality_MoreBeadsThanAgents(t *testing.T) {
+	t.Parallel()
+	agents := []assignAgentInfo{
+		makeTestAgent(0, "claude"),
+		makeTestAgent(1, "codex"),
+	}
+	beads := []bv.BeadPreview{
+		makeTestBead("b1", "Analyze code", "P1"),
+		makeTestBead("b2", "Implement feature", "P1"),
+		makeTestBead("b3", "Write docs", "P2"), // No agent left
+	}
+	opts := &AssignCommandOptions{Strategy: "quality"}
+	got := generateAssignmentsEnhanced(agents, beads, opts)
+	// Quality uses usedAgents map — each agent can only be assigned once
+	if len(got) != 2 {
+		t.Errorf("quality with 3 beads/2 agents: got %d assignments, want 2", len(got))
+	}
+	// Verify no duplicate pane assignments
+	panes := make(map[int]bool)
+	for _, a := range got {
+		if panes[a.Pane] {
+			t.Errorf("quality: duplicate pane assignment %d", a.Pane)
+		}
+		panes[a.Pane] = true
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_Quality_NoAgents(t *testing.T) {
+	t.Parallel()
+	beads := []bv.BeadPreview{makeTestBead("b1", "Task", "P1")}
+	opts := &AssignCommandOptions{Strategy: "quality"}
+	got := generateAssignmentsEnhanced(nil, beads, opts)
+	if len(got) != 0 {
+		t.Errorf("quality with no agents: got %d, want 0", len(got))
+	}
+}
+
+// --- Speed strategy ---
+
+func TestGenerateAssignmentsEnhanced_Speed_FirstAvailable(t *testing.T) {
+	t.Parallel()
+	agents := []assignAgentInfo{
+		makeTestAgent(0, "claude"),
+		makeTestAgent(1, "codex"),
+		makeTestAgent(2, "gemini"),
+	}
+	beads := []bv.BeadPreview{
+		makeTestBead("b1", "Task 1", "P1"),
+		makeTestBead("b2", "Task 2", "P2"),
+		makeTestBead("b3", "Task 3", "P2"),
+	}
+	opts := &AssignCommandOptions{Strategy: "speed"}
+	got := generateAssignmentsEnhanced(agents, beads, opts)
+	if len(got) != 3 {
+		t.Fatalf("speed: got %d assignments, want 3", len(got))
+	}
+	// Speed assigns each bead to first available → b1→agent0, b2→agent1, b3→agent2
+	for i, a := range got {
+		if a.Pane != i {
+			t.Errorf("speed assignment[%d].Pane = %d, want %d", i, a.Pane, i)
+		}
+	}
+	// Speed score is (calculateMatchConfidence + 0.9) / 2 → always > 0.45
+	for i, a := range got {
+		if a.Score < 0.45 {
+			t.Errorf("speed assignment[%d].Score = %.2f, want >= 0.45", i, a.Score)
+		}
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_Speed_MoreBeadsThanAgents(t *testing.T) {
+	t.Parallel()
+	agents := []assignAgentInfo{
+		makeTestAgent(0, "claude"),
+	}
+	beads := []bv.BeadPreview{
+		makeTestBead("b1", "Task 1", "P1"),
+		makeTestBead("b2", "Task 2", "P1"),
+		makeTestBead("b3", "Task 3", "P2"),
+	}
+	opts := &AssignCommandOptions{Strategy: "speed"}
+	got := generateAssignmentsEnhanced(agents, beads, opts)
+	// Speed uses usedAgents — only 1 agent available
+	if len(got) != 1 {
+		t.Errorf("speed with 3 beads/1 agent: got %d, want 1", len(got))
+	}
+}
+
+// --- Dependency strategy ---
+
+func TestGenerateAssignmentsEnhanced_Dependency_PriorityBoost(t *testing.T) {
+	t.Parallel()
+	agents := []assignAgentInfo{
+		makeTestAgent(0, "claude"),
+		makeTestAgent(1, "codex"),
+	}
+	beads := []bv.BeadPreview{
+		makeTestBead("b1", "Critical fix", "P0"),
+	}
+	opts := &AssignCommandOptions{Strategy: "dependency"}
+	got := generateAssignmentsEnhanced(agents, beads, opts)
+	if len(got) != 1 {
+		t.Fatalf("dependency: got %d assignments, want 1", len(got))
+	}
+	// P0 gets a +0.1 boost (capped at 0.95)
+	if got[0].Score < 0.7 {
+		t.Errorf("dependency+P0: score = %.2f, want >= 0.7", got[0].Score)
+	}
+	if !strings.Contains(got[0].Reasoning, "unblocks") {
+		t.Errorf("dependency: reasoning = %q, want 'unblocks' mention", got[0].Reasoning)
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_Dependency_MoreBeadsThanAgents(t *testing.T) {
+	t.Parallel()
+	agents := []assignAgentInfo{
+		makeTestAgent(0, "claude"),
+	}
+	beads := []bv.BeadPreview{
+		makeTestBead("b1", "Task 1", "P1"),
+		makeTestBead("b2", "Task 2", "P2"),
+	}
+	opts := &AssignCommandOptions{Strategy: "dependency"}
+	got := generateAssignmentsEnhanced(agents, beads, opts)
+	// Only 1 agent, so only 1 assignment
+	if len(got) != 1 {
+		t.Errorf("dependency 2 beads/1 agent: got %d, want 1", len(got))
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_Dependency_LowPriority(t *testing.T) {
+	t.Parallel()
+	agents := []assignAgentInfo{
+		makeTestAgent(0, "claude"),
+	}
+	beads := []bv.BeadPreview{
+		makeTestBead("b1", "Low priority task", "P3"),
+	}
+	opts := &AssignCommandOptions{Strategy: "dependency"}
+	got := generateAssignmentsEnhanced(agents, beads, opts)
+	if len(got) != 1 {
+		t.Fatalf("dependency P3: got %d, want 1", len(got))
+	}
+	// P3 → parsePriorityString returns 3, no boost (priority > 1)
+	if got[0].Score > 0.95 {
+		t.Errorf("dependency P3: score = %.2f, should not be boosted to max", got[0].Score)
+	}
+}
+
+// --- Balanced (default) strategy ---
+
+func TestGenerateAssignmentsEnhanced_Balanced_EvenSpread(t *testing.T) {
+	t.Parallel()
+	agents := []assignAgentInfo{
+		makeTestAgent(0, "claude"),
+		makeTestAgent(1, "codex"),
+		makeTestAgent(2, "gemini"),
+	}
+	beads := []bv.BeadPreview{
+		makeTestBead("b1", "Analyze code", "P1"),
+		makeTestBead("b2", "Implement feature", "P1"),
+		makeTestBead("b3", "Write docs", "P2"),
+		makeTestBead("b4", "Fix bug", "P1"),
+		makeTestBead("b5", "Review PR", "P2"),
+		makeTestBead("b6", "Deploy service", "P3"),
+	}
+	// Empty session → skips LoadStore
+	opts := &AssignCommandOptions{Strategy: "balanced", Session: ""}
+	got := generateAssignmentsEnhanced(agents, beads, opts)
+	if len(got) != 6 {
+		t.Fatalf("balanced: got %d assignments, want 6", len(got))
+	}
+	// Balanced should spread work: count per agent
+	paneCounts := make(map[int]int)
+	for _, a := range got {
+		paneCounts[a.Pane]++
+	}
+	// With 6 beads and 3 agents, each should get 2
+	for pane, count := range paneCounts {
+		if count != 2 {
+			t.Errorf("balanced: pane %d got %d beads, want 2", pane, count)
+		}
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_Balanced_SingleAgent(t *testing.T) {
+	t.Parallel()
+	agents := []assignAgentInfo{makeTestAgent(0, "claude")}
+	beads := []bv.BeadPreview{
+		makeTestBead("b1", "Task 1", "P1"),
+		makeTestBead("b2", "Task 2", "P2"),
+	}
+	opts := &AssignCommandOptions{Strategy: "balanced"}
+	got := generateAssignmentsEnhanced(agents, beads, opts)
+	if len(got) != 2 {
+		t.Fatalf("balanced single agent: got %d, want 2", len(got))
+	}
+	for i, a := range got {
+		if a.Pane != 0 {
+			t.Errorf("assignment[%d].Pane = %d, want 0", i, a.Pane)
+		}
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_Balanced_NoAgents(t *testing.T) {
+	t.Parallel()
+	beads := []bv.BeadPreview{makeTestBead("b1", "Task", "P1")}
+	opts := &AssignCommandOptions{Strategy: "balanced"}
+	got := generateAssignmentsEnhanced(nil, beads, opts)
+	if len(got) != 0 {
+		t.Errorf("balanced with no agents: got %d, want 0", len(got))
+	}
+}
+
+func TestGenerateAssignmentsEnhanced_DefaultIsBalanced(t *testing.T) {
+	t.Parallel()
+	agents := []assignAgentInfo{
+		makeTestAgent(0, "claude"),
+		makeTestAgent(1, "codex"),
+	}
+	beads := []bv.BeadPreview{
+		makeTestBead("b1", "Task 1", "P1"),
+		makeTestBead("b2", "Task 2", "P2"),
+	}
+	// Unknown strategy falls through to default (balanced)
+	opts := &AssignCommandOptions{Strategy: "unknown_strategy"}
+	got := generateAssignmentsEnhanced(agents, beads, opts)
+	if len(got) != 2 {
+		t.Fatalf("default strategy: got %d, want 2", len(got))
+	}
+	// Both agents should be used (balanced spread)
+	panes := make(map[int]bool)
+	for _, a := range got {
+		panes[a.Pane] = true
+	}
+	if len(panes) != 2 {
+		t.Errorf("default strategy: used %d agents, want 2", len(panes))
+	}
+}
+
+// --- Common field verification ---
+
+func TestGenerateAssignmentsEnhanced_CommonFields(t *testing.T) {
+	t.Parallel()
+	agents := []assignAgentInfo{makeTestAgent(5, "claude")}
+	beads := []bv.BeadPreview{makeTestBead("bd-abc", "My Task", "P1")}
+	opts := &AssignCommandOptions{Strategy: "round-robin", Session: "test-session"}
+	got := generateAssignmentsEnhanced(agents, beads, opts)
+	if len(got) != 1 {
+		t.Fatalf("common fields: got %d, want 1", len(got))
+	}
+	a := got[0]
+	if a.BeadID != "bd-abc" {
+		t.Errorf("BeadID = %q, want 'bd-abc'", a.BeadID)
+	}
+	if a.BeadTitle != "My Task" {
+		t.Errorf("BeadTitle = %q, want 'My Task'", a.BeadTitle)
+	}
+	if a.Pane != 5 {
+		t.Errorf("Pane = %d, want 5", a.Pane)
+	}
+	if a.AgentType != "claude" {
+		t.Errorf("AgentType = %q, want 'claude'", a.AgentType)
+	}
+	if a.AgentName != "test-session_claude_5" {
+		t.Errorf("AgentName = %q, want 'test-session_claude_5'", a.AgentName)
+	}
+	if a.Status != "assigned" {
+		t.Errorf("Status = %q, want 'assigned'", a.Status)
+	}
+	if a.PromptSent {
+		t.Error("PromptSent should be false")
+	}
+	if a.AssignedAt == "" {
+		t.Error("AssignedAt should not be empty")
 	}
 }

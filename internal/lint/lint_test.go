@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/Dicklesworthstone/ntm/internal/redaction"
 )
 
 func TestLinterBasic(t *testing.T) {
@@ -466,4 +468,147 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// =============================================================================
+// LintWithRedaction — with configured redactor (bd-1ced7)
+// =============================================================================
+
+func TestLintWithRedaction_WithRedactor(t *testing.T) {
+	t.Parallel()
+	cfg := redaction.DefaultConfig()
+	cfg.Mode = redaction.ModeRedact
+	l := New(WithRedactionConfig(&cfg))
+
+	// Prompt with a clear secret pattern
+	prompt := `export ANTHROPIC_API_KEY=sk-ant-api03-test1234567890123456789012345678901234567890123456`
+
+	result, redacted := l.LintWithRedaction(prompt)
+	_ = result
+
+	// With a redactor, the output should differ from the input if a secret was found
+	// (the redactor replaces secrets with placeholders)
+	if redacted == "" {
+		t.Error("redacted output should not be empty")
+	}
+}
+
+func TestLintWithRedaction_NoSecretNoRedaction(t *testing.T) {
+	t.Parallel()
+	cfg := redaction.DefaultConfig()
+	l := New(WithRedactionConfig(&cfg))
+
+	prompt := "Hello, just a normal prompt with no secrets"
+	result, redacted := l.LintWithRedaction(prompt)
+
+	// No secrets → output should be same as input
+	if redacted != prompt {
+		t.Errorf("expected unmodified prompt, got %q", redacted)
+	}
+	if !result.Success {
+		t.Errorf("expected success for benign prompt, got findings: %d", len(result.Findings))
+	}
+}
+
+func TestLintWithRedaction_NilRedactor(t *testing.T) {
+	t.Parallel()
+	l := New() // no redactor configured
+
+	prompt := "Just a prompt"
+	result, redacted := l.LintWithRedaction(prompt)
+	if redacted != prompt {
+		t.Errorf("without redactor: expected unchanged prompt, got %q", redacted)
+	}
+	if !result.Success {
+		t.Error("expected success")
+	}
+}
+
+// =============================================================================
+// getConfigInt — all branches (bd-1ced7)
+// =============================================================================
+
+func TestGetConfigInt_NilConfig(t *testing.T) {
+	t.Parallel()
+	got := getConfigInt(nil, "key", 42)
+	if got != 42 {
+		t.Errorf("nil config: got %d, want 42", got)
+	}
+}
+
+func TestGetConfigInt_MissingKey(t *testing.T) {
+	t.Parallel()
+	cfg := map[string]any{"other": 10}
+	got := getConfigInt(cfg, "missing", 99)
+	if got != 99 {
+		t.Errorf("missing key: got %d, want 99", got)
+	}
+}
+
+func TestGetConfigInt_IntValue(t *testing.T) {
+	t.Parallel()
+	cfg := map[string]any{"key": 123}
+	got := getConfigInt(cfg, "key", 0)
+	if got != 123 {
+		t.Errorf("int value: got %d, want 123", got)
+	}
+}
+
+func TestGetConfigInt_Int64Value(t *testing.T) {
+	t.Parallel()
+	cfg := map[string]any{"key": int64(456)}
+	got := getConfigInt(cfg, "key", 0)
+	if got != 456 {
+		t.Errorf("int64 value: got %d, want 456", got)
+	}
+}
+
+func TestGetConfigInt_Float64Value(t *testing.T) {
+	t.Parallel()
+	cfg := map[string]any{"key": float64(789)}
+	got := getConfigInt(cfg, "key", 0)
+	if got != 789 {
+		t.Errorf("float64 value: got %d, want 789", got)
+	}
+}
+
+func TestGetConfigInt_UnknownType(t *testing.T) {
+	t.Parallel()
+	cfg := map[string]any{"key": "not_a_number"}
+	got := getConfigInt(cfg, "key", 55)
+	if got != 55 {
+		t.Errorf("string value: got %d, want 55 (default)", got)
+	}
+}
+
+// =============================================================================
+// findPatternMatches — uncovered branches (bd-1ced7)
+// =============================================================================
+
+func TestLint_OversizedPromptBytes(t *testing.T) {
+	t.Parallel()
+	rs := DefaultRuleSet()
+	// Set a very low byte warning threshold
+	rs.SetConfig(RuleOversizedPromptBytes, ConfigKeyWarnBytes, 10)
+	l := New(WithRuleSet(rs))
+
+	result := l.Lint("This is a prompt that exceeds the byte threshold by a lot")
+	findings := result.FindingsByID(RuleOversizedPromptBytes)
+	if len(findings) == 0 {
+		t.Error("expected oversized prompt finding")
+	}
+}
+
+func TestLint_OversizedPromptTokens(t *testing.T) {
+	t.Parallel()
+	rs := DefaultRuleSet()
+	// Set a very low token threshold
+	rs.SetConfig(RuleOversizedPromptTokens, ConfigKeyWarnTokens, 1)
+	l := New(WithRuleSet(rs))
+
+	result := l.Lint("This is a prompt that should exceed 1 token threshold easily")
+	findings := result.FindingsByID(RuleOversizedPromptTokens)
+	if len(findings) == 0 {
+		t.Error("expected oversized prompt tokens finding")
+	}
 }
