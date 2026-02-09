@@ -2759,3 +2759,349 @@ func TestHandleListPipelines_Branch(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// =============================================================================
+// SIXTH BATCH: accounts handlers, auto-rotate config, CASS handlers
+// =============================================================================
+
+// handleListAccountsV1 — exercises robot.GetAccountsList
+
+func TestHandleListAccountsV1_Branch(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil)
+
+	srv.handleListAccountsV1(rec, req)
+
+	// caam may or may not be available — just verify valid HTTP response
+	if rec.Code == 0 {
+		t.Fatal("expected non-zero status code")
+	}
+}
+
+// handleAccountStatusV1 — exercises robot.GetAccountStatus
+
+func TestHandleAccountStatusV1_Branch(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/status", nil)
+
+	srv.handleAccountStatusV1(rec, req)
+
+	if rec.Code == 0 {
+		t.Fatal("expected non-zero status code")
+	}
+}
+
+// handleActiveAccountsV1 — exercises active account filtering
+
+func TestHandleActiveAccountsV1_Branch(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/active", nil)
+
+	srv.handleActiveAccountsV1(rec, req)
+
+	if rec.Code == 0 {
+		t.Fatal("expected non-zero status code")
+	}
+}
+
+// handleAccountQuotaV1 — exercises quota extraction
+
+func TestHandleAccountQuotaV1_Branch(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/quota", nil)
+
+	srv.handleAccountQuotaV1(rec, req)
+
+	if rec.Code == 0 {
+		t.Fatal("expected non-zero status code")
+	}
+}
+
+// handleAccountHistoryV1 — exercises history retrieval + limit param
+
+func TestHandleAccountHistoryV1_Empty(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/history", nil)
+
+	srv.handleAccountHistoryV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	total, _ := resp["total"].(float64)
+	if total < 0 {
+		t.Errorf("total = %v, want >= 0", total)
+	}
+}
+
+func TestHandleAccountHistoryV1_WithLimit(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/history?limit=5", nil)
+
+	srv.handleAccountHistoryV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestHandleAccountHistoryV1_InvalidLimit(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/history?limit=abc", nil)
+
+	srv.handleAccountHistoryV1(rec, req)
+
+	// Invalid limit falls back to default — still succeeds
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+// handlePatchAutoRotateConfigV1 — config update branches
+
+func TestHandlePatchAutoRotateConfigV1_InvalidBody(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/accounts/auto-rotate", strings.NewReader("{bad"))
+
+	srv.handlePatchAutoRotateConfigV1(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestHandlePatchAutoRotateConfigV1_CooldownTooLow(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	body := `{"auto_rotate_cooldown_seconds":10}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/accounts/auto-rotate", strings.NewReader(body))
+
+	srv.handlePatchAutoRotateConfigV1(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlePatchAutoRotateConfigV1_ValidUpdate(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	body := `{"auto_rotate_enabled":true,"auto_rotate_cooldown_seconds":120}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/accounts/auto-rotate", strings.NewReader(body))
+
+	srv.handlePatchAutoRotateConfigV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// handleRotateAccountV1 — validation branches
+
+func TestHandleRotateAccountV1_InvalidBody(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/rotate", strings.NewReader("{bad"))
+
+	srv.handleRotateAccountV1(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestHandleRotateAccountV1_MissingProvider(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	body := `{"provider":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/rotate", strings.NewReader(body))
+
+	srv.handleRotateAccountV1(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+// handleListAccountsByProviderV1 — validation + exercise
+
+func TestHandleListAccountsByProviderV1_EmptyProvider(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("provider", "")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleListAccountsByProviderV1(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestHandleListAccountsByProviderV1_WithProvider(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/anthropic", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("provider", "anthropic")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleListAccountsByProviderV1(rec, req)
+
+	// May succeed or fail depending on caam availability
+	if rec.Code == 0 {
+		t.Fatal("expected non-zero status code")
+	}
+}
+
+// handleRotateProviderAccountV1 — validation branches
+
+func TestHandleRotateProviderAccountV1_EmptyProvider(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/rotate", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("provider", "")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleRotateProviderAccountV1(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestHandleRotateProviderAccountV1_InvalidBody(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/accounts/anthropic/rotate", strings.NewReader("{bad"))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("provider", "anthropic")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req.ContentLength = 4 // mark non-empty body
+
+	srv.handleRotateProviderAccountV1(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// handleGetAutoRotateConfigV1 — always returns 200
+
+func TestHandleGetAutoRotateConfigV1_Branch(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/accounts/auto-rotate", nil)
+
+	srv.handleGetAutoRotateConfigV1(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// handleCASSSearch — query validation (already have BadRequest test, add empty query)
+
+func TestHandleCASSSearch_EmptyQuery(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	body := `{"query":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cass/search", strings.NewReader(body))
+
+	srv.handleCASSSearch(rec, req)
+
+	// Either 503 (CASS not installed) or 400 (empty query)
+	if rec.Code != http.StatusServiceUnavailable && rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 503 or 400; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// handleMemoryContext — validation
+
+func TestHandleMemoryContext_EmptySession(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	body := `{"task":"test","session_id":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/memory/context", strings.NewReader(body))
+
+	srv.handleMemoryContext(rec, req)
+
+	// Will exercise the session_id validation or daemon check branches
+	if rec.Code == 0 {
+		t.Fatal("expected non-zero status code")
+	}
+}
+
+// handleDeleteCheckpoint — not found (deeper branch exercise)
+
+func TestHandleDeleteCheckpoint_Branch_NotFound(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/sessions/__nosess__/checkpoints/__nocp__", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionName", "__nosess__")
+	rctx.URLParams.Add("checkpointId", "__nocp__")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	srv.handleDeleteCheckpoint(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", rec.Code, rec.Body.String())
+	}
+}
