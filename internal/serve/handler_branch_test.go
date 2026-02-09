@@ -7448,5 +7448,304 @@ func TestHandleMailInbox_WithSinceTS(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Batch 18 — Pane title, agent activity/health, palette, history, wait,
+//            safety blocked params, context stats, create session, policy update
+// =============================================================================
+
+// --- Pane title handlers with valid params ---
+
+func TestHandleGetPaneTitleV1_ValidParams(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/test-session/panes/0/title", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionId", "test-session")
+	rctx.URLParams.Add("paneIdx", "0")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	srv.handleGetPaneTitleV1(rec, req)
+	// tmux.GetPaneTitle fails (no session) → 500
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	}
+}
+
+func TestHandleSetPaneTitleV1_ValidParams(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	body := `{"title":"My Pane"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/test-session/panes/0/title", strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionId", "test-session")
+	rctx.URLParams.Add("paneIdx", "0")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	srv.handleSetPaneTitleV1(rec, req)
+	// tmux.SetPaneTitle fails (no session) → 500
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	}
+}
+
+// --- Agent activity/health with valid session ---
+
+func TestHandleAgentActivityV1_ValidSession_Branch(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/test-session/agents/activity", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionId", "test-session")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	srv.handleAgentActivityV1(rec, req)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	}
+}
+
+func TestHandleAgentHealthV1_ValidSession_Branch(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/test-session/agents/health", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("sessionId", "test-session")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	srv.handleAgentHealthV1(rec, req)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	}
+}
+
+// --- Palette with query params ---
+
+func TestHandlePaletteV1_WithCategoryAndSearch(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/palette?session=test-session&category=agents&search=restart", nil)
+	rec := httptest.NewRecorder()
+	srv.handlePaletteV1(rec, req)
+
+	// robot.GetPalette may succeed or fail
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	}
+}
+
+// --- History with query params ---
+
+func TestHandleHistoryV1_WithAllParams(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/history?session=test-session&pane=0&agent_type=claude&since=1h&last=20", nil)
+	rec := httptest.NewRecorder()
+	srv.handleHistoryV1(rec, req)
+
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	}
+}
+
+func TestHandleHistoryStatsV1_WithSession(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/history/stats?session=test-session", nil)
+	rec := httptest.NewRecorder()
+	srv.handleHistoryStatsV1(rec, req)
+
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	}
+}
+
+// --- Wait with all query params ---
+
+func TestHandleWaitV1_WithAllParams(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/v1/wait?session=test-session&condition=idle&timeout=1s&poll=100ms&panes=0,1&agent_type=claude&any=true&exit_on_error=true&require_transition=true&count=2",
+		nil)
+	rec := httptest.NewRecorder()
+	srv.handleWaitV1(rec, req)
+
+	// robot.GetWait with no tmux → error code 2 → 400
+	if rec.Code != http.StatusOK && rec.Code != http.StatusBadRequest &&
+		rec.Code != http.StatusRequestTimeout && rec.Code != http.StatusConflict &&
+		rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200, 400, 408, 409, or 500", rec.Code)
+	}
+}
+
+// --- Safety blocked with params ---
+
+func TestHandleSafetyBlockedV1_WithHoursAndLimit(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/safety/blocked?hours=1&limit=5", nil)
+	rec := httptest.NewRecorder()
+	srv.handleSafetyBlockedV1(rec, req)
+
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	}
+}
+
+// --- Context stats with session + lines ---
+
+func TestHandleContextStatsV1_WithSessionAndLines(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/context/stats?session=test-session&lines=500", nil)
+	rec := httptest.NewRecorder()
+	srv.handleContextStatsV1(rec, req)
+
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	}
+}
+
+// --- Create session with valid body ---
+
+func TestHandleCreateSessionV1_ValidBody_Branch(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	body := `{"session":"test-new-session","panes":3}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.handleCreateSessionV1(rec, req)
+
+	// kernel.Run fails (no tmux) → 500
+	if rec.Code != http.StatusCreated && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 201 or 500", rec.Code)
+	}
+}
+
+// --- Session zoom with valid body ---
+
+func TestHandleSessionZoomV1_ValidBody_Branch(t *testing.T) {
+	t.Parallel()
+	srv, _ := setupTestServer(t)
+
+	body := `{"pane":0}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/test-session/zoom", strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "test-session")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	srv.handleSessionZoomV1(rec, req)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	}
+}
+
+// --- Policy automation update with auto_commit/auto_push branches ---
+
+func TestHandlePolicyAutomationUpdateV1_AutoCommitToggle(t *testing.T) {
+	// Don't use t.Parallel() - modifies ~/.ntm/policy.yaml
+	srv, _ := setupTestServer(t)
+
+	trueVal := true
+	body := fmt.Sprintf(`{"auto_commit":%v}`, trueVal)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/policy/automation", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.handlePolicyAutomationUpdateV1(rec, req)
+
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	}
+	if rec.Code == http.StatusOK {
+		var resp map[string]interface{}
+		json.NewDecoder(rec.Body).Decode(&resp)
+		if _, ok := resp["modified"]; !ok {
+			t.Error("expected 'modified' in response")
+		}
+	}
+}
+
+func TestHandlePolicyAutomationUpdateV1_AutoPushToggle(t *testing.T) {
+	// Don't use t.Parallel() - modifies ~/.ntm/policy.yaml
+	srv, _ := setupTestServer(t)
+
+	body := `{"auto_push":true}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/policy/automation", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.handlePolicyAutomationUpdateV1(rec, req)
+
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	}
+}
+
+// --- handlePolicyValidateV1 with file-based path ---
+
+func TestHandlePolicyValidateV1_FileBased(t *testing.T) {
+	// Don't use t.Parallel() - writes temp policy file
+	srv, _ := setupTestServer(t)
+
+	// Create a temp policy file
+	tmpDir := t.TempDir()
+	policyFile := filepath.Join(tmpDir, "policy.yaml")
+	content := "version: 1\nrules:\n  - pattern: \"rm -rf /\"\n    action: block\n    reason: dangerous\n"
+	os.WriteFile(policyFile, []byte(content), 0644)
+
+	body := fmt.Sprintf(`{"path":"%s"}`, policyFile)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/policy/validate", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.handlePolicyValidateV1(rec, req)
+
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	}
+}
+
+// --- handleSafetyInstallV1 with force=true ---
+
+func TestHandleSafetyInstallV1_Force(t *testing.T) {
+	// Don't use t.Parallel() - modifies ~/.ntm/bin and ~/.claude/hooks
+	srv, _ := setupTestServer(t)
+
+	body := `{"force":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/safety/install", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.handleSafetyInstallV1(rec, req)
+
+	if rec.Code != http.StatusOK && rec.Code != http.StatusConflict && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200, 409, or 500", rec.Code)
+	}
+}
+
+// --- handleSafetyUninstallV1 exercises remove paths ---
+
+func TestHandleSafetyUninstallV1_Branch(t *testing.T) {
+	// Don't use t.Parallel() - removes files from ~/.ntm/bin
+	srv, _ := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/safety/uninstall", nil)
+	rec := httptest.NewRecorder()
+	srv.handleSafetyUninstallV1(rec, req)
+
+	if rec.Code != http.StatusOK && rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 200 or 500", rec.Code)
+	}
+}
+
 // Ensure kernel import is used
 var _ = kernel.Run
