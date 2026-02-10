@@ -3,13 +3,13 @@ package robot
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 	"github.com/Dicklesworthstone/ntm/internal/tokens"
 )
@@ -41,14 +41,11 @@ func enrichAgentStatus(agent *Agent, sessionName, modelName string) {
 		return // Cannot do much without PID
 	}
 
-	// 2. Get Child PID
+	// 2. Get Child PID (delegated to shared process package)
 
-	childPID, err := getChildPID(agent.PID)
-	if err == nil {
+	childPID := process.GetChildPID(agent.PID)
+	if childPID > 0 {
 		agent.ChildPID = childPID
-	} else {
-		// Fallback: if no child, maybe the shell IS the process?
-		// But usually agent is a child of the shell.
 	}
 
 	// 3. Process State
@@ -56,7 +53,7 @@ func enrichAgentStatus(agent *Agent, sessionName, modelName string) {
 	if targetPID == 0 {
 		targetPID = agent.PID
 	}
-	state, stateName, err := getProcessState(targetPID)
+	state, stateName, err := process.GetProcessState(targetPID)
 	if err == nil {
 		agent.ProcessState = state
 		agent.ProcessStateName = stateName
@@ -102,49 +99,6 @@ func enrichAgentStatus(agent *Agent, sessionName, modelName string) {
 			}
 		}
 	}
-}
-
-func getChildPID(shellPID int) (int, error) {
-	// Try /proc first (Linux)
-	taskPath := fmt.Sprintf("/proc/%d/task/%d/children", shellPID, shellPID)
-	data, err := os.ReadFile(taskPath)
-	if err == nil {
-		parts := strings.Fields(string(data))
-		if len(parts) > 0 {
-			return strconv.Atoi(parts[0])
-		}
-	}
-
-	// Fallback to pgrep
-	out, err := exec.Command("pgrep", "-P", strconv.Itoa(shellPID)).Output()
-	if err == nil {
-		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-		if len(lines) > 0 {
-			return strconv.Atoi(lines[0])
-		}
-	}
-
-	return 0, fmt.Errorf("no child process found")
-}
-
-func getProcessState(pid int) (string, string, error) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
-	if err != nil {
-		return "", "", err
-	}
-
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "State:") {
-			// Format: "State:  S (sleeping)"
-			parts := strings.Fields(line)
-			if len(parts) >= 3 {
-				code := parts[1]
-				name := strings.Trim(parts[2], "()")
-				return code, name, nil
-			}
-		}
-	}
-	return "unknown", "unknown", nil
 }
 
 func getProcessMemoryMB(pid int) (int, error) {

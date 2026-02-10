@@ -142,8 +142,8 @@ func GetDiagnose(opts DiagnoseOptions) (*DiagnoseOutput, error) {
 
 		output.Summary.TotalPanes++
 
-		// Perform comprehensive health check
-		check, err := CheckAgentHealthWithActivity(pane.ID, agentType)
+		// Perform comprehensive health check (pass shell PID for authoritative liveness)
+		check, err := CheckAgentHealthWithActivity(pane.ID, agentType, pane.PID)
 		if err != nil {
 			// Error during health check - mark as unknown
 			output.Summary.Unknown++
@@ -476,7 +476,7 @@ func GetDiagnoseBrief(session string) (*DiagnoseBriefOutput, error) {
 
 		summary.TotalPanes++
 
-		check, err := CheckAgentHealthWithActivity(pane.ID, agentType)
+		check, err := CheckAgentHealthWithActivity(pane.ID, agentType, pane.PID)
 		if err != nil {
 			summary.Unknown++
 			continue

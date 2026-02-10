@@ -77,6 +77,66 @@ webhooks:
 }
 
 // =============================================================================
+// toWebhookEvent — all branches (bd-1ced7)
+// =============================================================================
+
+func TestToWebhookEvent_Nil(t *testing.T) {
+	t.Parallel()
+	_, ok := toWebhookEvent(nil)
+	if ok {
+		t.Error("toWebhookEvent(nil) should return false")
+	}
+}
+
+func TestToWebhookEvent_WebhookEventValue(t *testing.T) {
+	t.Parallel()
+	we := events.NewWebhookEvent("agent.error", "mysession", "%1", "claude", "boom", map[string]string{"k": "v"})
+	got, ok := toWebhookEvent(we)
+	if !ok {
+		t.Fatal("toWebhookEvent(WebhookEvent) should return true")
+	}
+	if got.Type != "agent.error" {
+		t.Errorf("Type = %q, want 'agent.error'", got.Type)
+	}
+	if got.Session != "mysession" {
+		t.Errorf("Session = %q, want 'mysession'", got.Session)
+	}
+	if got.Pane != "%1" {
+		t.Errorf("Pane = %q, want '%%1'", got.Pane)
+	}
+	if got.Agent != "claude" {
+		t.Errorf("Agent = %q, want 'claude'", got.Agent)
+	}
+	if got.Message != "boom" {
+		t.Errorf("Message = %q, want 'boom'", got.Message)
+	}
+	if got.Details["k"] != "v" {
+		t.Errorf("Details[k] = %q, want 'v'", got.Details["k"])
+	}
+}
+
+func TestToWebhookEvent_WebhookEventPointer(t *testing.T) {
+	t.Parallel()
+	we := events.NewWebhookEvent("agent.completed", "s", "%0", "codex", "done", nil)
+	got, ok := toWebhookEvent(&we)
+	if !ok {
+		t.Fatal("toWebhookEvent(*WebhookEvent) should return true")
+	}
+	if got.Type != "agent.completed" {
+		t.Errorf("Type = %q, want 'agent.completed'", got.Type)
+	}
+}
+
+func TestToWebhookEvent_NilPointer(t *testing.T) {
+	t.Parallel()
+	var we *events.WebhookEvent
+	_, ok := toWebhookEvent(we)
+	if ok {
+		t.Error("toWebhookEvent(nil *WebhookEvent) should return false")
+	}
+}
+
+// =============================================================================
 // stableWebhookID — all branches (bd-4b4zf)
 // =============================================================================
 

@@ -7,6 +7,85 @@ import (
 	"time"
 )
 
+// =============================================================================
+// classifySeverity tests (bd-1ced7)
+// =============================================================================
+
+func TestClassifySeverity_Empty(t *testing.T) {
+	t.Parallel()
+	if got := classifySeverity(""); got != severityInfo {
+		t.Errorf("classifySeverity(\"\") = %q, want severityInfo (%q)", got, severityInfo)
+	}
+}
+
+func TestClassifySeverity_Error(t *testing.T) {
+	t.Parallel()
+	for _, typ := range []string{"agent.error", "task_failed", "crash_detected", "kernel_panic"} {
+		if got := classifySeverity(typ); got != severityError {
+			t.Errorf("classifySeverity(%q) = %q, want severityError (%q)", typ, got, severityError)
+		}
+	}
+}
+
+func TestClassifySeverity_Warning(t *testing.T) {
+	t.Parallel()
+	for _, typ := range []string{"performance_warning", "degraded_response", "rate_limit_hit", "rate-limit"} {
+		if got := classifySeverity(typ); got != severityWarning {
+			t.Errorf("classifySeverity(%q) = %q, want severityWarning (%q)", typ, got, severityWarning)
+		}
+	}
+}
+
+func TestClassifySeverity_Success(t *testing.T) {
+	t.Parallel()
+	for _, typ := range []string{"task.success", "build.complete", "deployment_done", "agent.healthy"} {
+		if got := classifySeverity(typ); got != severitySuccess {
+			t.Errorf("classifySeverity(%q) = %q, want severitySuccess (%q)", typ, got, severitySuccess)
+		}
+	}
+}
+
+func TestClassifySeverity_InfoDefault(t *testing.T) {
+	t.Parallel()
+	for _, typ := range []string{"agent.started", "session.created", "status.update"} {
+		if got := classifySeverity(typ); got != severityInfo {
+			t.Errorf("classifySeverity(%q) = %q, want severityInfo (%q)", typ, got, severityInfo)
+		}
+	}
+}
+
+// =============================================================================
+// discordColorForSeverity tests (bd-1ced7)
+// =============================================================================
+
+func TestDiscordColorForSeverity_Error(t *testing.T) {
+	t.Parallel()
+	if got := discordColorForSeverity(severityError); got != 0xE74C3C {
+		t.Errorf("error color = 0x%X, want 0xE74C3C", got)
+	}
+}
+
+func TestDiscordColorForSeverity_Warning(t *testing.T) {
+	t.Parallel()
+	if got := discordColorForSeverity(severityWarning); got != 0xF1C40F {
+		t.Errorf("warning color = 0x%X, want 0xF1C40F", got)
+	}
+}
+
+func TestDiscordColorForSeverity_Success(t *testing.T) {
+	t.Parallel()
+	if got := discordColorForSeverity(severitySuccess); got != 0x2ECC71 {
+		t.Errorf("success color = 0x%X, want 0x2ECC71", got)
+	}
+}
+
+func TestDiscordColorForSeverity_Info(t *testing.T) {
+	t.Parallel()
+	if got := discordColorForSeverity(severityInfo); got != 0x3498DB {
+		t.Errorf("info color = 0x%X, want 0x3498DB", got)
+	}
+}
+
 func TestBuildBuiltInPayload_InvalidFormat(t *testing.T) {
 	t.Parallel()
 

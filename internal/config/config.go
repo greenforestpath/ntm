@@ -203,6 +203,7 @@ type ResilienceConfig struct {
 	MaxRestarts         int             `toml:"max_restarts"`           // Max restarts per agent before giving up
 	RestartDelaySeconds int             `toml:"restart_delay_seconds"`  // Seconds to wait before restarting
 	HealthCheckSeconds  int             `toml:"health_check_seconds"`   // Seconds between health checks
+	CrashThreshold      int             `toml:"crash_threshold"`        // Consecutive failures before restart (text-based fallback path)
 	NotifyOnCrash       bool            `toml:"notify_on_crash"`        // Send notification when agent crashes
 	NotifyOnMaxRestarts bool            `toml:"notify_on_max_restarts"` // Notify when max restarts exceeded
 	RateLimit           RateLimitConfig `toml:"rate_limit"`             // Rate limit detection configuration
@@ -222,6 +223,7 @@ func DefaultResilienceConfig() ResilienceConfig {
 		MaxRestarts:         3,     // Stop after 3 restart attempts
 		RestartDelaySeconds: 30,    // Wait 30 seconds before restarting
 		HealthCheckSeconds:  10,    // Check health every 10 seconds
+		CrashThreshold:      3,    // 3 consecutive text-based failures before restart
 		NotifyOnCrash:       true,  // Notify on crash by default
 		NotifyOnMaxRestarts: true,  // Notify when max restarts exceeded
 		RateLimit: RateLimitConfig{

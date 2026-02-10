@@ -12,6 +12,7 @@ import (
 	"github.com/Dicklesworthstone/ntm/internal/events"
 	"github.com/Dicklesworthstone/ntm/internal/health"
 	"github.com/Dicklesworthstone/ntm/internal/notify"
+	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/ratelimit"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
@@ -25,20 +26,24 @@ var (
 	sleepFn          = time.Sleep
 	checkSessionFn   = health.CheckSession
 	displayMessageFn = tmux.DisplayMessage
+	isChildAliveFn   = process.IsChildAlive
 )
 
 // AgentState tracks the state of an individual agent for restart purposes
 type AgentState struct {
 	PaneID            string
 	PaneIndex         int
+	ShellPID          int    // Shell PID from tmux #{pane_pid} — used for PID-based liveness checks
 	AgentType         string // cc, cod, gmi
 	Model             string // Model variant (opus, sonnet, etc.)
 	Command           string // Original launch command
 	RestartCount      int
 	LastCrash         time.Time
 	LastRestart       time.Time // When agent was last restarted
-	Healthy           bool
-	RateLimited       bool      // Currently rate limited
+	Healthy             bool
+	ConsecutiveFailures int    // Consecutive health check failures (for text-based debounce)
+	LastFailureReason   string // Most recent failure reason (for logging)
+	RateLimited         bool   // Currently rate limited
 	LastRateLimitTime time.Time // When rate limit was last detected
 	WaitSeconds       int       // Suggested wait time from rate limit message
 }
@@ -87,14 +92,16 @@ func NewMonitor(session, projectDir string, cfg *config.Config, autoRestart bool
 	}
 }
 
-// RegisterAgent adds an agent to be monitored
-func (m *Monitor) RegisterAgent(paneID string, paneIndex int, agentType, model, command string) {
+// RegisterAgent adds an agent to be monitored.
+// shellPID is the tmux pane's shell PID for PID-based liveness checking.
+func (m *Monitor) RegisterAgent(paneID string, paneIndex int, shellPID int, agentType, model, command string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	m.agents[paneID] = &AgentState{
 		PaneID:    paneID,
 		PaneIndex: paneIndex,
+		ShellPID:  shellPID,
 		AgentType: agentType,
 		Model:     model,
 		Command:   command,
@@ -172,6 +179,7 @@ func (m *Monitor) ScanAndRegisterAgents() error {
 		m.agents[p.ID] = &AgentState{
 			PaneID:    p.ID,
 			PaneIndex: paneIdx,
+			ShellPID:  p.PID,
 			AgentType: string(p.Type),
 			Model:     p.Variant,
 			Command:   cmd,
@@ -263,9 +271,10 @@ func (m *Monitor) monitorLoop(ctx context.Context) {
 
 // checkHealth performs a health check on all monitored agents
 func (m *Monitor) checkHealth(ctx context.Context) {
-	// Snapshot hook under lock for thread-safe access
+	// Snapshot hooks under lock for thread-safe access
 	hooksMu.RLock()
 	checkFn := checkSessionFn
+	isAliveFn := isChildAliveFn
 	hooksMu.RUnlock()
 
 	// Get health status for the session
@@ -315,9 +324,35 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 		if agentHealth.Status == health.StatusError ||
 			agentHealth.ProcessStatus == health.ProcessExited {
 
+			// Single PID liveness check — store result to avoid TOCTOU race.
+			// The same pidAlive/pidKnown values drive both the guard and debounce.
+			var pidAlive, pidKnown bool
+			if agentHealth.ShellPID > 0 {
+				pidAlive = isAliveFn(agentHealth.ShellPID)
+				pidKnown = true
+			}
+
+			// PID-alive guard: agent process is actually running,
+			// skip crash handling regardless of what text patterns say.
+			if pidKnown && pidAlive {
+				agentState.ConsecutiveFailures = 0
+				log.Printf("[resilience] Agent %s: health check says unhealthy but PID %d has living children — skipping crash handling (false positive avoided)",
+					agentState.PaneID, agentHealth.ShellPID)
+				continue
+			}
+
 			if agentState.Healthy {
 				// Ignore transient errors during startup grace period
 				if !agentState.LastRestart.IsZero() && time.Since(agentState.LastRestart) < 5*time.Second {
+					continue
+				}
+
+				// IsWorking guard: never interrupt agents that are actively
+				// producing output. This prevents false-positive crash
+				// detection when AI agents print strings like "exit status"
+				// or "connection closed" in their normal output.
+				if agentHealth.Activity == health.ActivityActive {
+					log.Printf("[resilience] Agent %s reports error/exit but activity is active — skipping crash handler (IsWorking guard)", agentState.PaneID)
 					continue
 				}
 
@@ -325,10 +360,33 @@ func (m *Monitor) checkHealth(ctx context.Context) {
 				if len(agentHealth.Issues) > 0 {
 					reason = agentHealth.Issues[0].Message
 				}
-				m.handleCrash(ctx, agentState, reason)
+				agentState.LastFailureReason = reason
+
+				// Debounce: PID-dead is authoritative (instant restart),
+				// text-based fallback requires consecutive failures.
+				threshold := m.cfg.Resilience.CrashThreshold
+				if threshold <= 0 {
+					threshold = 3
+				}
+
+				if pidKnown && !pidAlive {
+					// PID authoritatively dead — skip debounce, restart immediately
+					agentState.ConsecutiveFailures = threshold
+				} else {
+					// PID unavailable — text-based fallback, increment debounce
+					agentState.ConsecutiveFailures++
+					log.Printf("[resilience] Agent %s: text-based failure %d/%d — %s",
+						agentState.PaneID, agentState.ConsecutiveFailures, threshold, reason)
+				}
+
+				if agentState.ConsecutiveFailures >= threshold {
+					m.handleCrash(ctx, agentState, reason)
+					agentState.ConsecutiveFailures = 0
+				}
 			}
 		} else {
 			// Agent is healthy again
+			agentState.ConsecutiveFailures = 0
 			agentState.Healthy = true
 		}
 	}
@@ -599,9 +657,9 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 
 	// Snapshot hooks under lock for thread-safe access from spawned goroutines
 	hooksMu.RLock()
-	// sleepFunc is no longer used directly, we use time.After/ctx.Done
 	buildFunc := buildPaneCmdFn
 	sendFunc := sendKeysFn
+	isChildAliveFunc := isChildAliveFn
 	hooksMu.RUnlock()
 
 	select {
@@ -620,14 +678,30 @@ func (m *Monitor) restartAgent(ctx context.Context, agent *AgentState) {
 		return
 	}
 	currentAgent.RestartCount++
-	// Copy command while holding lock to avoid race
+	// Copy fields while holding lock to avoid race
 	agentCommand := currentAgent.Command
+	shellPID := currentAgent.ShellPID
 	m.mu.Unlock()
 
 	// Re-run the agent command in the pane
 	paneCmd, err := buildFunc(m.projectDir, agentCommand)
 	if err != nil {
 		log.Printf("[resilience] Refusing to restart agent %s: %v", agent.PaneID, err)
+		return
+	}
+
+	// Final PID guard: last-second check before injecting keys.
+	// The restart delay may have allowed the agent to recover.
+	// This prevents the most damaging outcome: injecting the spawn
+	// command as literal keystrokes into a running agent.
+	if shellPID > 0 && isChildAliveFunc(shellPID) {
+		log.Printf("[resilience] Agent %s: final PID guard — process recovered during restart delay, aborting restart", agent.PaneID)
+		m.mu.Lock()
+		if a, ok := m.agents[agent.PaneID]; ok {
+			a.Healthy = true
+			a.RestartCount-- // Undo the increment since we didn't actually restart
+		}
+		m.mu.Unlock()
 		return
 	}
 

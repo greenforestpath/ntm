@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/ntm/internal/bv"
+	"github.com/Dicklesworthstone/ntm/internal/process"
 	"github.com/Dicklesworthstone/ntm/internal/tmux"
 )
 
@@ -428,8 +429,10 @@ var healthErrorPatterns = []struct {
 	{"network unreachable", "network_error"},
 }
 
-// CheckAgentHealthWithActivity performs a comprehensive health check using activity detection
-func CheckAgentHealthWithActivity(paneID string, agentType string) (*HealthCheck, error) {
+// CheckAgentHealthWithActivity performs a comprehensive health check using activity detection.
+// shellPID is the tmux pane's shell PID used for authoritative PID-based liveness checking.
+// Pass 0 if the PID is unknown (falls back to text-based detection).
+func CheckAgentHealthWithActivity(paneID string, agentType string, shellPID int) (*HealthCheck, error) {
 	check := &HealthCheck{
 		PaneID:      paneID,
 		AgentType:   agentType,
@@ -439,7 +442,7 @@ func CheckAgentHealthWithActivity(paneID string, agentType string) (*HealthCheck
 	}
 
 	// 1. Process check - is the agent still running or crashed?
-	check.ProcessCheck = checkProcess(paneID)
+	check.ProcessCheck = checkProcess(paneID, shellPID)
 
 	// 2. Stall check - use activity detection for stall detection
 	check.StallCheck = checkStallWithActivity(paneID, agentType)
@@ -456,11 +459,24 @@ func CheckAgentHealthWithActivity(paneID string, agentType string) (*HealthCheck
 	return check, nil
 }
 
-// checkProcess checks if the agent process is running or crashed
-func checkProcess(paneID string) *ProcessCheckResult {
+// checkProcess checks if the agent process is running or crashed.
+// shellPID enables authoritative PID-based liveness checking when > 0.
+func checkProcess(paneID string, shellPID int) *ProcessCheckResult {
 	result := &ProcessCheckResult{
 		Running: true,
 		Crashed: false,
+	}
+
+	// PID-based liveness check (authoritative, avoids false positives)
+	if shellPID > 0 {
+		if process.HasChildAlive(shellPID) {
+			return result // Running=true, agent is alive per PID check
+		}
+		// PID says dead — mark as crashed but continue to text patterns
+		// for better diagnostics (exit code, etc.)
+		result.Running = false
+		result.Crashed = true
+		result.Reason = "PID-based check: no living child process"
 	}
 
 	// Capture pane output to check for exit indicators
@@ -811,8 +827,8 @@ func GetSessionHealth(session string) (*SessionHealthOutput, error) {
 			agentHealth.IdleSinceSeconds = int(time.Since(activityTime).Seconds())
 		}
 
-		// Perform comprehensive health check
-		check, err := CheckAgentHealthWithActivity(pane.ID, agentType)
+		// Perform comprehensive health check (pass shell PID for authoritative liveness)
+		check, err := CheckAgentHealthWithActivity(pane.ID, agentType, pane.PID)
 		if err == nil {
 			agentHealth.Confidence = check.Confidence
 
@@ -2076,10 +2092,11 @@ func ClearRestartManager(session string) {
 // Integration: Auto-Restart Unhealthy Agents
 // =============================================================================
 
-// AutoRestartUnhealthyAgent checks agent health and restarts if needed
-func AutoRestartUnhealthyAgent(ctx context.Context, session, paneID, agentType string, alerter AlerterInterface) *RestartResult {
+// AutoRestartUnhealthyAgent checks agent health and restarts if needed.
+// shellPID is the tmux pane's shell PID for PID-based liveness checking (0 to skip).
+func AutoRestartUnhealthyAgent(ctx context.Context, session, paneID, agentType string, shellPID int, alerter AlerterInterface) *RestartResult {
 	// Check current health (paneID can be just the pane or full session:pane target)
-	check, err := CheckAgentHealthWithActivity(paneID, agentType)
+	check, err := CheckAgentHealthWithActivity(paneID, agentType, shellPID)
 	if err != nil {
 		return &RestartResult{
 			PaneID:    paneID,
