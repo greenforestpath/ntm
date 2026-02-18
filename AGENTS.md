@@ -494,44 +494,23 @@ if not data["success"]:
 
 ---
 
-### Morph Warp Grep — AI-Powered Code Search
+### Code Search (Canonical)
 
-Use `mcp__morph-mcp__warp_grep` for "how does X work?" discovery across the codebase.
+WarpGrep/Morph is deprecated in CFOS workflows. Do not use it.
 
-When to use:
+Use these tools instead:
 
-- You don't know where something lives.
-- You want data flow across multiple files (API → service → schema → types).
-- You want all touchpoints of a cross-cutting concern (e.g., robot mode, tmux integration).
+- `rg` for symbol and text lookup
+- `find`/`fd` for file discovery
+- `qmd` for markdown/docs/decision context
 
-Example:
+Examples:
 
+```bash
+rg -n "How does robot mode spawn sessions?" .
+rg -n "SendKeys" .
+find . -name '*robot*'
 ```
-mcp__morph-mcp__warp_grep(
-  repoPath: "/Users/jemanuel/projects/ntm",
-  query: "How does robot mode spawn sessions?"
-)
-```
-
-Warp Grep:
-
-- Expands a natural-language query to multiple search patterns.
-- Runs targeted greps, reads code, follows imports, then returns concise snippets with line numbers.
-- Reduces token usage by returning only relevant slices, not entire files.
-
-When **not** to use Warp Grep:
-
-- You already know the function/identifier name; use `rg`.
-- You know the exact file; just open it.
-- You only need a yes/no existence check.
-
-Comparison:
-
-| Scenario | Tool |
-| ---------------------------------- | ---------- |
-| "How is robot mode implemented?" | warp_grep |
-| "Where is `SendKeys` defined?" | `rg` |
-| "Replace `var` with `const`" | `ast-grep` |
 
 ---
 
